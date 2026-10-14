@@ -6,38 +6,29 @@
 # The whole script lives in main so bash has parsed all of it before running any of it;
 # editing the file mid-run then cannot corrupt that run.
 main() {
+  # shellcheck source=photos/lib.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
   # Configuration comes from the environment only (see README)
-  missing=()
-  for v in ICLOUD_ROOT ICLOUD_ACCOUNTS; do [ -n "${!v:-}" ] || missing+=("$v"); done
-  if ((${#missing[@]})); then echo "Missing required environment variables: ${missing[*]}" >&2; exit 2; fi
-  DRY_RUN=${DRY_RUN:-false}
-  exec 9>"${ICLOUD_LOCK_FILE:-/tmp/rclone-icloudphotos.lock}"
-  flock -n 9 || { echo "Previous run still active, exiting"; exit 0; }
+  require_env
+  RCLONE=${ICLOUD_RCLONE:-rclone}
+  require_tools "$RCLONE" flock awk sort
+  take_lock "Previous run still active, exiting"
+  parse_dry_run
 
   TAB=$'\t'
-  RCLONE=${ICLOUD_RCLONE:-rclone}
   CONF_OPTS=()
   if [ -n "${ICLOUD_RCLONE_CONF:-}" ]; then CONF_OPTS=(--config "$ICLOUD_RCLONE_CONF"); fi
   LOG=$ICLOUD_ROOT/backup.log
 
-  # Writes to the log file, and to the terminal too when run interactively
-  log() {
-    local msg
-    msg="$(date '+%F %T') $*"
-    echo "$msg" >> "$LOG"
-    if [ -t 1 ]; then echo "$msg"; fi
-  }
-
   # Interactive runs show rclone's live transfer progress; the log file gets INFO either way
   RCLONE_OPTS=()
-  DRY=0
-  case $DRY_RUN in true|1) DRY=1; RCLONE_OPTS+=(--dry-run);; esac
+  if [ "$DRY" = true ]; then RCLONE_OPTS+=(--dry-run); fi
   if [ -t 1 ]; then RCLONE_OPTS+=(--progress); fi
 
-  # Removes the working files of the account being backed up (and the temp dir of a dry run)
+  # Removes the working files in the dir $1 (and the dir itself on a dry run, where it is a temp dir)
   cleanup_work() {
-    rm -f "$listing" "$album_only" "$albums_new"
-    if [ "$DRY" = 1 ]; then rmdir "$work"; fi
+    rm -f "$1/listing.tmp" "$1/album-only.tmp" "$1/albums.csv.new"
+    if [ "$DRY" = true ]; then rmdir "$1"; fi
   }
 
   backup_account() {
@@ -45,7 +36,7 @@ main() {
     local rc=0 work="$2" listing album_only albums_new
 
     # A dry run keeps its working files outside the account dir and changes nothing in it
-    if [ "$DRY" = 1 ]; then work=$(mktemp -d) || return 1; else mkdir -p "$dest/originals"; fi
+    if [ "$DRY" = true ]; then work=$(mktemp -d) || return 1; else mkdir -p "$dest/originals"; fi
     listing="$work/listing.tmp" album_only="$work/album-only.tmp" albums_new="$work/albums.csv.new"
     log "[$remote] copying All Photos (dry-run=$DRY_RUN)"
 
@@ -60,7 +51,7 @@ main() {
     if ! $RCLONE lsf "${remote}:/PrimarySync" -R --files-only --format tsp --separator "$TAB" \
          "${CONF_OPTS[@]}" --log-file "$LOG" --log-level INFO > "$listing"; then
       log "[$remote] ERROR: listing failed; album-only photos not copied"
-      cleanup_work
+      cleanup_work "$work"
       return 1
     fi
 
@@ -96,11 +87,11 @@ main() {
         close(albums); close(only)
       }'; then
       log "[$remote] ERROR: could not build the album list"
-      cleanup_work
+      cleanup_work "$work"
       return 1
     fi
     [ -e "$album_only" ] || : > "$album_only"
-    if [ "$DRY" = 1 ]; then
+    if [ "$DRY" = true ]; then
       log "[$remote] dry-run: albums.csv left as is ($(($(wc -l < "$albums_new") - 1)) entries in the new list)"
     else
       mv "$albums_new" "$dest/albums.csv"
@@ -114,7 +105,7 @@ main() {
       --retries 5 --low-level-retries 20 \
       --log-file "$LOG" --log-level INFO || rc=1
 
-    cleanup_work
+    cleanup_work "$work"
     log "[$remote] finished (exit $rc)"
     return $rc
   }

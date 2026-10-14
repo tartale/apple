@@ -10,6 +10,7 @@ The scripts live in `photos/`.
 | --- | --- |
 | `photos/backup.sh` | For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. Writes `albums.csv`. Safe to run from cron; skips if a run is already active. |
 | `photos/organize.sh` | Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. |
+| `photos/lib.sh` | Shared by the two scripts above (environment check, required-program check, lock, logging). Not run directly. |
 | `photos/lint.sh` | Runs `shellcheck` over every script in the repo. |
 | `photos/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/`. They use `test/fake-rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
 
@@ -40,7 +41,7 @@ The scripts are configured only through environment variables; there is no confi
 | `ICLOUD_RCLONE_CONF` | no | rclone's own default config location | Path to the rclone config that defines the iCloud remotes (passed as `--config`) |
 | `ICLOUD_RCLONE` | no | `rclone` (from `PATH`) | rclone binary |
 | `ICLOUD_LOCK_FILE` | no | `/tmp/rclone-icloudphotos.lock` | Lock shared by both scripts |
-| `DRY_RUN` | no | `false` | `true`/`1`: `backup.sh` passes `--dry-run` to rclone; it changes nothing under `$ICLOUD_ROOT/<name>/`; `organize.sh` counts only and creates nothing |
+| `DRY_RUN` | no | `false` | `true`: `backup.sh` passes `--dry-run` to rclone; it changes nothing under `$ICLOUD_ROOT/<name>/`; `organize.sh` counts only and creates nothing |
 | `PROGRESS_EVERY` | no | `1000` | `organize.sh` progress-log interval, in files |
 
 Example:
