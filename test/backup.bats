@@ -93,3 +93,13 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
   [[ $output == *"still active"* ]]
   [ ! -e "$(acct)" ]
 }
+
+@test "the day's runs append to one log named with the date" {
+  cloud_file "All Photos/a.jpg" 100 $JUN_2020
+  run backup
+  run backup
+  [ "$status" -eq 0 ]
+  [ "$(find "$ICLOUD_ROOT" -maxdepth 1 -name 'backup*.log' | wc -l)" -eq 1 ]
+  [ -f "$ICLOUD_ROOT/backup-$(date +%F).log" ]
+  [ "$(grep -c "backup run started" "$(logfile backup)")" -eq 2 ]
+}

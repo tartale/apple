@@ -12,7 +12,7 @@ main() {
   take_lock "Backup still running, exiting"
   parse_dry_run   # DRY_RUN=true ./organize.sh -> count only, create nothing
 
-  LOG=$ICLOUD_ROOT/organize.log
+  LOG=$ICLOUD_ROOT/organize-$(date +%F).log   # one file per day; the day's runs append to it
   PROGRESS_EVERY=${PROGRESS_EVERY:-1000} # log a progress line every N files
 
   # returns 0 = created, 1 = already existed, 2 = failed

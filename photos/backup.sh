@@ -18,7 +18,7 @@ main() {
   TAB=$'\t'
   CONF_OPTS=()
   if [ -n "${ICLOUD_RCLONE_CONF:-}" ]; then CONF_OPTS=(--config "$ICLOUD_RCLONE_CONF"); fi
-  LOG=$ICLOUD_ROOT/backup.log
+  LOG=$ICLOUD_ROOT/backup-$(date +%F).log   # one file per day; the day's runs append to it
 
   # Interactive runs show rclone's live transfer progress; the log file gets INFO either way
   RCLONE_OPTS=()
