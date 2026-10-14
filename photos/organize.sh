@@ -4,31 +4,21 @@
 # The whole script lives in main so bash has parsed all of it before running any of it;
 # editing the file mid-run then cannot corrupt that run.
 main() {
+  # shellcheck source=photos/lib.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
   # Configuration comes from the environment only (see README)
-  missing=()
-  for v in ICLOUD_ROOT ICLOUD_ACCOUNTS; do [ -n "${!v:-}" ] || missing+=("$v"); done
-  if ((${#missing[@]})); then echo "Missing required environment variables: ${missing[*]}" >&2; exit 2; fi
-  DRY_RUN=${DRY_RUN:-false}
-  exec 9>"${ICLOUD_LOCK_FILE:-/tmp/rclone-icloudphotos.lock}"
-  flock -n 9 || { echo "Backup still running, exiting"; exit 0; }
+  require_env
+  require_tools flock find stat awk
+  take_lock "Backup still running, exiting"
+  parse_dry_run   # DRY_RUN=true ./organize.sh -> count only, create nothing
 
   LOG=$ICLOUD_ROOT/organize.log
-  DRY=0
-  case $DRY_RUN in true|1) DRY=1;; esac   # DRY_RUN=true ./organize.sh -> count only, create nothing
   PROGRESS_EVERY=${PROGRESS_EVERY:-1000} # log a progress line every N files
-
-  # Writes to the log file, and to the terminal too when run interactively
-  log() {
-    local msg
-    msg="$(date '+%F %T') $*"
-    echo "$msg" >> "$LOG"
-    if [ -t 1 ]; then echo "$msg"; fi
-  }
 
   # returns 0 = created, 1 = already existed, 2 = failed
   link_one() {
     [ -e "$2" ] && return 1
-    [ "$DRY" = 1 ] && return 0
+    [ "$DRY" = true ] && return 0
     mkdir -p "${2%/*}" && ln "$1" "$2" || return 2
   }
 
