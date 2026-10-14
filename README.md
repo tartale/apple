@@ -11,6 +11,7 @@ The scripts live in `photos/`.
 | `photos/backup.sh` | For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. Writes `albums.csv`. Safe to run from cron; skips if a run is already active. |
 | `photos/organize.sh` | Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. |
 | `photos/lint.sh` | Runs `shellcheck` over every script in the repo. |
+| `photos/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/`. They use `test/fake-rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
 
 `photos/backup.sh` and `photos/organize.sh` share one lock, so they never run at the same time.
 
