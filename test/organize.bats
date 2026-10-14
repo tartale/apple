@@ -102,3 +102,16 @@ CSV
   [ "$(find "$ICLOUD_ROOT" -maxdepth 1 -name 'organize*.log' | wc -l)" -eq 1 ]
   [ "$(grep -c "link run started" "$(logfile organize)")" -eq 2 ]
 }
+
+@test "an album entry whose stored file is missing fails the run but the other links are made" {
+  original a.jpg 100 $JUN_2020
+  cat > "$(acct)/albums.csv" <<'CSV'
+path,size,mtime,stored
+Holiday/a.jpg,100,2020-06-15 12:00:00,a.jpg
+Holiday/gone.jpg,200,2020-06-15 12:00:00,gone.jpg
+CSV
+  run organize
+  [ "$status" -eq 1 ]
+  [ "$(acct)/albums/Holiday/a.jpg" -ef "$(acct)/originals/a.jpg" ]
+  grep -q "not in originals: Holiday/gone.jpg" "$(logfile organize)"
+}

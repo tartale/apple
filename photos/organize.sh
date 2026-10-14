@@ -109,7 +109,7 @@ main() {
     fi
 
     log "[$base] finished in $((SECONDS - t0))s"
-    [ "$d_fail" -eq 0 ] && [ "$a_fail" -eq 0 ]
+    [ "$d_fail" -eq 0 ] && [ "$a_fail" -eq 0 ] && [ "$a_miss" -eq 0 ]
   }
 
   log "=== link run started ==="

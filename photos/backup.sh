@@ -91,11 +91,6 @@ main() {
       return 1
     fi
     [ -e "$album_only" ] || : > "$album_only"
-    if [ "$DRY" = true ]; then
-      log "[$remote] dry-run: albums.csv left as is ($(($(wc -l < "$albums_new") - 1)) entries in the new list)"
-    else
-      mv "$albums_new" "$dest/albums.csv"
-    fi
 
     log "[$remote] copying $(wc -l < "$album_only") album-only photos (one copy each)"
     $RCLONE copy "${remote}:/PrimarySync" "$dest/originals" \
@@ -104,6 +99,15 @@ main() {
       --transfers 4 --checkers 8 \
       --retries 5 --low-level-retries 20 \
       --log-file "$LOG" --log-level INFO || rc=1
+
+    # albums.csv is replaced only once every download succeeded, so it never lists files that are not in originals/
+    if [ "$rc" != 0 ]; then
+      log "[$remote] albums.csv left as is: a download failed"
+    elif [ "$DRY" = true ]; then
+      log "[$remote] dry-run: albums.csv left as is ($(($(wc -l < "$albums_new") - 1)) entries in the new list)"
+    else
+      mv "$albums_new" "$dest/albums.csv"
+    fi
 
     cleanup_work "$work"
     log "[$remote] finished (exit $rc)"
