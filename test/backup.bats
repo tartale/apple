@@ -103,3 +103,19 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
   [ -f "$ICLOUD_ROOT/backup-$(date +%F).log" ]
   [ "$(grep -c "backup run started" "$(logfile backup)")" -eq 2 ]
 }
+
+@test "albums.csv is not replaced when the album-only download fails" {
+  mkdir -p "$(acct)"
+  echo "path,size,mtime,stored" > "$(acct)/albums.csv"
+  cloud_file "Holiday/h.jpg" 150 $JUN_2020
+  FAKE_FAIL=copy-album run backup
+  [ "$status" -eq 1 ]
+  [ "$(cat "$(acct)/albums.csv")" = "path,size,mtime,stored" ]
+}
+
+@test "albums.csv is written when every download succeeds" {
+  cloud_file "Holiday/h.jpg" 150 $JUN_2020
+  run backup
+  [ "$status" -eq 0 ]
+  grep -qx "Holiday/h.jpg,150,2020-06-15 12:00:00,Holiday/h.jpg" "$(acct)/albums.csv"
+}
