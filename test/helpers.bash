@@ -26,3 +26,6 @@ export JUL_2020=1594814400   # 2020-07-15 12:00 UTC
 
 backup() { "$REPO/photos/backup.sh" "$@"; }
 organize() { "$REPO/photos/organize.sh" "$@"; }
+
+# The log file a script writes today: <ICLOUD_ROOT>/<script>-YYYY-MM-DD.log
+logfile() { echo "$ICLOUD_ROOT/$1-$(date +%F).log"; }

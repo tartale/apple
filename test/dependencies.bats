@@ -9,7 +9,7 @@ setup() { common_setup; }
   [[ $output == *"Missing required programs: /nonexistent/rclone"* ]]
   [[ $output == *"Install "* ]]
   [[ $output == *"  "*"rclone"* ]]
-  [ ! -e "$ICLOUD_ROOT/backup.log" ]
+  [ ! -e "$(logfile backup)" ]
 }
 
 @test "the install command is a runnable line of its own" {

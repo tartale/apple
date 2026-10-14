@@ -76,8 +76,8 @@ CSV
   [ "$status" -eq 0 ]
   run organize
   [ "$status" -eq 0 ]
-  grep -q "by-date done: new=0 existing=1" "$ICLOUD_ROOT/organize.log"
-  grep -q "albums done: new=0 existing=1" "$ICLOUD_ROOT/organize.log"
+  grep -q "by-date done: new=0 existing=1" "$(logfile organize)"
+  grep -q "albums done: new=0 existing=1" "$(logfile organize)"
 }
 
 @test "DRY_RUN=true creates no links" {
@@ -92,4 +92,13 @@ CSV
 @test "an account with no originals dir is an error" {
   run organize
   [ "$status" -eq 1 ]
+}
+
+@test "the day's runs append to one log named with the date" {
+  mkdir -p "$(acct)/originals"
+  run organize
+  run organize
+  [ "$status" -eq 0 ]
+  [ "$(find "$ICLOUD_ROOT" -maxdepth 1 -name 'organize*.log' | wc -l)" -eq 1 ]
+  [ "$(grep -c "link run started" "$(logfile organize)")" -eq 2 ]
 }

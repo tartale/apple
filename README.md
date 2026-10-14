@@ -53,4 +53,4 @@ export ICLOUD_RCLONE_CONF=/etc/rclone/rclone.conf
 photos/backup.sh && photos/organize.sh
 ```
 
-Logs: `$ICLOUD_ROOT/backup.log`, `$ICLOUD_ROOT/organize.log`. Run from a terminal, both scripts also print their status lines there, and `backup.sh` shows rclone's live transfer progress; from cron they only write the log.
+Logs: `$ICLOUD_ROOT/backup-YYYY-MM-DD.log` and `$ICLOUD_ROOT/organize-YYYY-MM-DD.log`; all of a day's runs append to that day's file (the date is the one the run started on). Run from a terminal, both scripts also print their status lines there, and `backup.sh` shows rclone's live transfer progress; from cron they only write the log.
