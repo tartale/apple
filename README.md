@@ -30,6 +30,10 @@ $ICLOUD_ROOT/<name>/
 
 A photo is the same photo when its file name, size and modification time all match. A photo in several albums is downloaded once; a different photo that merely shares a name (and even a size) is kept separately. If two different photos share a name in the same month, `by-date/` links the second as `<name>-<size>.<ext>`.
 
+## Backup, not mirror
+
+Nothing is ever deleted or pruned. A photo removed from iCloud stays in `originals/`, and its links stay in `by-date/` and `albums/`. Album changes only add links; a photo moved between albums keeps its old link too.
+
 ## Configuration
 
 The scripts are configured only through environment variables; there is no config file. A script exits with an error naming any required variable that is not set.
