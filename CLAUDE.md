@@ -12,7 +12,7 @@ Shell scripts (in `photos/`) that wrap rclone to back up iCloud Photos on a Syno
 
 ## Identity
 
-A photo is its file name + size + modification time. `backup.sh` builds `albums.csv` (`path,size,mtime,stored`) from one sorted `rclone lsf -R` listing; album-only photos are downloaded once to the first album path in C-locale order. `organize.sh` only reads `albums.csv` and `originals/`. See README for the user-facing rule.
+A photo is its file name + size + modification time. `backup.sh` builds `albums.csv` (`path,size,mtime,stored`) from one sorted `rclone lsf -R` listing; an album entry is matched to the All Photos listing, then to what `originals/` already holds, and only otherwise downloaded once to the first album path in C-locale order. `organize.sh` only reads `albums.csv` and `originals/`. See README for the user-facing rule.
 
 ## Testing
 

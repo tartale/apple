@@ -28,7 +28,7 @@ $ICLOUD_ROOT/<name>/
   albums.csv        # path,size,mtime,stored: each album entry and the originals/ file it links to
 ```
 
-A photo is the same photo when its file name, size and modification time all match. A photo in several albums is downloaded once; a different photo that merely shares a name (and even a size) is kept separately. If two different photos share a name in the same month, `by-date/` links the second as `<name>-<size>.<ext>`.
+A photo is the same photo when its file name, size and modification time all match. A photo in several albums is downloaded once, and a photo already in `originals/` (for example one since deleted from iCloud, which stays in Recently Deleted) is never downloaded again; a different photo that merely shares a name (and even a size) is kept separately. If two different photos share a name in the same month, `by-date/` links the second as `<name>-<size>.<ext>`.
 
 ## Backup, not mirror
 

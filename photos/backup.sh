@@ -11,7 +11,7 @@ main() {
   # Configuration comes from the environment only (see README)
   require_env
   RCLONE=${ICLOUD_RCLONE:-rclone}
-  require_tools "$RCLONE" flock awk sort
+  require_tools "$RCLONE" flock awk sort find
   take_lock "Previous run still active, exiting"
   parse_dry_run
 
@@ -27,17 +27,17 @@ main() {
 
   # Removes the working files in the dir $1 (and the dir itself on a dry run, where it is a temp dir)
   cleanup_work() {
-    rm -f "$1/listing.tmp" "$1/album-only.tmp" "$1/albums.csv.new"
+    rm -f "$1/listing.tmp" "$1/on-disk.tmp" "$1/album-only.tmp" "$1/albums.csv.new"
     if [ "$DRY" = true ]; then rmdir "$1"; fi
   }
 
   backup_account() {
     local remote="$1" dest="$2"
-    local rc=0 work="$2" listing album_only albums_new
+    local rc=0 work="$2" listing on_disk album_only albums_new
 
     # A dry run keeps its working files outside the account dir and changes nothing in it
     if [ "$DRY" = true ]; then work=$(mktemp -d) || return 1; else mkdir -p "$dest/originals"; fi
-    listing="$work/listing.tmp" album_only="$work/album-only.tmp" albums_new="$work/albums.csv.new"
+    listing="$work/listing.tmp" on_disk="$work/on-disk.tmp" album_only="$work/album-only.tmp" albums_new="$work/albums.csv.new"
     log "[$remote] copying All Photos (dry-run=$DRY_RUN)"
 
     $RCLONE copy "${remote}:/PrimarySync/All Photos" "$dest/originals" \
@@ -55,13 +55,29 @@ main() {
       return 1
     fi
 
+    # What originals/ already holds (time, size, path), so a photo that has left All Photos (deleted from iCloud, but still in
+    # Recently Deleted or an album) is not downloaded again. Times are local, truncated to the second, like rclone's listing.
+    if [ -d "$dest/originals" ]; then
+      find "$dest/originals" -name @eaDir -prune -o -type f -printf '%TY-%Tm-%Td %TH:%TM:%TS\t%s\t%P\n' |
+        LC_ALL=C sort -t "$TAB" -k3 > "$on_disk"
+    else
+      : > "$on_disk"
+    fi
+
     # A photo is identified by file name + size + modification time. For each album entry, "stored" is where its file lives
-    # in originals/: the All Photos copy if there is one, else the first album path holding that photo.
+    # in originals/: the All Photos copy if there is one, else a copy already in originals/, else the first album path
+    # holding that photo.
     # albums.csv records that; album_only lists the one path to download per photo that is only in albums.
-    if ! LC_ALL=C sort -t "$TAB" -k3 "$listing" | awk -F "$TAB" -v albums="$albums_new" -v only="$album_only" '
+    if ! LC_ALL=C sort -t "$TAB" -k3 "$listing" | awk -F "$TAB" -v albums="$albums_new" -v only="$album_only" -v disk="$on_disk" '
       function csv(s) {
         if (s ~ /[",\n]/) { gsub(/"/, "\"\"", s); s = "\"" s "\"" }
         return s
+      }
+      FILENAME == disk {
+        t = $1; sub(/\.[0-9]*$/, "", t); name = $3; sub(/.*\//, "", name)
+        key = name SUBSEP $2 SUBSEP t
+        if (!(key in onDisk)) onDisk[key] = $3
+        next
       }
       {
         path = $3
@@ -78,6 +94,7 @@ main() {
           name = entry[i]; sub(/.*\//, "", name)
           key = name SUBSEP size[i] SUBSEP mtime[i]
           if (key in have) stored = have[key]
+          else if (key in onDisk) stored = onDisk[key]
           else {
             if (!(key in first)) { first[key] = entry[i]; print entry[i] > only }
             stored = first[key]
@@ -85,7 +102,7 @@ main() {
           print csv(entry[i]) "," size[i] "," mtime[i] "," csv(stored) > albums
         }
         close(albums); close(only)
-      }'; then
+      }' "$on_disk" -; then
       log "[$remote] ERROR: could not build the album list"
       cleanup_work "$work"
       return 1
