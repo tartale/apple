@@ -104,13 +104,24 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
   [ "$(grep -c "backup run started" "$(logfile backup)")" -eq 2 ]
 }
 
-@test "albums.csv is not replaced when the album-only download fails" {
-  mkdir -p "$(acct)"
-  echo "path,size,mtime,stored" > "$(acct)/albums.csv"
+@test "when the album-only download fails albums.csv leaves out those rows and the run fails" {
+  cloud_file "All Photos/a.jpg" 100 $JUN_2020
+  cloud_file "Holiday/a.jpg" 100 $JUN_2020
   cloud_file "Holiday/h.jpg" 150 $JUN_2020
   FAKE_FAIL=copy-album run backup
   [ "$status" -eq 1 ]
-  [ "$(cat "$(acct)/albums.csv")" = "path,size,mtime,stored" ]
+  grep -qx "Holiday/a.jpg,100,2020-06-15 12:00:00,a.jpg" "$(acct)/albums.csv"
+  ! grep -q "h.jpg" "$(acct)/albums.csv"
+  grep -q "albums.csv written without 1 entries" "$(logfile backup)"
+}
+
+@test "the next run adds the rows left out after a failed download" {
+  cloud_file "Holiday/h.jpg" 150 $JUN_2020
+  FAKE_FAIL=copy-album run backup
+  [ "$status" -eq 1 ]
+  run backup
+  [ "$status" -eq 0 ]
+  grep -qx "Holiday/h.jpg,150,2020-06-15 12:00:00,Holiday/h.jpg" "$(acct)/albums.csv"
 }
 
 @test "albums.csv is written when every download succeeds" {
