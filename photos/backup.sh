@@ -27,17 +27,17 @@ main() {
 
   # Removes the working files in the dir $1 (and the dir itself on a dry run, where it is a temp dir)
   cleanup_work() {
-    rm -f "$1/listing.tmp" "$1/on-disk.tmp" "$1/album-only.tmp" "$1/albums.csv.new"
+    rm -f "$1/listing.tmp" "$1/on-disk.tmp" "$1/album-only.tmp" "$1/albums.csv.new" "$1/stored.tmp" "$1/albums.csv.ok"
     if [ "$DRY" = true ]; then rmdir "$1"; fi
   }
 
   backup_account() {
     local remote="$1" dest="$2"
-    local rc=0 work="$2" listing on_disk album_only albums_new
+    local rc=0 work="$2" listing on_disk album_only albums_new stored_now albums_ok kept
 
     # A dry run keeps its working files outside the account dir and changes nothing in it
     if [ "$DRY" = true ]; then work=$(mktemp -d) || return 1; else mkdir -p "$dest/originals"; fi
-    listing="$work/listing.tmp" on_disk="$work/on-disk.tmp" album_only="$work/album-only.tmp" albums_new="$work/albums.csv.new"
+    listing="$work/listing.tmp" on_disk="$work/on-disk.tmp" album_only="$work/album-only.tmp" albums_new="$work/albums.csv.new" stored_now="$work/stored.tmp" albums_ok="$work/albums.csv.ok"
     log "[$remote] copying All Photos (dry-run=$DRY_RUN)"
 
     $RCLONE copy "${remote}:/PrimarySync/All Photos" "$dest/originals" \
@@ -89,7 +89,7 @@ main() {
         if (index(path, "/") > 0) { n++; mtime[n] = $1; size[n] = $2; entry[n] = path }
       }
       END {
-        print "path,size,mtime,stored" > albums
+        print "path,size,mtime,stored\t" > albums   # each row: the csv line, a tab, then the stored path
         for (i = 1; i <= n; i++) {
           name = entry[i]; sub(/.*\//, "", name)
           key = name SUBSEP size[i] SUBSEP mtime[i]
@@ -99,7 +99,7 @@ main() {
             if (!(key in first)) { first[key] = entry[i]; print entry[i] > only }
             stored = first[key]
           }
-          print csv(entry[i]) "," size[i] "," mtime[i] "," csv(stored) > albums
+          print csv(entry[i]) "," size[i] "," mtime[i] "," csv(stored) "\t" stored > albums
         }
         close(albums); close(only)
       }' "$on_disk" -; then
@@ -117,13 +117,20 @@ main() {
       --retries 5 --low-level-retries 20 \
       --log-file "$LOG" --log-level INFO || rc=1
 
-    # albums.csv is replaced only once every download succeeded, so it never lists files that are not in originals/
-    if [ "$rc" != 0 ]; then
-      log "[$remote] albums.csv left as is: a download failed"
-    elif [ "$DRY" = true ]; then
+    # albums.csv lists only entries whose file is in originals/, so a download that failed leaves out its own rows
+    # (the failure is reported by this run's exit status and tried again on the next run) and nothing else
+    if [ "$DRY" = true ]; then
       log "[$remote] dry-run: albums.csv left as is ($(($(wc -l < "$albums_new") - 1)) entries in the new list)"
     else
-      mv "$albums_new" "$dest/albums.csv"
+      find "$dest/originals" -name @eaDir -prune -o -type f -printf '%P\n' > "$stored_now"
+      awk -F "$TAB" -v have="$stored_now" '
+        FILENAME == have { present[$0] = 1; next }
+        FNR == 1 || ($2 in present) { print $1 }' "$stored_now" "$albums_new" > "$albums_ok"
+      kept=$(($(wc -l < "$albums_ok") - 1))
+      if [ "$kept" -lt $(($(wc -l < "$albums_new") - 1)) ]; then
+        log "[$remote] albums.csv written without $(($(wc -l < "$albums_new") - 1 - kept)) entries whose file was not downloaded"
+      fi
+      mv "$albums_ok" "$dest/albums.csv"
     fi
 
     cleanup_work "$work"
