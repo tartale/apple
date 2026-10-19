@@ -119,3 +119,37 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
   [ "$status" -eq 0 ]
   grep -qx "Holiday/h.jpg,150,2020-06-15 12:00:00,Holiday/h.jpg" "$(acct)/albums.csv"
 }
+
+@test "a photo that left All Photos but is in an album is not downloaded again" {
+  cloud_file "All Photos/a.jpg" 100 $JUN_2020
+  cloud_file "Recently Deleted/a.jpg" 100 $JUN_2020
+  run backup
+  [ "$status" -eq 0 ]
+  rm "$FAKE_CLOUD/tom/PrimarySync/All Photos/a.jpg"
+  run backup
+  [ "$status" -eq 0 ]
+  [ -f "$(acct)/originals/a.jpg" ]
+  [ ! -e "$(acct)/originals/Recently Deleted" ]
+  grep -qx "Recently Deleted/a.jpg,100,2020-06-15 12:00:00,a.jpg" "$(acct)/albums.csv"
+}
+
+@test "an album-only photo downloaded earlier is reused by another album" {
+  cloud_file "Beach/b.jpg" 200 $JUN_2020
+  run backup
+  [ "$status" -eq 0 ]
+  cloud_file "Trip/b.jpg" 200 $JUN_2020
+  rm "$FAKE_CLOUD/tom/PrimarySync/Beach/b.jpg"
+  run backup
+  [ "$status" -eq 0 ]
+  [ ! -e "$(acct)/originals/Trip" ]
+  grep -qx "Trip/b.jpg,200,2020-06-15 12:00:00,Beach/b.jpg" "$(acct)/albums.csv"
+}
+
+@test "a different photo with the same name and size but another mtime is still downloaded" {
+  cloud_file "All Photos/a.jpg" 100 $JUN_2020
+  run backup
+  cloud_file "Odd/a.jpg" 100 $JUL_2020
+  run backup
+  [ "$status" -eq 0 ]
+  [ -f "$(acct)/originals/Odd/a.jpg" ]
+}
