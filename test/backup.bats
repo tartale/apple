@@ -85,10 +85,9 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
 
 @test "exits 0 without doing anything while another run holds the lock" {
   cloud_file "All Photos/a.jpg" 100 $JUN_2020
-  ( flock 9; sleep 5 ) 9>"$ICLOUD_LOCK_FILE" &
-  sleep 0.5
+  hold_lock
   run backup
-  kill %1 2>/dev/null || true
+  kill "$LOCK_HOLDER" 2>/dev/null || true
   [ "$status" -eq 0 ]
   [[ $output == *"still active"* ]]
   [ ! -e "$(acct)" ]
@@ -100,7 +99,7 @@ acct() { echo "$ICLOUD_ROOT/tom"; }
   run backup
   [ "$status" -eq 0 ]
   [ "$(find "$ICLOUD_ROOT" -maxdepth 1 -name 'backup*.log' | wc -l)" -eq 1 ]
-  [ -f "$ICLOUD_ROOT/backup-$(date +%F).log" ]
+  [ -f "$ICLOUD_ROOT/backup-2026-01-02.log" ]
   [ "$(grep -c "backup run started" "$(logfile backup)")" -eq 2 ]
 }
 
