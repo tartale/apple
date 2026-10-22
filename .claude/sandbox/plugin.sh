@@ -24,3 +24,6 @@ set -euo pipefail
 apt-get update
 apt-get install -y --no-install-recommends bats
 
+
+# Reads photo and video metadata (EXIF dates, camera, dimensions) for comparing libraries
+apt-get install -y --no-install-recommends libimage-exiftool-perl
