@@ -9,12 +9,13 @@ NAME="${CS_CONTAINER_NAME:-cs-icloud-tools}"
 export CS_CONTAINER_NAME="$NAME"
 
 # Each start creates a fresh container, so changed variables and flags always
-# apply. No --rm: it cannot be combined with --restart in CS_DOCKER_FLAGS.
+# apply. The container restarts with docker unless it was stopped; put --restart in
+# CS_DOCKER_FLAGS to change that. No --rm: it cannot be combined with --restart.
 if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = true ]; then
     echo "$NAME is already running"
 else
     docker rm "$NAME" >/dev/null 2>&1 || true   # a stopped one from an earlier start
-    CS_DOCKER_FLAGS="-d -t ${CS_DOCKER_FLAGS:-}" \
+    CS_DOCKER_FLAGS="-d -t --restart=unless-stopped ${CS_DOCKER_FLAGS:-}" \
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tartale/claude-sandbox/refs/heads/main/claude-sandbox.sh)" claude-sandbox --name "icloud-tools" "$@" >/dev/null
     echo "started $NAME"
 fi
