@@ -1,4 +1,4 @@
 #!/bin/bash
 # Lint every shell script in the repo with shellcheck.
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
-exec shellcheck -x photos/*.sh test/fake-rclone test/helpers.bash .claude/sandbox/*.sh
+exec shellcheck -x photos/*.sh macos/*.sh test/fake-rclone test/helpers.bash .claude/sandbox/*.sh
