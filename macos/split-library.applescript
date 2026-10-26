@@ -58,17 +58,8 @@ on run argv
 			end try
 			set skipYear to false
 			if oldYears contains y then
-				if onUpgrade is "skip" then
-					set skipYear to true
-				else
-					set answer to my askAboutUpgrade(targetName & " is in an older format than " & sourceName & ". Photos must upgrade it before photos can be copied into it.")
-					if answer is "Stop" then error targetName & " needs a Photos upgrade."
-					if answer is "Skip" then set skipYear to true
-					if answer is "Open in Photos" then
-						open targetLibrary
-						if my askToRetry(targetName) is "Skip" then set skipYear to true
-					end if
-				end if
+				set decision to my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, targetName & " is in an older format than " & sourceName & ". Photos must upgrade it before photos can be copied into it.")
+				if decision is "skip" then set skipYear to true
 			end if
 			if skipYear then
 				set report to report & targetName & ": skipped (the library needs an upgrade)" & linefeed
@@ -87,17 +78,8 @@ on run argv
 							exit repeat
 						on error message_ number errorNumber
 							-- 5 is "Library needs upgrade"; anything else is a real failure
-							if errorNumber is not 5 or onUpgrade is "stop" then error message_ number errorNumber
-							set answer to "Skip"
-							if onUpgrade is "ask" then set answer to my askAboutUpgrade(message_)
-							if answer is "Stop" then error message_ number errorNumber
-							if answer is "Skip" then
-								set outcome to " (skipped: the library needs an upgrade)"
-								exit repeat
-							end if
-							open targetLibrary
-							set answer to my askToRetry(targetName)
-							if answer is "Skip" then
+							if errorNumber is not 5 then error message_ number errorNumber
+							if my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, message_) is "skip" then
 								set outcome to " (skipped: the library needs an upgrade)"
 								exit repeat
 							end if
@@ -111,15 +93,23 @@ on run argv
 	return report
 end run
 
-on askAboutUpgrade(message_)
+-- What to do with a target library that needs a Photos upgrade: returns "skip", or "proceed" once the library has been
+-- upgraded (or cannot be checked); a "stop" ends the run with an error.
+on resolveUpgrade(targetName, targetLoc, sourceVersion, onUpgrade, message_)
+	if onUpgrade is "stop" then error message_
+	if onUpgrade is "skip" then return "skip"
 	set answer to button returned of (display dialog message_ buttons {"Skip", "Stop", "Open in Photos"} default button "Skip" with icon caution)
-	return answer
-end askAboutUpgrade
-
-on askToRetry(libraryName)
-	set answer to button returned of (display dialog "Upgrade " & libraryName & " in Photos, quit Photos, then click Retry." buttons {"Skip", "Retry"} default button "Retry")
-	return answer
-end askToRetry
+	if answer is "Stop" then error message_
+	if answer is "Skip" then return "skip"
+	do shell script "open -a Photos " & quoted form of (POSIX path of (targetLoc as alias))
+	repeat
+		set answer to button returned of (display dialog "Photos is opening " & targetName & ". Upgrade it there, quit Photos, then click Retry." buttons {"Skip", "Retry"} default button "Retry")
+		if answer is "Skip" then return "skip"
+		set upgradedVersion to my modelVersion(targetLoc)
+		if sourceVersion is missing value or upgradedVersion is missing value or upgradedVersion ≥ sourceVersion then return "proceed"
+		display dialog targetName & " still needs the upgrade." buttons {"OK"} default button "OK" with icon caution
+	end repeat
+end resolveUpgrade
 
 -- The Photos database version (PLModelVersion) of a library, or missing value when it cannot be read
 on modelVersion(loc)
