@@ -9,6 +9,7 @@
 -- Photos already in the target library are skipped, so reruns add only what is new. Nothing is removed from the source.
 
 property photoExtensions : {".jpg", ".jpeg", ".png", ".heic", ".gif", ".tif", ".tiff", ".dng", ".cr2", ".nef", ".arw"}
+property timeoutSeconds : 86400 -- how long to wait for one PowerPhotos command: a day
 property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"}
 
 on run argv
@@ -30,65 +31,68 @@ on run argv
 
 	set report to ""
 	tell application "PowerPhotos"
-		try
-			set sourceLibrary to library sourceName
-		on error
-			error "No library named " & sourceName & " in PowerPhotos. Libraries: " & my joined(name of every library)
-		end try
-		-- Before any slow work: a target whose Photos database is older than the source's needs an upgrade by Photos
-		-- (the copy would fail with error 5). A library that cannot be read is left to that error.
-		set sourceVersion to my modelVersion(location of sourceLibrary)
-		set oldYears to {}
-		if sourceVersion is not missing value then
-			repeat with y from firstYear to lastYear
-				try
-					set targetVersion to my modelVersion(location of library (mediaKind & "-" & y))
-					if targetVersion is not missing value and targetVersion < sourceVersion then set end of oldYears to y
-				end try
-			end repeat
-		end if
-		if (count of oldYears) > 0 and onUpgrade is "stop" then error "These target libraries are in an older format than " & sourceName & " and need a Photos upgrade: " & my joined(oldYears)
-
-		repeat with y from firstYear to lastYear
-			set targetName to mediaKind & "-" & y
+		-- Copying takes a long time; without this each PowerPhotos command is abandoned after two minutes (error -1712)
+		with timeout of timeoutSeconds seconds
 			try
-				set targetLibrary to library targetName
+				set sourceLibrary to library sourceName
 			on error
-				error "Create an empty library named " & targetName & " in PowerPhotos first (the script cannot create one). Libraries: " & my joined(name of every library)
+				error "No library named " & sourceName & " in PowerPhotos. Libraries: " & my joined(name of every library)
 			end try
-			set skipYear to false
-			if oldYears contains y then
-				set decision to my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, targetName & " is in an older format than " & sourceName & ". Photos must upgrade it before photos can be copied into it.")
-				if decision is "skip" then set skipYear to true
-			end if
-			if skipYear then
-				set report to report & targetName & ": skipped (the library needs an upgrade)" & linefeed
-			else
-				set startDate to my dateFor(y, 1, 1)
-				set endDate to my dateFor(y + 1, 1, 1)
-				set wanted to {}
-				repeat with ext in mediaExtensions
-					set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
+			-- Before any slow work: a target whose Photos database is older than the source's needs an upgrade by Photos
+			-- (the copy would fail with error 5). A library that cannot be read is left to that error.
+			set sourceVersion to my modelVersion(location of sourceLibrary)
+			set oldYears to {}
+			if sourceVersion is not missing value then
+				repeat with y from firstYear to lastYear
+					try
+						set targetVersion to my modelVersion(location of library (mediaKind & "-" & y))
+						if targetVersion is not missing value and targetVersion < sourceVersion then set end of oldYears to y
+					end try
 				end repeat
-				set outcome to ""
-				if (count of wanted) > 0 then
-					repeat
-						try
-							duplicate wanted to targetLibrary with skip duplicates
-							exit repeat
-						on error message_ number errorNumber
-							-- 5 is "Library needs upgrade"; anything else is a real failure
-							if errorNumber is not 5 then error message_ number errorNumber
-							if my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, message_) is "skip" then
-								set outcome to " (skipped: the library needs an upgrade)"
-								exit repeat
-							end if
-						end try
-					end repeat
-				end if
-				set report to report & targetName & ": " & (count of wanted) & " found" & outcome & linefeed
 			end if
-		end repeat
+			if (count of oldYears) > 0 and onUpgrade is "stop" then error "These target libraries are in an older format than " & sourceName & " and need a Photos upgrade: " & my joined(oldYears)
+
+			repeat with y from firstYear to lastYear
+				set targetName to mediaKind & "-" & y
+				try
+					set targetLibrary to library targetName
+				on error
+					error "Create an empty library named " & targetName & " in PowerPhotos first (the script cannot create one). Libraries: " & my joined(name of every library)
+				end try
+				set skipYear to false
+				if oldYears contains y then
+					set decision to my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, targetName & " is in an older format than " & sourceName & ". Photos must upgrade it before photos can be copied into it.")
+					if decision is "skip" then set skipYear to true
+				end if
+				if skipYear then
+					set report to report & targetName & ": skipped (the library needs an upgrade)" & linefeed
+				else
+					set startDate to my dateFor(y, 1, 1)
+					set endDate to my dateFor(y + 1, 1, 1)
+					set wanted to {}
+					repeat with ext in mediaExtensions
+						set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
+					end repeat
+					set outcome to ""
+					if (count of wanted) > 0 then
+						repeat
+							try
+								duplicate wanted to targetLibrary with skip duplicates
+								exit repeat
+							on error message_ number errorNumber
+								-- 5 is "Library needs upgrade"; anything else is a real failure
+								if errorNumber is not 5 then error message_ number errorNumber
+								if my resolveUpgrade(targetName, location of targetLibrary, sourceVersion, onUpgrade, message_) is "skip" then
+									set outcome to " (skipped: the library needs an upgrade)"
+									exit repeat
+								end if
+							end try
+						end repeat
+					end if
+					set report to report & targetName & ": " & (count of wanted) & " found" & outcome & linefeed
+				end if
+			end repeat
+		end timeout
 	end tell
 	return report
 end run
