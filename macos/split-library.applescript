@@ -1,5 +1,9 @@
 -- Copy one media type (photos or videos) of the System Photo Library into one library per year, using PowerPhotos.
--- Usage: osascript macos/split-library.applescript <photos|videos> <first year> <last year> <name of the library to split>
+-- Usage: osascript macos/split-library.applescript <photos|videos> <first year> <last year> <name of the library to split> [skip|ask|stop]
+-- The last argument says what to do when a target library needs upgrading by Photos before it accepts photos:
+--   skip (default)  leave that year out, say so in the report and go on (for unattended runs)
+--   ask             show PowerPhotos' message in a dialog: Skip, Stop, or open the library in Photos to upgrade it, then Retry
+--   stop            end the run with the error
 -- Each year goes into a library named "<photos|videos>-<year>" that already exists in PowerPhotos.
 -- Photos already in the target library are skipped, so reruns add only what is new. Nothing is removed from the source.
 
@@ -7,11 +11,14 @@ property photoExtensions : {".jpg", ".jpeg", ".png", ".heic", ".gif", ".tif", ".
 property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"}
 
 on run argv
-	if (count of argv) is not 4 then error "Usage: osascript split-library.applescript <photos|videos> <first year> <last year> <library name>"
+	if (count of argv) < 4 or (count of argv) > 5 then error "Usage: osascript split-library.applescript <photos|videos> <first year> <last year> <library name> [skip|ask|stop]"
 	set mediaKind to item 1 of argv
 	set firstYear to (item 2 of argv) as integer
 	set lastYear to (item 3 of argv) as integer
 	set sourceName to item 4 of argv
+	set onUpgrade to "skip"
+	if (count of argv) is 5 then set onUpgrade to item 5 of argv
+	if onUpgrade is not in {"skip", "ask", "stop"} then error "The last argument must be skip, ask or stop, not " & onUpgrade
 	if mediaKind is "photos" then
 		set mediaExtensions to photoExtensions
 	else if mediaKind is "videos" then
@@ -40,12 +47,46 @@ on run argv
 			repeat with ext in mediaExtensions
 				set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
 			end repeat
-			if (count of wanted) > 0 then duplicate wanted to targetLibrary with skip duplicates
-			set report to report & targetName & ": " & (count of wanted) & " found" & linefeed
+			set outcome to ""
+			if (count of wanted) > 0 then
+				repeat
+					try
+						duplicate wanted to targetLibrary with skip duplicates
+						exit repeat
+					on error message_ number errorNumber
+						-- 5 is "Library needs upgrade"; anything else is a real failure
+						if errorNumber is not 5 or onUpgrade is "stop" then error message_ number errorNumber
+						set answer to "Skip"
+						if onUpgrade is "ask" then set answer to my askAboutUpgrade(message_)
+						if answer is "Stop" then error message_ number errorNumber
+						if answer is "Skip" then
+							set outcome to " (skipped: the library needs an upgrade)"
+							exit repeat
+						end if
+						open targetLibrary
+						set answer to my askToRetry(targetName)
+						if answer is "Skip" then
+							set outcome to " (skipped: the library needs an upgrade)"
+							exit repeat
+						end if
+					end try
+				end repeat
+			end if
+			set report to report & targetName & ": " & (count of wanted) & " found" & outcome & linefeed
 		end repeat
 	end tell
 	return report
 end run
+
+on askAboutUpgrade(message_)
+	set answer to button returned of (display dialog message_ buttons {"Skip", "Stop", "Open in Photos"} default button "Skip" with icon caution)
+	return answer
+end askAboutUpgrade
+
+on askToRetry(libraryName)
+	set answer to button returned of (display dialog "Upgrade " & libraryName & " in Photos, quit Photos, then click Retry." buttons {"Skip", "Retry"} default button "Retry")
+	return answer
+end askToRetry
 
 on joined(names)
 	set AppleScript's text item delimiters to ", "
