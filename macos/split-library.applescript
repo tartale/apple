@@ -1,6 +1,7 @@
 -- Copy one media type (photos or videos) of the System Photo Library into one library per year, using PowerPhotos.
 -- Usage: osascript macos/split-library.applescript <photos|videos> <first year> <last year> <name of the library to split> [skip|ask|stop]
--- The last argument says what to do when a target library needs upgrading by Photos before it accepts photos:
+-- The last argument says what to do when a target library needs upgrading by Photos before it accepts photos. That is checked
+-- before any copying, by comparing each target's Photos database version with the source's, and again if a copy is refused:
 --   skip (default)  leave that year out, say so in the report and go on (for unattended runs)
 --   ask             show PowerPhotos' message in a dialog: Skip, Stop, or open the library in Photos to upgrade it, then Retry
 --   stop            end the run with the error
@@ -34,6 +35,20 @@ on run argv
 		on error
 			error "No library named " & sourceName & " in PowerPhotos. Libraries: " & my joined(name of every library)
 		end try
+		-- Before any slow work: a target whose Photos database is older than the source's needs an upgrade by Photos
+		-- (the copy would fail with error 5). A library that cannot be read is left to that error.
+		set sourceVersion to my modelVersion(location of sourceLibrary)
+		set oldYears to {}
+		if sourceVersion is not missing value then
+			repeat with y from firstYear to lastYear
+				try
+					set targetVersion to my modelVersion(location of library (mediaKind & "-" & y))
+					if targetVersion is not missing value and targetVersion < sourceVersion then set end of oldYears to y
+				end try
+			end repeat
+		end if
+		if (count of oldYears) > 0 and onUpgrade is "stop" then error "These target libraries are in an older format than " & sourceName & " and need a Photos upgrade: " & my joined(oldYears)
+
 		repeat with y from firstYear to lastYear
 			set targetName to mediaKind & "-" & y
 			try
@@ -41,38 +56,56 @@ on run argv
 			on error
 				error "Create an empty library named " & targetName & " in PowerPhotos first (the script cannot create one). Libraries: " & my joined(name of every library)
 			end try
-			set startDate to my dateFor(y, 1, 1)
-			set endDate to my dateFor(y + 1, 1, 1)
-			set wanted to {}
-			repeat with ext in mediaExtensions
-				set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
-			end repeat
-			set outcome to ""
-			if (count of wanted) > 0 then
-				repeat
-					try
-						duplicate wanted to targetLibrary with skip duplicates
-						exit repeat
-					on error message_ number errorNumber
-						-- 5 is "Library needs upgrade"; anything else is a real failure
-						if errorNumber is not 5 or onUpgrade is "stop" then error message_ number errorNumber
-						set answer to "Skip"
-						if onUpgrade is "ask" then set answer to my askAboutUpgrade(message_)
-						if answer is "Stop" then error message_ number errorNumber
-						if answer is "Skip" then
-							set outcome to " (skipped: the library needs an upgrade)"
-							exit repeat
-						end if
+			set skipYear to false
+			if oldYears contains y then
+				if onUpgrade is "skip" then
+					set skipYear to true
+				else
+					set answer to my askAboutUpgrade(targetName & " is in an older format than " & sourceName & ". Photos must upgrade it before photos can be copied into it.")
+					if answer is "Stop" then error targetName & " needs a Photos upgrade."
+					if answer is "Skip" then set skipYear to true
+					if answer is "Open in Photos" then
 						open targetLibrary
-						set answer to my askToRetry(targetName)
-						if answer is "Skip" then
-							set outcome to " (skipped: the library needs an upgrade)"
-							exit repeat
-						end if
-					end try
-				end repeat
+						if my askToRetry(targetName) is "Skip" then set skipYear to true
+					end if
+				end if
 			end if
-			set report to report & targetName & ": " & (count of wanted) & " found" & outcome & linefeed
+			if skipYear then
+				set report to report & targetName & ": skipped (the library needs an upgrade)" & linefeed
+			else
+				set startDate to my dateFor(y, 1, 1)
+				set endDate to my dateFor(y + 1, 1, 1)
+				set wanted to {}
+				repeat with ext in mediaExtensions
+					set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
+				end repeat
+				set outcome to ""
+				if (count of wanted) > 0 then
+					repeat
+						try
+							duplicate wanted to targetLibrary with skip duplicates
+							exit repeat
+						on error message_ number errorNumber
+							-- 5 is "Library needs upgrade"; anything else is a real failure
+							if errorNumber is not 5 or onUpgrade is "stop" then error message_ number errorNumber
+							set answer to "Skip"
+							if onUpgrade is "ask" then set answer to my askAboutUpgrade(message_)
+							if answer is "Stop" then error message_ number errorNumber
+							if answer is "Skip" then
+								set outcome to " (skipped: the library needs an upgrade)"
+								exit repeat
+							end if
+							open targetLibrary
+							set answer to my askToRetry(targetName)
+							if answer is "Skip" then
+								set outcome to " (skipped: the library needs an upgrade)"
+								exit repeat
+							end if
+						end try
+					end repeat
+				end if
+				set report to report & targetName & ": " & (count of wanted) & " found" & outcome & linefeed
+			end if
 		end repeat
 	end tell
 	return report
@@ -87,6 +120,18 @@ on askToRetry(libraryName)
 	set answer to button returned of (display dialog "Upgrade " & libraryName & " in Photos, quit Photos, then click Retry." buttons {"Skip", "Retry"} default button "Retry")
 	return answer
 end askToRetry
+
+-- The Photos database version (PLModelVersion) of a library, or missing value when it cannot be read
+on modelVersion(loc)
+	try
+		set libPath to POSIX path of (loc as alias)
+		if libPath does not end with "/" then set libPath to libPath & "/"
+		set versionText to do shell script "sqlite3 -readonly " & quoted form of (libPath & "database/Photos.sqlite") & " 'select hex(Z_PLIST) from Z_METADATA' | xxd -r -p | plutil -extract PLModelVersion raw -o - -"
+		return versionText as integer
+	on error
+		return missing value
+	end try
+end modelVersion
 
 on joined(names)
 	set AppleScript's text item delimiters to ", "
