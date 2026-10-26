@@ -22,13 +22,17 @@ on run argv
 
 	set report to ""
 	tell application "PowerPhotos"
-		set sourceLibrary to library sourceName
+		try
+			set sourceLibrary to library sourceName
+		on error
+			error "No library named " & sourceName & " in PowerPhotos. Libraries: " & my joined(name of every library)
+		end try
 		repeat with y from firstYear to lastYear
 			set targetName to mediaKind & "-" & y
 			try
 				set targetLibrary to library targetName
 			on error
-				error "Create an empty library named " & targetName & " in PowerPhotos first (the script cannot create one)."
+				error "Create an empty library named " & targetName & " in PowerPhotos first (the script cannot create one). Libraries: " & my joined(name of every library)
 			end try
 			set startDate to my dateFor(y, 1, 1)
 			set endDate to my dateFor(y + 1, 1, 1)
@@ -42,6 +46,13 @@ on run argv
 	end tell
 	return report
 end run
+
+on joined(names)
+	set AppleScript's text item delimiters to ", "
+	set joinedNames to names as text
+	set AppleScript's text item delimiters to ""
+	return joinedNames
+end joined
 
 on dateFor(y, m, d)
 	set theDate to current date
