@@ -38,7 +38,7 @@ on run argv
 			set endDate to my dateFor(y + 1, 1, 1)
 			set wanted to {}
 			repeat with ext in mediaExtensions
-				set wanted to wanted & (photos of sourceLibrary whose date ≥ startDate and date < endDate and filename ends with (contents of ext))
+				set wanted to wanted & (photos of sourceLibrary whose (its date ≥ startDate) and (its date < endDate) and (its filename ends with (contents of ext)))
 			end repeat
 			if (count of wanted) > 0 then duplicate wanted to targetLibrary with skip duplicates
 			set report to report & targetName & ": " & (count of wanted) & " found" & linefeed
