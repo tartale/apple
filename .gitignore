@@ -1,5 +1,4 @@
 .env
 .tmp/
 .claude/settings.local.json
-.envrc
-.envrc-cs
+.envrc*
