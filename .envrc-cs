@@ -1,0 +1,23 @@
+# claude-sandbox settings, loaded by .envrc (source_env .envrc-cs). init.sh keeps the
+# entries in alphabetical order and adds any that are missing; your values are kept.
+
+# Docker config directory whose config.json (registry logins) is mounted read-only into the container.
+# export CS_DOCKER_CONFIG=/var/services/homes/admin/.docker-sandbox
+
+# Extra docker run flags, e.g. "-v /host/path:/container/path".
+export CS_DOCKER_FLAGS="-v /volume1/icloud/photos:/photos:rw -v /volume1/homes/Tom/Pictures:/pictures:ro"
+
+# Env file passed into the container.
+export CS_ENV_FILE=.env
+
+# Image repository, including registry host and namespace.
+export CS_IMAGE_REPO=ghcr.io/tartale/claude-sandbox
+
+# Tag of this project's sandbox image: build.sh pushes it, run.sh and start.sh use it.
+export CS_IMAGE_TAG="icloud-tools-x64"
+
+# Container memory limit, e.g. 8g.
+# export CS_MEMORY=
+
+# Maximum number of processes in the container.
+# export CS_PIDS_LIMIT=
