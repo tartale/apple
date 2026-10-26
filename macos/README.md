@@ -1,25 +1,31 @@
 # PowerPhotos Shortcuts (macOS)
 
-[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by Shortcuts that use PowerPhotos' own Shortcuts actions; `macos/schedule.sh` runs one on a schedule. A Shortcut is a binary file that cannot be reviewed in git, so the recipes below are the source of truth. Build them in the Shortcuts app and name them as shown.
+[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by Shortcuts that use PowerPhotos' own Shortcuts actions; `macos/schedule.sh` runs one on a schedule. The logic is in an AppleScript file in git; a Shortcut is a thin wrapper around it, built in the Shortcuts app.
 
-The actions and filters named here come from the [PowerPhotos Shortcuts docs](https://www.fatcatsoftware.com/powerphotos/VersionedDocs/v9/automation_shortcuts.html). Items marked *check* were not confirmed there; open the action in Shortcuts to see what it offers.
+The actions and filters named here come from the [PowerPhotos Shortcuts docs](https://www.fatcatsoftware.com/powerphotos/VersionedDocs/v9/automation_shortcuts.html). Items marked *check* were not confirmed there.
 
 ## Split Photo Library
 
-Copies one year of the System Photo Library into its own library. Repeat with each year in a list.
+`macos/split-library.applescript` copies one media type of a library into one library per year (`photos-2019`, `videos-2019`, ...). It uses PowerPhotos' `duplicate` command with `skip duplicates`, so reruns add only what is new, and nothing is removed from the source. A photo is a video by its file extension (PowerPhotos' `photo` class has no media-type property).
 
-1. **List** of years (for example 2019, 2020 ...), then **Repeat with Each**.
-2. **Create New Library**, in the folder that holds your split libraries, named `photos-<year>`. Photos for a year and videos for a year go in separate libraries (`photos-<year>`, `videos-<year>`) the way the archive is organized.
-3. **Get System Library**.
-4. **Find Photos** in the system library where **Date** is between 1 January and 31 December of the year. To split by media type, add a media-type filter (*check*; if there is none, make a Photos smart album with a Media Type rule and use **Get Photos** on that album).
-5. **Copy Photos** to the new library. Choose **copy**, not move, so the system library is left alone.
-6. **Show Notification** when the loop ends.
+```
+osascript macos/split-library.applescript photos 2018 2020 "Photos Library"
+```
+
+The arguments are `photos` or `videos`, the first and last year, and the name of the source library as shown in PowerPhotos. Create the empty target libraries (`photos-2018`, ...) in PowerPhotos first; the dictionary has no way to create one, so the script stops with a message naming the one it needs.
+
+The Shortcut is one action:
+
+1. **Run Shell Script**: `osascript /path/to/icloud-tools/macos/split-library.applescript photos 2018 2020 "Photos Library"`
+2. **Show Notification** with the script's output.
+
+Add a second **Run Shell Script** with `videos` in place of `photos`, or make two Shortcuts. The first run asks you to allow Shortcuts to control PowerPhotos.
 
 Before the first run, in PowerPhotos settings keep both edit versions, keep Live Photo videos and do not reduce bursts, so edits and Live Photos survive the copy. Hidden photos are copied only from the Hidden album.
 
 ## Find duplicates
 
-PowerPhotos' duplicate search has no Shortcuts or AppleScript action, so it cannot be started from a script. **Find Duplicates** is a reminder: **Show Notification** ("Run Find Duplicates in PowerPhotos") then **Open Library in PowerPhotos** on the library to search. The search itself is then run by hand.
+The AppleScript `duplicate` and `merge` commands skip photos already in the destination (`skip duplicates`), which handles duplicates between libraries when copying. PowerPhotos' duplicate search has no Shortcuts or AppleScript action, so it cannot be started from a script. **Find Duplicates** is a reminder: **Show Notification** ("Run Find Duplicates in PowerPhotos") then **Open Library in PowerPhotos** on the library to search. The search itself is then run by hand.
 
 ## Schedule
 
