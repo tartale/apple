@@ -8,23 +8,23 @@ property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mp
 
 on run argv
 	if (count of argv) is not 4 then error "Usage: osascript split-library.applescript <photos|videos> <first year> <last year> <library name>"
-	set kind to item 1 of argv
+	set mediaKind to item 1 of argv
 	set firstYear to (item 2 of argv) as integer
 	set lastYear to (item 3 of argv) as integer
 	set sourceName to item 4 of argv
-	if kind is "photos" then
-		set extensions to photoExtensions
-	else if kind is "videos" then
-		set extensions to videoExtensions
+	if mediaKind is "photos" then
+		set mediaExtensions to photoExtensions
+	else if mediaKind is "videos" then
+		set mediaExtensions to videoExtensions
 	else
-		error "The first argument must be photos or videos, not " & kind
+		error "The first argument must be photos or videos, not " & mediaKind
 	end if
 
 	set report to ""
 	tell application "PowerPhotos"
 		set sourceLibrary to library sourceName
 		repeat with y from firstYear to lastYear
-			set targetName to kind & "-" & y
+			set targetName to mediaKind & "-" & y
 			try
 				set targetLibrary to library targetName
 			on error
@@ -33,7 +33,7 @@ on run argv
 			set startDate to my dateFor(y, 1, 1)
 			set endDate to my dateFor(y + 1, 1, 1)
 			set wanted to {}
-			repeat with ext in extensions
+			repeat with ext in mediaExtensions
 				set wanted to wanted & (photos of sourceLibrary whose date ≥ startDate and date < endDate and filename ends with (contents of ext))
 			end repeat
 			if (count of wanted) > 0 then duplicate wanted to targetLibrary with skip duplicates
