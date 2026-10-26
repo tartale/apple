@@ -13,6 +13,18 @@ property timeoutSeconds : 86400 -- how long to wait for one PowerPhotos command:
 property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"}
 
 on run argv
+	my takeLock()
+	try
+		set result_ to my splitLibrary(argv)
+	on error message_ number errorNumber
+		my releaseLock()
+		error message_ number errorNumber
+	end try
+	my releaseLock()
+	return result_
+end run
+
+on splitLibrary(argv)
 	if (count of argv) < 4 or (count of argv) > 5 then error "Usage: osascript split-library.applescript <photos|videos> <first year> <last year> <library name> [skip|ask|stop]"
 	set mediaKind to item 1 of argv
 	set firstYear to (item 2 of argv) as integer
@@ -95,7 +107,7 @@ on run argv
 		end timeout
 	end tell
 	return report
-end run
+end splitLibrary
 
 -- What to do with a target library that needs a Photos upgrade: returns "skip", or "proceed" once the library has been
 -- upgraded (or cannot be checked); a "stop" ends the run with an error.
@@ -126,6 +138,33 @@ on modelVersion(loc)
 		return missing value
 	end try
 end modelVersion
+
+-- One run at a time: a lock directory holding the running script's process id. A lock left by a run that died is replaced.
+on lockPath()
+	return (do shell script "echo ${TMPDIR:-/tmp}") & "/split-library.lock"
+end lockPath
+
+on takeLock()
+	set lock to quoted form of my lockPath()
+	try
+		do shell script "mkdir " & lock & " && echo $PPID > " & lock & "/pid"
+	on error
+		try
+			set holder to do shell script "cat " & lock & "/pid"
+			do shell script "kill -0 " & holder
+			error "Another split-library run is already in progress (process " & holder & "). Wait for it to finish."
+		on error message_ number errorNumber
+			if message_ starts with "Another split-library run" then error message_
+		end try
+		do shell script "rm -rf " & lock & " && mkdir " & lock & " && echo $PPID > " & lock & "/pid"
+	end try
+end takeLock
+
+on releaseLock()
+	try
+		do shell script "rm -rf " & quoted form of my lockPath()
+	end try
+end releaseLock
 
 on joined(names)
 	set AppleScript's text item delimiters to ", "
