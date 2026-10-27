@@ -9,10 +9,10 @@ The actions and filters named here come from the [PowerPhotos Shortcuts docs](ht
 `macos/split-library.applescript` copies one media type of a library into one library per year (`photos-2019`, `videos-2019`, ...). It uses PowerPhotos' `duplicate` command with `skip duplicates`, so reruns add only what is new, and nothing is removed from the source. A photo is a video by its file extension (PowerPhotos' `photo` class has no media-type property).
 
 ```
-osascript macos/split-library.applescript photos 2018 2020 "Photos Library"
+osascript macos/split-library.applescript photos 2018 2020 "Photos Library" [skip|ask|stop]
 ```
 
-The arguments are `photos` or `videos`, the first and last year, and the name of the source library as shown in PowerPhotos. Create the empty target libraries (`photos-2018`, ...) in PowerPhotos first; the dictionary has no way to create one, so the script stops with a message naming the one it needs.
+The arguments are `photos` or `videos`, the first and last year, the name of the source library as shown in PowerPhotos, and optionally what to do when a target library is in an older format and Photos must upgrade it before it takes photos: `skip` (default, for unattended runs) leaves that year out and says so in the report, `ask` shows PowerPhotos' message in a dialog (Skip, Stop, or open the library in Photos to upgrade it and Retry), `stop` ends the run. The need for an upgrade is found before any copying by comparing each target's Photos database version (`PLModelVersion`, read with `sqlite3` and `plutil`) with the source's, and again if PowerPhotos refuses a copy. Only one run goes at a time: a second run stops at once with a message (a lock under `$TMPDIR` holds the running process id, and a lock left by a run that died is replaced). It cannot see a copy started from the PowerPhotos window. Create the empty target libraries (`photos-2018`, ...) in PowerPhotos first; the dictionary has no way to create one, so the script stops with a message naming the one it needs.
 
 The Shortcut is one action:
 
