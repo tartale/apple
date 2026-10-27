@@ -1,4 +1,4 @@
-# icloud-tools
+# apple
 
 Scripts that wrap [rclone](https://rclone.org) to back up iCloud Photos to a local disk (developed on a Synology NAS).
 
