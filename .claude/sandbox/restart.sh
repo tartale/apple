@@ -5,7 +5,7 @@
 set -euo pipefail
 
 THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAME="${CS_CONTAINER_NAME:-cs-icloud-tools}"
+NAME="${CS_CONTAINER_NAME:-cs-apple}"
 
 if [ "$#" -eq 0 ]; then
     # start.sh adds --name itself, so the recovered one is dropped.

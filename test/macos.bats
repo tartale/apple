@@ -18,7 +18,7 @@ schedule() { "$REPO/macos/schedule.sh" "$@"; }
 @test "install writes a plist that runs the shortcut at the chosen time and loads it" {
   SCHEDULE_HOUR=04 SCHEDULE_MINUTE=05 run schedule install
   [ "$status" -eq 0 ]
-  plist=$LAUNCH_AGENTS_DIR/local.icloud-tools.shortcut.Split-Photo-Library.plist
+  plist=$LAUNCH_AGENTS_DIR/local.apple.shortcut.Split-Photo-Library.plist
   grep -q '<string>Split Photo Library</string>' "$plist"
   grep -q '<key>Hour</key><integer>4</integer>' "$plist"
   grep -q '<key>Minute</key><integer>5</integer>' "$plist"
@@ -30,7 +30,7 @@ schedule() { "$REPO/macos/schedule.sh" "$@"; }
   schedule install
   run schedule uninstall
   [ "$status" -eq 0 ]
-  [ ! -e "$LAUNCH_AGENTS_DIR/local.icloud-tools.shortcut.Split-Photo-Library.plist" ]
+  [ ! -e "$LAUNCH_AGENTS_DIR/local.apple.shortcut.Split-Photo-Library.plist" ]
   grep -q 'launchctl bootout' "$BATS_TEST_TMPDIR/calls"
 }
 

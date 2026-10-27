@@ -4,8 +4,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-export CS_IMAGE_TAG="${CS_IMAGE_TAG:-icloud-tools}"
-NAME="${CS_CONTAINER_NAME:-cs-icloud-tools}"
+export CS_IMAGE_TAG="${CS_IMAGE_TAG:-apple}"
+NAME="${CS_CONTAINER_NAME:-cs-apple}"
 export CS_CONTAINER_NAME="$NAME"
 
 # Each start creates a fresh container, so changed variables and flags always
@@ -16,7 +16,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" = t
 else
     docker rm "$NAME" >/dev/null 2>&1 || true   # a stopped one from an earlier start
     CS_DOCKER_FLAGS="-d -t --restart=unless-stopped ${CS_DOCKER_FLAGS:-}" \
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tartale/claude-sandbox/refs/heads/main/claude-sandbox.sh)" claude-sandbox --name "icloud-tools" "$@" >/dev/null
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tartale/claude-sandbox/refs/heads/main/claude-sandbox.sh)" claude-sandbox --name "apple" "$@" >/dev/null
     echo "started $NAME"
 fi
 printf '\nAttach (detach with ctrl-p ctrl-q):\n\ndocker attach %s\n\nStop:\n\ndocker stop %s\n' "$NAME" "$NAME"

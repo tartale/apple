@@ -16,7 +16,7 @@ The arguments are `photos` or `videos`, the first and last year, the name of the
 
 The Shortcut is one action:
 
-1. **Run Shell Script**: `osascript /path/to/icloud-tools/macos/split-library.applescript photos 2018 2020 "Photos Library"`
+1. **Run Shell Script**: `osascript /path/to/apple/macos/split-library.applescript photos 2018 2020 "Photos Library"`
 2. **Show Notification** with the script's output.
 
 Add a second **Run Shell Script** with `videos` in place of `photos`, or make two Shortcuts. The first run asks you to allow Shortcuts to control PowerPhotos.
@@ -42,4 +42,4 @@ SHORTCUT_NAME="Split Photo Library" macos/schedule.sh uninstall
 | `SCHEDULE_HOUR` | no | `3` | Hour of day, 0-23 |
 | `SCHEDULE_MINUTE` | no | `0` | Minute, 0-59 |
 
-Output goes to `/tmp/local.icloud-tools.shortcut.<name>.log`. The first scheduled run may ask you to allow PowerPhotos and Photos access.
+Output goes to `/tmp/local.apple.shortcut.<name>.log`. The first scheduled run may ask you to allow PowerPhotos and Photos access.

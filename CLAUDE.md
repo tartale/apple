@@ -1,4 +1,4 @@
-# icloud-tools
+# apple
 
 Shell scripts (in `photos/`) that wrap rclone to back up iCloud Photos on a Synology NAS. README.md has the layout, identity rule and configuration; this file holds what the code doesn't say.
 

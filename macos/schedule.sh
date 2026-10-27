@@ -15,7 +15,7 @@ main() {
     echo "SCHEDULE_HOUR must be 0-23 and SCHEDULE_MINUTE 0-59" >&2; return 2
   fi
 
-  label="local.icloud-tools.shortcut.${SHORTCUT_NAME// /-}"
+  label="local.apple.shortcut.${SHORTCUT_NAME// /-}"
   plist="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$label.plist"
 
   if [ "$action" = uninstall ]; then
