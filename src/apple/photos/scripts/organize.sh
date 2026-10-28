@@ -4,7 +4,7 @@
 # The whole script lives in main so bash has parsed all of it before running any of it;
 # editing the file mid-run then cannot corrupt that run.
 main() {
-  # shellcheck source=photos/lib.sh
+  # shellcheck source=src/apple/photos/scripts/lib.sh
   source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
   # Configuration comes from the environment only (see README)
   require_env

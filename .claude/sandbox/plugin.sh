@@ -20,10 +20,14 @@ set -euo pipefail
 # apt-get update && apt-get install -y --no-install-recommends <packages>
 
 
-# Test runner for photos/test.sh (bats-core 1.x)
+# Test runner for scripts/test.sh (bats-core 1.x)
 apt-get update
 apt-get install -y --no-install-recommends bats
 
 
 # Reads photo and video metadata (EXIF dates, camera, dimensions) for comparing libraries
 apt-get install -y --no-install-recommends libimage-exiftool-perl
+
+# The apple CLI and its tests (typer and rich for the CLI, pytest for tests/), pinned by major
+apt-get install -y --no-install-recommends python3-pip
+python3 -m pip install --break-system-packages 'typer>=0.12,<1' 'rich>=13,<15' 'pytest>=8,<9'

@@ -25,8 +25,8 @@ cloud_file() {
 export JUN_2020=1592222400   # 2020-06-15 12:00 UTC
 export JUL_2020=1594814400   # 2020-07-15 12:00 UTC
 
-backup() { "$REPO/photos/backup.sh" "$@"; }
-organize() { "$REPO/photos/organize.sh" "$@"; }
+backup() { "$REPO/src/apple/photos/scripts/backup.sh" "$@"; }
+organize() { "$REPO/src/apple/photos/scripts/organize.sh" "$@"; }
 
 # The log file a script writes today: <ICLOUD_ROOT>/<script>-YYYY-MM-DD.log
 logfile() { echo "$ICLOUD_ROOT/$1-$(date +%F).log"; }
