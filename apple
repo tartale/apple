@@ -1,39 +1,64 @@
 #!/bin/bash
 # The apple command, run from this checkout: ./apple --help
 # Nothing is installed globally. The first run (and any run after pyproject.toml changes) sets up a virtual environment in
-# .venv here, then every run starts the CLI from it.
-# Environment: APPLE_VENV (default .venv next to this file).
+# .venv-<os>-<arch>-<hash> here, then every run starts the CLI from it. The name identifies the environment (see
+# scripts/venvpath.py), so a checkout shared between a host and a container, or two machines, keeps one venv per side.
+# Environment: APPLE_VENV overrides the venv directory.
 # The whole script lives in main so bash has parsed all of it before running any of it.
 main() {
-  local here venv stamp python candidate
+  local here venv stamp python candidate legacy
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  venv=${APPLE_VENV:-$here/.venv}
+  here=$(printf '%s' "$here" | tr -s /)   # squeeze a doubled-slash root, which would bake into venv paths
+
+  pyok() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; }
+
+  # The newest python3 that is 3.9 or later
+  python=
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    if command -v "$candidate" >/dev/null && pyok "$candidate"; then python=$candidate; break; fi
+  done
+  if [ -z "$python" ]; then
+    echo "Python 3.9 or later is required. Install it with:" >&2
+    if command -v brew >/dev/null; then echo "  brew install python" >&2
+    elif command -v apt-get >/dev/null; then echo "  sudo apt-get install -y python3 python3-venv" >&2
+    elif command -v dnf >/dev/null; then echo "  sudo dnf install -y python3" >&2
+    elif command -v apk >/dev/null; then echo "  sudo apk add python3" >&2
+    else echo "  (install Python 3.9+ from python.org, or on a Synology the Python 3 package in Package Center)" >&2
+    fi
+    return 2
+  fi
+
+  venv=${APPLE_VENV:-$("$python" "$here/scripts/venvpath.py" "$here")}
   stamp=$venv/.installed
 
-  if [ ! -f "$stamp" ] || [ "$here/pyproject.toml" -nt "$stamp" ]; then
-    # The newest python3 that is 3.9 or later
-    python=
-    for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
-      if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
-        python=$candidate; break
-      fi
-    done
-    if [ -z "$python" ]; then
-      echo "Python 3.9 or later is required. Install it with:" >&2
-      if command -v brew >/dev/null; then echo "  brew install python" >&2
-      elif command -v apt-get >/dev/null; then echo "  sudo apt-get install -y python3 python3-venv" >&2
-      elif command -v dnf >/dev/null; then echo "  sudo dnf install -y python3" >&2
-      elif command -v apk >/dev/null; then echo "  sudo apk add python3" >&2
-      else echo "  (install Python 3.9+ from python.org, or on a Synology the Python 3 package in Package Center)" >&2
-      fi
-      return 2
+  if [ ! -x "$venv/bin/python" ] || ! pyok "$venv/bin/python"; then
+    # Clear first, never build over the top: `python -m venv` leaves existing bin/python symlinks alone, so recreating
+    # over a venv built elsewhere gives a chimera that dies later with "No such file or directory". Only ever remove a
+    # directory that is actually a venv.
+    if [ -e "$venv/pyvenv.cfg" ]; then
+      echo "Replacing the unusable venv at $venv..." >&2
+      rm -rf "$venv"
+    elif [ -e "$venv" ]; then
+      echo "$venv exists but is not a venv (no pyvenv.cfg); move it aside." >&2
+      return 1
+    else
+      echo "Creating the venv at $venv..." >&2
     fi
-    echo "Setting up $venv (first run, or pyproject.toml changed)..." >&2
     if ! "$python" -m venv "$venv" >&2; then
       echo "Could not create a virtual environment. On Debian or Ubuntu install the venv module with:" >&2
       echo "  sudo apt-get install -y python3-venv" >&2
       return 2
     fi
+    rm -f "$stamp"
+  fi
+
+  legacy=$here/.venv
+  if [ -e "$legacy/pyvenv.cfg" ] && [ "$legacy" != "$venv" ]; then
+    echo "note: $legacy is unused; reclaim it with: rm -rf '$legacy'" >&2
+  fi
+
+  if [ ! -f "$stamp" ] || [ "$here/pyproject.toml" -nt "$stamp" ]; then
+    echo "Installing the dependencies into $venv..." >&2
     "$venv/bin/pip" install --quiet --upgrade -e "$here" >&2 || { echo "Installing the dependencies failed (see above); the next run will try again." >&2; return 1; }
     touch "$stamp"
   fi
