@@ -11,6 +11,7 @@ setup() {
   export REAL_PYTHON=$(command -v python3)
   : > "$PROJECT/pyproject.toml"
   export APPLE_VENV="$BATS_TEST_TMPDIR/venv"
+  export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/cache"
   export CALLS="$BATS_TEST_TMPDIR/calls"
   export PATH="$BATS_TEST_TMPDIR/fake:$PATH"   # our fakes win over anything installed
 }
@@ -21,7 +22,7 @@ fake_python() {
 #!/bin/bash
 echo "python3.13 \$*" >> "\$CALLS"
 case \$1 in
-  -c) exit 0;;
+  -c) case \$2 in *ensurepip*) [ -n "\${FAKE_NO_VENV_MODULE:-}" ] && exit 1;; esac; exit 0;;
   *venvpath.py) exec "\$REAL_PYTHON" "\$@";;
   -m) mkdir -p "\$3/bin"
       printf '#!/bin/bash\necho "pip \$*" >> "\$CALLS"\nexit ${1:-0}\n' > "\$3/bin/pip"
@@ -81,12 +82,21 @@ SCRIPT
   echo "$output" | grep -Eq '^  (brew install python|sudo apt-get install -y python3 python3-venv|sudo dnf install -y python3|sudo apk add python3|\(install Python)'
 }
 
-@test "a failed virtual environment suggests installing the venv module" {
-  printf '#!/bin/bash\ncase $1 in -c) exit 0;; *) exit 1;; esac\n' > "$BATS_TEST_TMPDIR/fake/python3.13"
-  chmod +x "$BATS_TEST_TMPDIR/fake/python3.13"
-  run "$PROJECT/apple" doctor
+@test "a missing venv module suggests installing it" {
+  fake_python
+  sed -i 's#^  -m) mkdir#  -m) exit 1; mkdir#' "$BATS_TEST_TMPDIR/fake/python3.13"
+  FAKE_NO_VENV_MODULE=1 run "$PROJECT/apple" doctor
   [ "$status" -eq 2 ]
   [[ $output == *"sudo apt-get install -y python3-venv"* ]]
+}
+
+@test "any other failure to make the venv points at APPLE_VENV, not at the venv module" {
+  fake_python
+  sed -i 's#^  -m) mkdir#  -m) exit 1; mkdir#' "$BATS_TEST_TMPDIR/fake/python3.13"
+  run "$PROJECT/apple" doctor
+  [ "$status" -eq 2 ]
+  [[ $output == *"Set APPLE_VENV to a directory on a local disk"* ]]
+  [[ $output != *"python3-venv"* ]]
 }
 
 @test "a failed install exits 1, leaves no stamp, and the next run tries again" {
@@ -102,14 +112,15 @@ SCRIPT
   grep -q "^pip install" "$CALLS"
 }
 
-@test "by default the venv is named for the OS, the architecture and the checkout's path, inside the checkout" {
+@test "by default the venv is on the local disk, under the cache directory, named for the OS, architecture and checkout path" {
   fake_python
   unset APPLE_VENV
   run "$PROJECT/apple" doctor
   [ "$status" -eq 0 ]
   expected=$("$REAL_PYTHON" "$PROJECT/scripts/venvpath.py" "$PROJECT")
-  [[ $expected == "$PROJECT"/.venv-* ]]
+  [[ $expected == "$XDG_CACHE_HOME"/apple/venv-* ]]
   [ -f "$expected/.installed" ]
+  [ -z "$(ls -A "$PROJECT" | grep '^\.venv')" ]   # nothing in the checkout
 }
 
 @test "copies of a checkout at two different paths get two venvs" {
@@ -119,9 +130,7 @@ SCRIPT
   cp -R "$PROJECT" "$second"
   "$PROJECT/apple" doctor
   "$second/apple" doctor
-  [ "$(ls -d "$PROJECT"/.venv-* | wc -l)" -eq 1 ]
-  [ "$(ls -d "$second"/.venv-* | wc -l)" -eq 1 ]
-  [ "$(basename "$(ls -d "$PROJECT"/.venv-*)")" != "$(basename "$(ls -d "$second"/.venv-*)")" ]
+  [ "$(ls -d "$XDG_CACHE_HOME"/apple/venv-* | wc -l)" -eq 2 ]
 }
 
 @test "a venv built elsewhere whose python is unusable here is replaced, not built over" {
@@ -146,11 +155,12 @@ SCRIPT
   [ -f "$APPLE_VENV/data" ]
 }
 
-@test "an old shared .venv is pointed out as unused" {
+@test "venvs left inside the checkout by earlier versions are pointed out as unused, even a half-made one" {
   fake_python
-  mkdir -p "$PROJECT/.venv"
+  mkdir -p "$PROJECT/.venv" "$PROJECT/.venv-darwin-arm64-991e04"
   : > "$PROJECT/.venv/pyvenv.cfg"
   run "$PROJECT/apple" doctor
   [[ $output == *"$PROJECT/.venv is unused"* ]]
+  [[ $output == *"$PROJECT/.venv-darwin-arm64-991e04 is unused"* ]]
   [ -e "$PROJECT/.venv/pyvenv.cfg" ]
 }

@@ -1,8 +1,8 @@
 #!/bin/bash
 # The apple command, run from this checkout: ./apple --help
 # Nothing is installed globally. The first run (and any run after pyproject.toml changes) sets up a virtual environment in
-# .venv-<os>-<arch>-<hash> here, then every run starts the CLI from it. The name identifies the environment (see
-# scripts/venvpath.py), so a checkout shared between a host and a container, or two machines, keeps one venv per side.
+# ~/.cache/apple/venv-<os>-<arch>-<hash> (on the local disk, never in the checkout, which may be a network share), then every
+# run starts the CLI from it. The name identifies the environment (see scripts/venvpath.py).
 # Environment: APPLE_VENV overrides the venv directory.
 # The whole script lives in main so bash has parsed all of it before running any of it.
 main() {
@@ -45,17 +45,23 @@ main() {
       echo "Creating the venv at $venv..." >&2
     fi
     if ! "$python" -m venv "$venv" >&2; then
-      echo "Could not create a virtual environment. On Debian or Ubuntu install the venv module with:" >&2
-      echo "  sudo apt-get install -y python3-venv" >&2
+      if "$python" -c 'import ensurepip, venv' 2>/dev/null; then
+        echo "Could not create a virtual environment at $venv (see above). Set APPLE_VENV to a directory on a local disk." >&2
+      else
+        echo "Could not create a virtual environment. On Debian or Ubuntu install the venv module with:" >&2
+        echo "  sudo apt-get install -y python3-venv" >&2
+      fi
       return 2
     fi
     rm -f "$stamp"
   fi
 
-  legacy=$here/.venv
-  if [ -e "$legacy/pyvenv.cfg" ] && [ "$legacy" != "$venv" ]; then
-    echo "note: $legacy is unused; reclaim it with: rm -rf '$legacy'" >&2
-  fi
+  # Venvs inside the checkout from earlier versions are unused
+  for legacy in "$here"/.venv "$here"/.venv-*; do
+    if [ -d "$legacy" ] && [ "$legacy" != "$venv" ]; then
+      echo "note: $legacy is unused; reclaim it with: rm -rf '$legacy'" >&2
+    fi
+  done
 
   if [ ! -f "$stamp" ] || [ "$here/pyproject.toml" -nt "$stamp" ]; then
     echo "Installing the dependencies into $venv..." >&2
