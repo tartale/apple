@@ -1,14 +1,11 @@
 """`apple photos`: back up iCloud Photos to disk and organize the backup."""
-import os
-import subprocess
-from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from apple.photos import library_commands
-
-SCRIPTS = Path(__file__).parent / "scripts"
+from apple.photos.backup import run as backup_run
+from apple.photos.organize import run as organize_run
 
 app = typer.Typer(
     help="Back up iCloud Photos to disk and organize the backup; copy between Photos libraries with PowerPhotos (macOS only).",
@@ -24,15 +21,6 @@ DryRun = Annotated[
 ]
 
 
-def run_script(name: str, dry_run: bool) -> None:
-    """Runs a bundled script with this process's environment and exits with its status."""
-    env = dict(os.environ)
-    if dry_run:
-        env["DRY_RUN"] = "true"
-    result = subprocess.run(["bash", str(SCRIPTS / name)], env=env)
-    raise typer.Exit(result.returncode)
-
-
 @app.command()
 def backup(dry_run: DryRun = False) -> None:
     """Copy every photo and video from each iCloud account into ICLOUD_ROOT/<name>/originals/.
@@ -40,13 +28,13 @@ def backup(dry_run: DryRun = False) -> None:
     Configured by the environment: ICLOUD_ROOT and ICLOUD_ACCOUNTS are required;
     ICLOUD_RCLONE_CONF, ICLOUD_RCLONE and ICLOUD_LOCK_FILE are optional.
     """
-    run_script("backup.sh", dry_run)
+    raise typer.Exit(backup_run(dry_run))
 
 
 @app.command()
 def organize(dry_run: DryRun = False) -> None:
     """Build the by-date/ and albums/ hardlink trees beside originals/. Never changes originals/."""
-    run_script("organize.sh", dry_run)
+    raise typer.Exit(organize_run(dry_run))
 
 
 app.command("libraries")(library_commands.libraries_command)

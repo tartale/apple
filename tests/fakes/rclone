@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Local-directory stand-in for rclone, used by the tests: remote "<r>:/p" maps to $FAKE_CLOUD/<r>/p.
+
+Supports the few commands and flags the CLI uses: copy (with --files-from-raw, --dry-run) and lsf -R --files-only
+--format tsp. FAKE_FAIL=lsf|copy-album makes that call exit 1.
+"""
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+WITH_VALUE = {"--config", "--transfers", "--checkers", "--retries", "--low-level-retries", "--log-file", "--log-level",
+              "--format", "--separator"}
+
+
+def mapped(argument: str) -> Path:
+    if ":/" in argument:
+        remote, _, path = argument.partition(":/")
+        return Path(os.environ["FAKE_CLOUD"]) / remote / path
+    return Path(argument)
+
+
+def files_under(root: Path):
+    for directory, _, names in os.walk(root):
+        for name in names:
+            yield (Path(directory) / name).relative_to(root).as_posix()
+
+
+command, *arguments = sys.argv[1:]
+positional, files_from, dry = [], None, False
+index = 0
+while index < len(arguments):
+    argument = arguments[index]
+    if argument == "--files-from-raw":
+        files_from = arguments[index + 1]
+        index += 2
+    elif argument in WITH_VALUE:
+        index += 2
+    else:
+        if argument == "--dry-run":
+            dry = True
+        elif argument not in ("--progress", "-R", "--files-only"):
+            positional.append(argument)
+        index += 1
+
+source = mapped(positional[0])
+fail = os.environ.get("FAKE_FAIL", "")
+if command == "lsf":
+    if fail == "lsf":
+        sys.exit(1)
+    for relative in files_under(source):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int((source / relative).stat().st_mtime)))
+        print(f"{stamp}\t{(source / relative).stat().st_size}\t{relative}")
+elif command == "copy":
+    destination = mapped(positional[1])
+    if dry:
+        sys.exit(0)
+    if files_from is not None:
+        if fail == "copy-album":
+            sys.exit(1)
+        wanted = [line for line in Path(files_from).read_text().splitlines() if line]
+    else:
+        wanted = list(files_under(source))
+    for relative in wanted:
+        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, destination / relative)

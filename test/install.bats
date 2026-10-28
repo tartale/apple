@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 
-load helpers
+REPO=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
+
 setup() {
-  common_setup
   export APPLE_HOME="$BATS_TEST_TMPDIR/home"
   export APPLE_BIN_DIR="$BATS_TEST_TMPDIR/binlink"
   mkdir -p "$BATS_TEST_TMPDIR/fake"
