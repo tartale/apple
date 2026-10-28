@@ -52,6 +52,19 @@ def environment(name: str, example: str) -> Check:
     return Check(f"{name} is set", bool(os.environ.get(name)), f'export {name}="{example}"')
 
 
+GNU_PATH = 'export PATH="$(brew --prefix findutils)/libexec/gnubin:$(brew --prefix coreutils)/libexec/gnubin:$PATH"'
+
+
+def gnu_tool(label: str, works: bool, prefixed: str, package: str) -> Check:
+    """Homebrew installs GNU tools as g-prefixed programs (gfind, gstat); the unprefixed names stay the BSD ones."""
+    if works:
+        return Check(label, True)
+    if shutil.which(prefixed):
+        return Check(label, False, f"installed as {prefixed}, but the BSD one comes first; put the GNU tools first on PATH: {GNU_PATH}")
+    packages = {"brew": package, "apt-get": package, "dnf": package, "apk": package}
+    return Check(label, False, install_command(packages))
+
+
 def backup_checks() -> List[Check]:
     rclone = os.environ.get("ICLOUD_RCLONE", "rclone")
     gnu_find = runs(["find", "/", "-maxdepth", "0", "-printf", ""])
@@ -62,8 +75,8 @@ def backup_checks() -> List[Check]:
         program("flock", {"brew": "discoteq/discoteq/flock", "apt-get": "util-linux", "dnf": "util-linux", "apk": "util-linux"}),
         program("awk", {"brew": "gawk", "apt-get": "gawk", "dnf": "gawk", "apk": "gawk"}),
         program("sort", {"brew": "coreutils", "apt-get": "coreutils", "dnf": "coreutils", "apk": "coreutils"}),
-        Check("GNU find", gnu_find, install_command({"brew": "findutils", "apt-get": "findutils", "dnf": "findutils", "apk": "findutils"})),
-        Check("GNU stat", gnu_stat, install_command({"brew": "coreutils", "apt-get": "coreutils", "dnf": "coreutils", "apk": "coreutils"})),
+        gnu_tool("GNU find", gnu_find, "gfind", "findutils"),
+        gnu_tool("GNU stat", gnu_stat, "gstat", "coreutils"),
         environment("ICLOUD_ROOT", "/path/to/backup"),
         environment("ICLOUD_ACCOUNTS", "alice=alice.icloud"),
     ]

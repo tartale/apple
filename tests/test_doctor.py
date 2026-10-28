@@ -75,3 +75,21 @@ def test_on_macos_powerphotos_is_checked(everything, monkeypatch):
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     assert "MISSING PowerPhotos is installed" in result.output
+
+
+def test_homebrew_gnu_tools_installed_as_g_prefixed_get_a_path_fix(everything, monkeypatch):
+    # find and stat are the BSD ones, but gfind and gstat (Homebrew's names for the GNU ones) are installed
+    monkeypatch.setattr(doctor, "runs", lambda command: command[0] not in ("find", "stat"))
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "MISSING GNU find" in result.output and "installed as gfind" in result.output
+    assert "installed as gstat" in result.output
+    assert "libexec/gnubin" in result.output
+
+
+def test_missing_gnu_tools_get_an_install_command(everything, monkeypatch):
+    monkeypatch.setattr(doctor, "runs", lambda command: command[0] not in ("find", "stat"))
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("gfind", "gstat") else f"/usr/bin/{name}")
+    monkeypatch.setattr(doctor, "package_manager", lambda: "brew")
+    result = runner.invoke(app, ["doctor"])
+    assert "brew install findutils" in result.output and "brew install coreutils" in result.output

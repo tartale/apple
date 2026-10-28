@@ -29,20 +29,25 @@ require_tools() {
   ((${#missing[@]})) || return 0
 
   pm=
-  for t in apt-get dnf apk; do
+  for t in brew apt-get dnf apk; do
     if command -v "$t" >/dev/null; then pm=$t; break; fi
   done
   case $pm in
     apt-get|dnf) install="$pm install -y ${pkgs[*]}";;
     apk) install="apk add ${pkgs[*]}";;
+    brew) install="brew install ${pkgs[*]}";;
     *) install="";;
   esac
-  [ -z "$install" ] || [ "$(id -u)" = 0 ] || install="sudo $install"
+  [ -z "$install" ] || [ "$pm" = brew ] || [ "$(id -u)" = 0 ] || install="sudo $install"
 
   echo "Missing required programs: ${missing[*]}" >&2
   if [ -n "$install" ]; then
     echo "Install them with:" >&2
     echo "  $install" >&2
+    if [ "$pm" = brew ] && [[ " ${pkgs[*]} " == *" findutils "* || " ${pkgs[*]} " == *" coreutils "* ]]; then
+      echo "Homebrew installs the GNU tools as gfind and gstat; put them first on PATH:" >&2
+      echo "  export PATH=\"\$(brew --prefix findutils)/libexec/gnubin:\$(brew --prefix coreutils)/libexec/gnubin:\$PATH\"" >&2
+    fi
   else
     echo "Install the packages that provide: ${pkgs[*]}" >&2
   fi
