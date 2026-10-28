@@ -18,10 +18,13 @@ This needs Python 3.9 or later. Without installing, `PYTHONPATH=src python3 -m a
 | --- | --- |
 | `apple photos backup` | Runs `backup.sh`. For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
 | `apple photos organize` | Runs `organize.sh`. Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
+| `apple photos libraries` | macOS only. Lists the libraries PowerPhotos knows and where each is on disk. |
+| `apple photos copy` | macOS only. Copies the photos and videos in a date range from one Photos library to another with PowerPhotos: `--from`, `--to`, `--since`, `--until`, `--media photos\|videos\|all`, `--on-upgrade skip\|ask\|stop`. Skips photos already in the destination; removes nothing. |
+| `apple photos split` | macOS only. Runs `copy` once per year into `photos-<year>` or `videos-<year>` libraries. |
 
-Both take `--dry-run` (the same as `DRY_RUN=true`). They share one lock, so they never run at the same time. The shell scripts behind them are in `src/apple/photos/scripts/`; `lib.sh` there holds the shared setup (environment check, required-program check, lock, logging).
+`backup` and `organize` take `--dry-run` (the same as `DRY_RUN=true`). They share one lock, so they never run at the same time. The macOS-only commands exit with status 2 anywhere else; they need PowerPhotos and see [macos/README.md](macos/README.md). The shell scripts behind them are in `src/apple/photos/scripts/`; `lib.sh` there holds the shared setup (environment check, required-program check, lock, logging).
 
-macOS only: `macos/schedule.sh` runs a PowerPhotos Shortcut on a daily schedule through a launchd agent. See [macos/README.md](macos/README.md).
+`macos/schedule.sh` (macOS only) runs a PowerPhotos Shortcut on a daily schedule through a launchd agent. See [macos/README.md](macos/README.md).
 
 ## Development
 
