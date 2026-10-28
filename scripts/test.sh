@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the bats tests in test/ (the installer) and the pytest tests in tests/ (the CLI)
+# Runs the bats tests in test/ (the launcher) and the pytest tests in tests/ (the CLI)
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 if ! command -v bats >/dev/null; then
   echo "bats is not installed. Install it with:" >&2

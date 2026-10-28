@@ -1,33 +1,31 @@
 # apple
 
-Apple-related tools, run through one command, `apple`. It backs up iCloud Photos to a local disk (developed on a Synology NAS) with [rclone](https://rclone.org).
+Apple-related tools, run through one command, `./apple`. It backs up iCloud Photos to a local disk (developed on a Synology NAS) with [rclone](https://rclone.org).
 
-## Install
+## Running it
 
-From a clone of this repo:
+Run `./apple` from this checkout; nothing is installed globally.
 
 ```
-./install
-apple doctor
+./apple doctor
+./apple --help
 ```
 
-`./install` finds Python 3.9 or later (or prints the command that installs it), installs `apple` with `uv` or `pipx` if you have either, and otherwise into its own virtual environment linked from `~/.local/bin` (set `APPLE_HOME` and `APPLE_BIN_DIR` to change those). Rerun it to upgrade; `DRY_RUN=true ./install` shows the plan. `apple doctor` then checks what the commands need and prints a copy/paste fix for anything missing.
-
-Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
+The first run (and any run after `pyproject.toml` changes) sets up a virtual environment in `.venv` here, using Python 3.9 or later. If Python or its venv module is missing, it prints the command that installs it. Then `./apple doctor` checks what the commands need and prints a copy/paste fix for anything missing.
 
 ## Commands
 
-`apple --help` and `apple photos --help` list them.
+`./apple --help` and `./apple photos --help` list them.
 
 | Command | What it does |
 | --- | --- |
-| `apple doctor` | Checks what the commands need (rclone and the iCloud variables, and on macOS osascript and PowerPhotos) and prints a copy/paste fix for anything missing. Exits 1 if something is missing. |
-| `apple photos backup` | For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
-| `apple photos organize` | Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
-| `apple photos libraries` | macOS only. Lists the libraries PowerPhotos knows and where each is on disk. |
-| `apple photos copy` | macOS only. Copies the photos and videos in a date range from one Photos library to another with PowerPhotos: `--from`, `--to`, `--since`, `--until`, `--media photos\|videos\|all`, `--on-upgrade skip\|ask\|stop`. Skips photos already in the destination; removes nothing. |
-| `apple photos split` | macOS only. Runs `copy` once per year into `photos-<year>` or `videos-<year>` libraries. |
-| `apple schedule add\|remove\|list` | macOS only. Runs an `apple` command every day through a launchd agent: `apple schedule add nightly --at 03:00 -- photos split --from ...`. |
+| `./apple doctor` | Checks what the commands need (rclone and the iCloud variables, and on macOS osascript and PowerPhotos) and prints a copy/paste fix for anything missing. Exits 1 if something is missing. |
+| `./apple photos backup` | For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
+| `./apple photos organize` | Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
+| `./apple photos libraries` | macOS only. Lists the libraries PowerPhotos knows and where each is on disk. |
+| `./apple photos copy` | macOS only. Copies the photos and videos in a date range from one Photos library to another with PowerPhotos: `--from`, `--to`, `--since`, `--until`, `--media photos\|videos\|all`, `--on-upgrade skip\|ask\|stop`. Skips photos already in the destination; removes nothing. |
+| `./apple photos split` | macOS only. Runs `copy` once per year into `photos-<year>` or `videos-<year>` libraries. |
+| `./apple schedule add\|remove\|list` | macOS only. Runs an `apple` command every day through a launchd agent: `./apple schedule add nightly --at 03:00 -- photos split --from ...`. |
 
 `backup` and `organize` take `--dry-run` (the same as `DRY_RUN=true`). They share one lock, so they never run at the same time. The macOS-only commands exit with status 2 anywhere else; they need PowerPhotos and see [macos/README.md](macos/README.md). They are Python (`src/apple/photos/backup.py`, `organize.py`); `common.py` holds the shared setup (environment check, rclone check, lock, log). The only outside program is `rclone`, so they run the same on the NAS and on a Mac.
 
@@ -37,8 +35,8 @@ Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
 
 | Script | What it does |
 | --- | --- |
-| `scripts/lint.sh` | Runs `shellcheck` over the shell scripts (the installer and the sandbox scripts). |
-| `scripts/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/` (the installer) and the pytest tests in `tests/` (the CLI). They use `tests/fakes/rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
+| `scripts/lint.sh` | Runs `shellcheck` over the shell scripts (the `./apple` launcher and the sandbox scripts). |
+| `scripts/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/` (the launcher) and the pytest tests in `tests/` (the CLI). They use `tests/fakes/rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
 
 ## Layout
 
@@ -78,7 +76,7 @@ Example:
 export ICLOUD_ROOT=/data/icloud
 export ICLOUD_ACCOUNTS="alice=alice.icloud bob=bob.icloud"
 export ICLOUD_RCLONE_CONF=/etc/rclone/rclone.conf
-apple photos backup && apple photos organize
+./apple photos backup && ./apple photos organize
 ```
 
 Logs: `$ICLOUD_ROOT/backup-YYYY-MM-DD.log` and `$ICLOUD_ROOT/organize-YYYY-MM-DD.log`; all of a day's runs append to that day's file (the date is the one the run started on). Run from a terminal, both commands also print their status lines there, and `backup` shows rclone's live transfer progress; from cron they only write the log.

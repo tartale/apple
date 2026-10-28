@@ -1,8 +1,7 @@
-"""`apple schedule`: run an apple command every day through a launchd agent (macOS only)."""
+"""`./apple schedule`: run an apple command every day through a launchd agent (macOS only)."""
 import os
 import plistlib
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,10 +30,12 @@ def plist_path(name: str) -> Path:
     return agents_dir() / f"{PREFIX}{name}.plist"
 
 
+LAUNCHER = Path(__file__).resolve().parents[2] / "apple"
+
+
 def program_arguments() -> List[str]:
-    """How to start this CLI from launchd: the installed `apple`, or this Python running the package."""
-    installed = shutil.which("apple")
-    return [installed] if installed else [sys.executable, "-m", "apple"]
+    """How to start this CLI from launchd: the ./apple launcher of this checkout, or this Python running the package."""
+    return [str(LAUNCHER)] if LAUNCHER.is_file() else [sys.executable, "-m", "apple"]
 
 
 def check_command(words: List[str]) -> None:
@@ -51,7 +52,7 @@ def check_command(words: List[str]) -> None:
         else:
             break
     if consumed == 0 or getattr(command, "commands", None) is not None:
-        raise typer.BadParameter(f"'{' '.join(words)}' is not an apple command (try `apple --help`)")
+        raise typer.BadParameter(f"'{' '.join(words)}' is not an apple command (try `./apple --help`)")
 
 
 def launchctl(*args: str) -> int:
