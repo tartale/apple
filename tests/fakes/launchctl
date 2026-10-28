@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stands in for launchctl: logs the call to $FAKE_LAUNCHCTL_LOG; FAKE_LAUNCHCTL_FAIL=bootstrap makes that call fail.
+echo "$*" >> "$FAKE_LAUNCHCTL_LOG"
+[ "$1" = "${FAKE_LAUNCHCTL_FAIL:-}" ] && exit 1
+exit 0

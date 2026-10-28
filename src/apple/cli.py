@@ -6,6 +6,7 @@ import typer
 
 from apple.doctor import doctor_command
 from apple.photos.commands import app as photos_app
+from apple.schedule import app as schedule_app
 
 app = typer.Typer(
     name="apple",
@@ -14,6 +15,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(photos_app, name="photos")
+app.add_typer(schedule_app, name="schedule")
 app.command("doctor")(doctor_command)
 
 
