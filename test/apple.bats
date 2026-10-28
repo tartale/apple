@@ -5,8 +5,10 @@ REPO=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
 setup() {
   # A copy of the launcher next to a stand-in pyproject.toml, so the real one is never touched
   export PROJECT="$BATS_TEST_TMPDIR/project"
-  mkdir -p "$PROJECT" "$BATS_TEST_TMPDIR/fake"
+  mkdir -p "$PROJECT/scripts" "$BATS_TEST_TMPDIR/fake"
   cp "$REPO/apple" "$PROJECT/apple"
+  cp "$REPO/scripts/venvpath.py" "$PROJECT/scripts/venvpath.py"
+  export REAL_PYTHON=$(command -v python3)
   : > "$PROJECT/pyproject.toml"
   export APPLE_VENV="$BATS_TEST_TMPDIR/venv"
   export CALLS="$BATS_TEST_TMPDIR/calls"
@@ -20,9 +22,11 @@ fake_python() {
 echo "python3.13 \$*" >> "\$CALLS"
 case \$1 in
   -c) exit 0;;
+  *venvpath.py) exec "\$REAL_PYTHON" "\$@";;
   -m) mkdir -p "\$3/bin"
       printf '#!/bin/bash\necho "pip \$*" >> "\$CALLS"\nexit ${1:-0}\n' > "\$3/bin/pip"
       printf '#!/bin/bash\necho "venv-python \$* APPLE_PROG=\$APPLE_PROG" >> "\$CALLS"\n' > "\$3/bin/python"
+      : > "\$3/pyvenv.cfg"
       chmod +x "\$3/bin/pip" "\$3/bin/python";;
 esac
 SCRIPT
@@ -91,9 +95,62 @@ SCRIPT
   [ "$status" -eq 1 ]
   [[ $output == *"the next run will try again"* ]]
   [ ! -f "$APPLE_VENV/.installed" ]
-  fake_python 0
+  printf '#!/bin/bash\necho "pip $*" >> "$CALLS"\n' > "$APPLE_VENV/bin/pip"   # the network is back
   : > "$CALLS"
   run "$PROJECT/apple" doctor
   [ "$status" -eq 0 ]
   grep -q "^pip install" "$CALLS"
+}
+
+@test "by default the venv is named for the OS, the architecture and the checkout's path, inside the checkout" {
+  fake_python
+  unset APPLE_VENV
+  run "$PROJECT/apple" doctor
+  [ "$status" -eq 0 ]
+  expected=$("$REAL_PYTHON" "$PROJECT/scripts/venvpath.py" "$PROJECT")
+  [[ $expected == "$PROJECT"/.venv-* ]]
+  [ -f "$expected/.installed" ]
+}
+
+@test "copies of a checkout at two different paths get two venvs" {
+  fake_python
+  unset APPLE_VENV
+  second="$BATS_TEST_TMPDIR/other"
+  cp -R "$PROJECT" "$second"
+  "$PROJECT/apple" doctor
+  "$second/apple" doctor
+  [ "$(ls -d "$PROJECT"/.venv-* | wc -l)" -eq 1 ]
+  [ "$(ls -d "$second"/.venv-* | wc -l)" -eq 1 ]
+  [ "$(basename "$(ls -d "$PROJECT"/.venv-*)")" != "$(basename "$(ls -d "$second"/.venv-*)")" ]
+}
+
+@test "a venv built elsewhere whose python is unusable here is replaced, not built over" {
+  fake_python
+  mkdir -p "$APPLE_VENV"
+  : > "$APPLE_VENV/pyvenv.cfg"
+  ln -s /nonexistent/python "$APPLE_VENV/python-from-elsewhere"
+  run "$PROJECT/apple" doctor
+  [ "$status" -eq 0 ]
+  [[ $output == *"Replacing the unusable venv"* ]]
+  [ ! -L "$APPLE_VENV/python-from-elsewhere" ]
+  grep -q "venv-python -m apple doctor" "$CALLS"
+}
+
+@test "a directory in the venv's place that is not a venv is left alone" {
+  fake_python
+  mkdir -p "$APPLE_VENV"
+  echo precious > "$APPLE_VENV/data"
+  run "$PROJECT/apple" doctor
+  [ "$status" -eq 1 ]
+  [[ $output == *"not a venv"* ]]
+  [ -f "$APPLE_VENV/data" ]
+}
+
+@test "an old shared .venv is pointed out as unused" {
+  fake_python
+  mkdir -p "$PROJECT/.venv"
+  : > "$PROJECT/.venv/pyvenv.cfg"
+  run "$PROJECT/apple" doctor
+  [[ $output == *"$PROJECT/.venv is unused"* ]]
+  [ -e "$PROJECT/.venv/pyvenv.cfg" ]
 }

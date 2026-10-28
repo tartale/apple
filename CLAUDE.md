@@ -6,7 +6,7 @@ Apple-related tools, run through one CLI, `apple` (Python, Typer; `src/apple/`).
 
 - **The commands run on the NAS, often while I'm editing.** Replace files atomically (write `<file>.new`, then `mv`), never edit in place. The user says when a run is in progress; if unsure, ask before touching `src/apple/photos/`.
 - **A backup, not a mirror.** Never add deletion or pruning of `originals/`, `by-date/` or `albums/`.
-- **The root command is `./apple`, in the repo root, and is not installed globally** (it sets up `.venv` on first run). Scheduled agents call that path.
+- **The root command is `./apple`, in the repo root, and is not installed globally** (it sets up `.venv-<os>-<arch>-<hash>` on first run; `scripts/venvpath.py` names it, so a checkout shared by a host and a container keeps one venv each). Scheduled agents call that path.
 - **The CLI is how everything runs.** New tools are `apple` commands, not stray scripts. Users never call AppleScript directly: the PowerPhotos commands (`libraries`, `copy`, `split`) bundle their AppleScript in `src/apple/photos/applescript/` and keep the logic (upgrade handling, lock, dates) in Python. macOS-only commands (`libraries`, `copy`, `split`, `schedule`) call `require_macos()` first.
 - **Configuration is environment variables only**, with no system-specific defaults (no remote names, paths or accounts in code). Booleans are written `true`/`false`.
 - **Missing prerequisites fail with a copy/paste install command** (`require_rclone` in `src/apple/photos/common.py`, `./apple doctor`, and `./apple` itself for Python and its venv module), not a README note.
