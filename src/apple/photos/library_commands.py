@@ -1,4 +1,4 @@
-"""`apple photos libraries|copy|split`: move photos between Photos libraries with PowerPhotos (macOS only)."""
+"""`./apple photos libraries|copy|split`: move photos between Photos libraries with PowerPhotos (macOS only)."""
 import sys
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -28,7 +28,7 @@ class OnUpgrade(str, Enum):
     stop = "stop"
 
 
-SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `apple photos libraries`.")]
+SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`.")]
 OnUpgradeOption = Annotated[
     OnUpgrade,
     typer.Option(

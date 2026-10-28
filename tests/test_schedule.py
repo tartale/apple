@@ -53,6 +53,12 @@ def test_add_writes_a_plist_that_runs_the_command_at_the_chosen_time_and_loads_i
     assert not list(mac.agents.glob("*.new"))
 
 
+def test_the_agent_starts_the_launcher_of_this_checkout(mac):
+    add()
+    first = plistlib.loads(mac.plist.read_bytes())["ProgramArguments"][0]
+    assert first == str(Path(__file__).resolve().parent.parent / "apple")
+
+
 def test_the_default_time_is_three_in_the_morning(mac):
     add()
     assert plistlib.loads(mac.plist.read_bytes())["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}

@@ -1,4 +1,4 @@
-"""`apple photos`: back up iCloud Photos to disk and organize the backup."""
+"""`./apple photos`: back up iCloud Photos to disk and organize the backup."""
 from typing import Annotated
 
 import typer
