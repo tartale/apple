@@ -8,7 +8,7 @@ Apple-related tools, run through one CLI, `apple` (Python, Typer; `src/apple/`).
 - **A backup, not a mirror.** Never add deletion or pruning of `originals/`, `by-date/` or `albums/`.
 - **The CLI is how everything runs.** New tools are `apple` commands, not stray scripts. Users never call AppleScript or the shell scripts directly: the PowerPhotos commands (`libraries`, `copy`, `split`) bundle their AppleScript in `src/apple/photos/applescript/` and keep the logic (upgrade handling, lock, dates) in Python. macOS-only commands call `require_macos()` first.
 - **Configuration is environment variables only**, with no system-specific defaults (no remote names, paths or accounts in code). Booleans are written `true`/`false`.
-- **Missing prerequisites fail with a copy/paste install command** (`require_tools` in `src/apple/photos/scripts/lib.sh`), not a README note.
+- **Missing prerequisites fail with a copy/paste install command** (`require_tools` in `src/apple/photos/scripts/lib.sh` for the shell scripts, `apple doctor` for the CLI, and `./install` for the installer), not a README note.
 - Shared setup (env check, lock, logging, `DRY_RUN`) lives in `src/apple/photos/scripts/lib.sh`, sourced inside `main`.
 
 ## Identity

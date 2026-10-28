@@ -4,11 +4,16 @@ Apple-related tools, run through one command, `apple`. It backs up iCloud Photos
 
 ## Install
 
+From a clone of this repo:
+
 ```
-pipx install .
+./install
+apple doctor
 ```
 
-This needs Python 3.9 or later. Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
+`./install` finds Python 3.9 or later (or prints the command that installs it), installs `apple` with `uv` or `pipx` if you have either, and otherwise into its own virtual environment linked from `~/.local/bin` (set `APPLE_HOME` and `APPLE_BIN_DIR` to change those). Rerun it to upgrade; `DRY_RUN=true ./install` shows the plan. `apple doctor` then checks what the commands need and prints a copy/paste fix for anything missing.
+
+Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
 
 ## Commands
 
@@ -16,6 +21,7 @@ This needs Python 3.9 or later. Without installing, `PYTHONPATH=src python3 -m a
 
 | Command | What it does |
 | --- | --- |
+| `apple doctor` | Checks what the commands need (programs, the iCloud variables, and on macOS osascript and PowerPhotos) and prints a copy/paste fix for anything missing. Exits 1 if something is missing. |
 | `apple photos backup` | Runs `backup.sh`. For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
 | `apple photos organize` | Runs `organize.sh`. Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
 | `apple photos libraries` | macOS only. Lists the libraries PowerPhotos knows and where each is on disk. |
