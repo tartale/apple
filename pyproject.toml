@@ -16,7 +16,7 @@ apple = "apple.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"apple.photos" = ["scripts/*.sh"]
+"apple.photos" = ["scripts/*.sh", "applescript/*.applescript"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

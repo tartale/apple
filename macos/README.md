@@ -1,25 +1,28 @@
 # PowerPhotos Shortcuts (macOS)
 
-[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by Shortcuts that use PowerPhotos' own Shortcuts actions; `macos/schedule.sh` runs one on a schedule. The logic is in an AppleScript file in git; a Shortcut is a thin wrapper around it, built in the Shortcuts app.
+[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by Shortcuts that use PowerPhotos' own Shortcuts actions; `macos/schedule.sh` runs one on a schedule. The work is done by `apple photos` commands, which drive PowerPhotos through AppleScript files bundled with the CLI; you never call AppleScript yourself. A Shortcut is a thin wrapper around a command, built in the Shortcuts app.
 
 The actions and filters named here come from the [PowerPhotos Shortcuts docs](https://www.fatcatsoftware.com/powerphotos/VersionedDocs/v9/automation_shortcuts.html). Items marked *check* were not confirmed there.
 
 ## Split Photo Library
 
-`macos/split-library.applescript` copies one media type of a library into one library per year (`photos-2019`, `videos-2019`, ...). It uses PowerPhotos' `duplicate` command with `skip duplicates`, so reruns add only what is new, and nothing is removed from the source. A photo is a video by its file extension (PowerPhotos' `photo` class has no media-type property).
-
 ```
-osascript macos/split-library.applescript photos 2018 2020 "Photos Library" [skip|ask|stop]
+apple photos split --from "Default Library" --media photos --years 2018-2020
 ```
 
-The arguments are `photos` or `videos`, the first and last year, the name of the source library as shown in PowerPhotos, and optionally what to do when a target library is in an older format and Photos must upgrade it before it takes photos: `skip` (default, for unattended runs) leaves that year out and says so in the report, `ask` shows PowerPhotos' message in a dialog (Skip, Stop, or open the library in Photos to upgrade it and Retry), `stop` ends the run. The need for an upgrade is found before any copying by comparing each target's Photos database version (`PLModelVersion`, read with `sqlite3` and `plutil`) with the source's, and again if PowerPhotos refuses a copy. Only one run goes at a time: a second run stops at once with a message (a lock under `$TMPDIR` holds the running process id, and a lock left by a run that died is replaced). It cannot see a copy started from the PowerPhotos window. Create the empty target libraries (`photos-2018`, ...) in PowerPhotos first; the dictionary has no way to create one, so the script stops with a message naming the one it needs.
+Copies one media type of a library into one library per year (`photos-2018`, `photos-2019`, ...), using PowerPhotos' `duplicate` command with `skip duplicates`, so reruns add only what is new and nothing is removed from the source. `apple photos copy` does one date range into any destination:
 
-The Shortcut is one action:
+```
+apple photos copy --from "Default Library" --to photos-2018 --since 2018-01-01 --until 2018-12-31 --media videos
+```
 
-1. **Run Shell Script**: `osascript /path/to/apple/macos/split-library.applescript photos 2018 2020 "Photos Library"`
-2. **Show Notification** with the script's output.
+`apple photos libraries` lists the names PowerPhotos knows. The destination libraries must already exist in PowerPhotos (its scripting has no command to create one). A photo is a video by its file extension, because PowerPhotos' `photo` class has no media-type property.
 
-Add a second **Run Shell Script** with `videos` in place of `photos`, or make two Shortcuts. The first run asks you to allow Shortcuts to control PowerPhotos.
+A destination made by an older Photos must be upgraded by Photos before it accepts photos. The command compares each destination's Photos database version (`PLModelVersion`) with the source's before copying, and again if PowerPhotos refuses a copy. `--on-upgrade` chooses what happens: `skip` (the default, for unattended runs) leaves that destination out and says so, `ask` prompts in the terminal (skip, quit, or open the library in Photos to upgrade it and retry; it skips when there is no terminal), `stop` ends with an error.
+
+Only one copy or split runs at a time; a second one stops at once. It cannot see a copy started from the PowerPhotos window.
+
+The Shortcut is one **Run Shell Script** action, `~/.local/bin/apple photos split --from "Default Library" --media photos --years 2018-2020` (use the path `pipx` installed `apple` to), followed by **Show Notification** with its output. The first run asks you to allow Shortcuts to control PowerPhotos.
 
 Before the first run, in PowerPhotos settings keep both edit versions, keep Live Photo videos and do not reduce bursts, so edits and Live Photos survive the copy. Hidden photos are copied only from the Hidden album.
 

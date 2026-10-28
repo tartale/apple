@@ -6,10 +6,12 @@ from typing import Annotated
 
 import typer
 
+from apple.photos import library_commands
+
 SCRIPTS = Path(__file__).parent / "scripts"
 
 app = typer.Typer(
-    help="Back up iCloud Photos to disk and organize the backup.",
+    help="Back up iCloud Photos to disk and organize the backup; copy between Photos libraries with PowerPhotos (macOS only).",
     no_args_is_help=True,
 )
 
@@ -45,3 +47,8 @@ def backup(dry_run: DryRun = False) -> None:
 def organize(dry_run: DryRun = False) -> None:
     """Build the by-date/ and albums/ hardlink trees beside originals/. Never changes originals/."""
     run_script("organize.sh", dry_run)
+
+
+app.command("libraries")(library_commands.libraries_command)
+app.command("copy")(library_commands.copy_command)
+app.command("split")(library_commands.split_command)
