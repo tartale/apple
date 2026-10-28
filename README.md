@@ -1,21 +1,34 @@
 # apple
 
-Scripts that wrap [rclone](https://rclone.org) to back up iCloud Photos to a local disk (developed on a Synology NAS).
+Apple-related tools, run through one command, `apple`. It backs up iCloud Photos to a local disk (developed on a Synology NAS) with [rclone](https://rclone.org).
 
-## Scripts
+## Install
 
-The scripts live in `photos/`.
+```
+pipx install .
+```
+
+This needs Python 3.9 or later. Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
+
+## Commands
+
+`apple --help` and `apple photos --help` list them.
+
+| Command | What it does |
+| --- | --- |
+| `apple photos backup` | Runs `backup.sh`. For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
+| `apple photos organize` | Runs `organize.sh`. Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
+
+Both take `--dry-run` (the same as `DRY_RUN=true`). They share one lock, so they never run at the same time. The shell scripts behind them are in `src/apple/photos/scripts/`; `lib.sh` there holds the shared setup (environment check, required-program check, lock, logging).
+
+macOS only: `macos/schedule.sh` runs a PowerPhotos Shortcut on a daily schedule through a launchd agent. See [macos/README.md](macos/README.md).
+
+## Development
 
 | Script | What it does |
 | --- | --- |
-| `photos/backup.sh` | For each account, `rclone copy`s `PrimarySync/All Photos` into `$ICLOUD_ROOT/<name>/originals/`, then copies photos that exist only in albums to `originals/<Album>/`, once per photo. `albums.csv` lists only entries whose file is in `originals/`; a download that fails leaves out its own rows, makes the run exit 1, and is retried next run. Safe to run from cron; skips if a run is already active. |
-| `photos/organize.sh` | Builds `by-date/YYYY/MM/` (by file mtime) and `albums/<Album>/` hardlink trees beside `originals/`. Rerunnable; never modifies `originals/`. Exits 1 if a link fails or an `albums.csv` row names a file that is not in `originals/`. |
-| `photos/lib.sh` | Shared by the two scripts above (environment check, required-program check, lock, logging). Not run directly. |
-| `macos/schedule.sh` | Runs a PowerPhotos Shortcut on a daily schedule through a launchd agent (macOS only). See [macos/README.md](macos/README.md). |
-| `photos/lint.sh` | Runs `shellcheck` over every script in the repo. |
-| `photos/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/`. They use `test/fake-rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
-
-`photos/backup.sh` and `photos/organize.sh` share one lock, so they never run at the same time.
+| `scripts/lint.sh` | Runs `shellcheck` over every shell script in the repo. |
+| `scripts/test.sh` | Runs the [bats](https://github.com/bats-core/bats-core) tests in `test/` (the shell scripts) and the pytest tests in `tests/` (the CLI). They use `test/fake-rclone`, a local-directory stand-in for rclone, so they need no iCloud account. |
 
 ## Layout
 
@@ -55,7 +68,7 @@ Example:
 export ICLOUD_ROOT=/data/icloud
 export ICLOUD_ACCOUNTS="alice=alice.icloud bob=bob.icloud"
 export ICLOUD_RCLONE_CONF=/etc/rclone/rclone.conf
-photos/backup.sh && photos/organize.sh
+apple photos backup && apple photos organize
 ```
 
-Logs: `$ICLOUD_ROOT/backup-YYYY-MM-DD.log` and `$ICLOUD_ROOT/organize-YYYY-MM-DD.log`; all of a day's runs append to that day's file (the date is the one the run started on). Run from a terminal, both scripts also print their status lines there, and `backup.sh` shows rclone's live transfer progress; from cron they only write the log.
+Logs: `$ICLOUD_ROOT/backup-YYYY-MM-DD.log` and `$ICLOUD_ROOT/organize-YYYY-MM-DD.log`; all of a day's runs append to that day's file (the date is the one the run started on). Run from a terminal, both commands also print their status lines there, and `backup.sh` shows rclone's live transfer progress; from cron they only write the log.
