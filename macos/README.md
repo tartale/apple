@@ -1,6 +1,6 @@
 # PowerPhotos Shortcuts (macOS)
 
-[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by Shortcuts that use PowerPhotos' own Shortcuts actions; `macos/schedule.sh` runs one on a schedule. The work is done by `apple photos` commands, which drive PowerPhotos through AppleScript files bundled with the CLI; you never call AppleScript yourself. A Shortcut is a thin wrapper around a command, built in the Shortcuts app.
+[PowerPhotos](https://www.fatcatsoftware.com/powerphotos/) is Mac-only, so none of this runs on iOS or iPadOS. The work is done by `apple photos` commands, which drive PowerPhotos through AppleScript files bundled with the CLI; you never call AppleScript yourself. `apple schedule` runs a command on a schedule. A Shortcut is only needed if you want a button; it is a thin wrapper around a command, built in the Shortcuts app.
 
 The actions and filters named here come from the [PowerPhotos Shortcuts docs](https://www.fatcatsoftware.com/powerphotos/VersionedDocs/v9/automation_shortcuts.html). Items marked *check* were not confirmed there.
 
@@ -32,17 +32,12 @@ The AppleScript `duplicate` and `merge` commands skip photos already in the dest
 
 ## Schedule
 
-Use Shortcuts' own time-of-day automation if your macOS has one (*check*). Otherwise `macos/schedule.sh` installs a launchd agent that runs `shortcuts run`:
+`apple schedule` runs any `apple` command every day through a launchd agent, so no Shortcut is needed:
 
 ```
-SHORTCUT_NAME="Split Photo Library" SCHEDULE_HOUR=3 macos/schedule.sh install
-SHORTCUT_NAME="Split Photo Library" macos/schedule.sh uninstall
+apple schedule add nightly-split --at 03:00 -- photos split --from "Default Library" --media photos --years 2018-2020
+apple schedule list
+apple schedule remove nightly-split
 ```
 
-| Variable | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `SHORTCUT_NAME` | yes | | Name of the Shortcut to run (letters, digits, spaces, hyphens) |
-| `SCHEDULE_HOUR` | no | `3` | Hour of day, 0-23 |
-| `SCHEDULE_MINUTE` | no | `0` | Minute, 0-59 |
-
-Output goes to `/tmp/local.apple.shortcut.<name>.log`. The first scheduled run may ask you to allow PowerPhotos and Photos access.
+`--at` is 24-hour `HH:MM` (default `03:00`). Adding a name again replaces it. `--dry-run` shows the launchd agent without installing it. The agent is `~/Library/LaunchAgents/local.apple.<name>.plist`, and output goes to `~/Library/Logs/apple/<name>.log`. launchd gives the command a minimal environment, so a scheduled command that needs variables (such as the `ICLOUD_*` ones) cannot see your shell's. The first run may ask you to allow access to PowerPhotos and Photos.

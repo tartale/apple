@@ -27,10 +27,11 @@ Without installing, `PYTHONPATH=src python3 -m apple` runs the same command.
 | `apple photos libraries` | macOS only. Lists the libraries PowerPhotos knows and where each is on disk. |
 | `apple photos copy` | macOS only. Copies the photos and videos in a date range from one Photos library to another with PowerPhotos: `--from`, `--to`, `--since`, `--until`, `--media photos\|videos\|all`, `--on-upgrade skip\|ask\|stop`. Skips photos already in the destination; removes nothing. |
 | `apple photos split` | macOS only. Runs `copy` once per year into `photos-<year>` or `videos-<year>` libraries. |
+| `apple schedule add\|remove\|list` | macOS only. Runs an `apple` command every day through a launchd agent: `apple schedule add nightly --at 03:00 -- photos split --from ...`. |
 
 `backup` and `organize` take `--dry-run` (the same as `DRY_RUN=true`). They share one lock, so they never run at the same time. The macOS-only commands exit with status 2 anywhere else; they need PowerPhotos and see [macos/README.md](macos/README.md). The shell scripts behind them are in `src/apple/photos/scripts/`; `lib.sh` there holds the shared setup (environment check, required-program check, lock, logging).
 
-`macos/schedule.sh` (macOS only) runs a PowerPhotos Shortcut on a daily schedule through a launchd agent. See [macos/README.md](macos/README.md).
+
 
 ## Development
 
