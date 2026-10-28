@@ -32,3 +32,16 @@ setup() { common_setup; }
   [ "$status" -eq 0 ]
   [ -f "$ICLOUD_ROOT/tom/originals/a.jpg" ]
 }
+
+@test "on Homebrew a missing GNU find gets brew install and the PATH line for the g-prefixed tools" {
+  mkdir -p "$BATS_TEST_TMPDIR/fake"
+  printf '#!/bin/bash\nexit 1\n' > "$BATS_TEST_TMPDIR/fake/find"   # a find without -printf, like macOS's
+  printf '#!/bin/bash\nexit 0\n' > "$BATS_TEST_TMPDIR/fake/brew"
+  chmod +x "$BATS_TEST_TMPDIR"/fake/*
+  PATH="$BATS_TEST_TMPDIR/fake:$PATH" run backup
+  [ "$status" -eq 2 ]
+  [[ $output == *"Missing required programs: GNU find"* ]]
+  [[ $output == *"  brew install findutils"* ]]
+  [[ $output == *"libexec/gnubin"* ]]
+  [[ $output != *"sudo brew"* ]]
+}
