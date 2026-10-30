@@ -11,7 +11,7 @@ Run `./apple` from this checkout; nothing is installed globally.
 ./apple --help
 ```
 
-The first run (and any run after `pyproject.toml` changes) sets up a virtual environment in `.venv-<os>-<arch>-<hash>` here, using Python 3.9 or later. The name identifies the environment (the hash is of the checkout's path), so a checkout shared between your Mac and a container, or reached by two paths, keeps one venv per side instead of one clobbering the other. If Python or its venv module is missing, it prints the command that installs it. Then `./apple doctor` checks what the commands need and prints a copy/paste fix for anything missing.
+The first run (and any run after `pyproject.toml` changes) sets up a virtual environment in `~/.cache/apple/venv-<os>-<arch>-<hash>` (`$XDG_CACHE_HOME/apple/` if set), using Python 3.9 or later. It is on the local disk, not in the checkout, because the checkout may be a network share (which often cannot hold a venv's symlinks) or shared with a container; the name identifies the environment (the hash is of the checkout's path). `APPLE_VENV` overrides the location. If Python or its venv module is missing, it prints the command that installs it. Then `./apple doctor` checks what the commands need and prints a copy/paste fix for anything missing.
 
 ## Commands
 

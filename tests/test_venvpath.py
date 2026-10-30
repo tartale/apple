@@ -25,7 +25,13 @@ def test_a_symlinked_checkout_resolves_to_the_same_venv(tmp_path):
     assert venvpath.venv_dir(tmp_path / "link") == venvpath.venv_dir(tmp_path / "real")
 
 
-def test_the_venv_is_inside_the_checkout_and_ignored_by_git(tmp_path):
-    directory = venvpath.venv_dir(tmp_path)
-    assert directory.parent == tmp_path.resolve() and directory.name.startswith(".venv-")
-    assert ".venv-*/" in (REPO / ".gitignore").read_text().splitlines()
+def test_the_venv_is_in_the_local_cache_not_in_the_checkout(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    directory = venvpath.venv_dir(tmp_path / "checkout")
+    assert directory.parent == tmp_path / "cache" / "apple" and directory.name.startswith("venv-")
+
+
+def test_without_xdg_cache_home_it_is_under_dot_cache_in_the_home_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert venvpath.venv_dir(tmp_path / "checkout").parent == tmp_path / ".cache" / "apple"

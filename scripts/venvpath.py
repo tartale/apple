@@ -1,14 +1,17 @@
 """Where THIS checkout's venv lives, for the ./apple launcher.
 
+The venv is on the local disk, under ~/.cache/apple (or $XDG_CACHE_HOME/apple), not in the checkout: the checkout may be a
+network share (SMB and NFS mounts often cannot hold the symlinks a venv is made of, which fails with "Exec format error"),
+and it may be shared between a host and a container.
+
 A venv is not relocatable: pyvenv.cfg, the bin/python* symlinks and every console-script shebang bake in absolute paths. So
-the directory name has to identify the ENVIRONMENT the venv was built for. <os>-<arch> alone does not: a checkout mounted
-into a container is linux-x86_64 on both sides, and the host and the container would share one directory and break each
-other's. The checkout's own resolved absolute path tells them apart, so each environment that reaches it by a different path
-gets its own venv.
+the directory name has to identify the ENVIRONMENT the venv was built for: <os>-<arch> plus a hash of the checkout's resolved
+absolute path, so two checkouts (or two paths to one) get their own venv.
 
 Standard library only: the launcher runs it before any dependency exists.
 """
 import hashlib
+import os
 import platform
 import sys
 from pathlib import Path
@@ -22,7 +25,8 @@ def env_tag(repo: Path) -> str:
 
 
 def venv_dir(repo: Path) -> Path:
-    return Path(repo).resolve() / f".venv-{env_tag(repo)}"
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return cache / "apple" / f"venv-{env_tag(repo)}"
 
 
 if __name__ == "__main__":
