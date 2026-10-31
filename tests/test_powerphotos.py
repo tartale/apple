@@ -214,3 +214,51 @@ def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_op
     assert pp.model_version(library) == 19607
     assert opened[1] != opened[0]  # the second read was of a copy
     connection.close()
+
+
+def lines(text):
+    return [line.split("\t")[0] for line in text.splitlines() if line]
+
+
+def test_outdated_lists_only_libraries_older_than_the_newest(mac):
+    mac.make("photos-2017", 19320)
+    mac.make("videos-henry", 15323)
+    result = runner.invoke(app, ["photos", "libraries", "--outdated"])
+    assert result.exit_code == 0
+    assert lines(result.stdout) == ["photos-2017", "videos-henry"]
+    assert result.stdout.splitlines()[0].endswith("\t19320")
+    assert "Reference: 19607 (the newest library). 2 older." in result.stderr
+
+
+def test_outdated_against_a_named_library_uses_its_version_as_the_reference(mac):
+    mac.make("photos-2017", 19320)
+    mac.make("videos-henry", 15323)
+    result = runner.invoke(app, ["photos", "libraries", "--outdated", "--against", "photos-2017"])
+    assert lines(result.stdout) == ["videos-henry"]
+    assert "Reference: 19320 (photos-2017). 1 older." in result.stderr
+
+
+def test_outdated_with_nothing_older_prints_nothing_to_stdout(mac):
+    result = runner.invoke(app, ["photos", "libraries", "--outdated"])
+    assert result.exit_code == 0 and result.stdout == ""
+    assert "0 older" in result.stderr
+
+
+def test_outdated_names_unreadable_libraries_on_stderr_and_does_not_list_them(mac, tmp_path):
+    mac.make("photos-2017", 19320)
+    (tmp_path / "photos-2018.photoslibrary" / "database" / "Photos.sqlite").unlink()
+    result = runner.invoke(app, ["photos", "libraries", "--outdated"])
+    assert lines(result.stdout) == ["photos-2017"]
+    assert "Version cannot be read: photos-2018" in result.stderr
+
+
+def test_outdated_against_an_unknown_or_unreadable_library_fails(mac, tmp_path):
+    unknown = runner.invoke(app, ["photos", "libraries", "--outdated", "--against", "Nope"])
+    assert unknown.exit_code == 1 and "No library named Nope" in unknown.output
+    (tmp_path / "photos-2018.photoslibrary" / "database" / "Photos.sqlite").unlink()
+    unreadable = runner.invoke(app, ["photos", "libraries", "--outdated", "--against", "photos-2018"])
+    assert unreadable.exit_code == 1 and "cannot be the reference" in unreadable.output
+
+
+def test_against_without_outdated_is_a_usage_error(mac):
+    assert runner.invoke(app, ["photos", "libraries", "--against", "Source"]).exit_code == 2
