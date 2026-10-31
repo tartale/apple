@@ -103,15 +103,52 @@ def copy_one(
                 return None
 
 
-def libraries_command() -> None:
+def libraries_command(
+    outdated: Annotated[
+        bool,
+        typer.Option("--outdated", help="List only the libraries older than the reference, which Photos must upgrade before they accept photos."),
+    ] = False,
+    against: Annotated[
+        Optional[str],
+        typer.Option(help="With --outdated: the library whose version is the reference. The default is the newest version among the libraries."),
+    ] = None,
+) -> None:
     """[macOS only] List the libraries in PowerPhotos with where each is on disk and its Photos database version.
 
     A library with a lower version than the one you copy from must be upgraded by Photos before it accepts photos.
+    With --outdated, only those are listed (one per line on stdout, so it can be used in a script); libraries whose version
+    cannot be read, such as iPhoto or Aperture libraries, are named on stderr.
     """
     require_macos()
-    for name, path in known_libraries().items():
-        version = pp.model_version(path)
-        typer.echo(f"{name}\t{path}\t{version if version is not None else 'unknown'}")
+    if against and not outdated:
+        raise typer.BadParameter("--against needs --outdated")
+    libraries = known_libraries()
+    versions = {name: pp.model_version(path) for name, path in libraries.items()}
+    if not outdated:
+        for name, path in libraries.items():
+            version = versions[name]
+            typer.echo(f"{name}\t{path}\t{version if version is not None else 'unknown'}")
+        return
+
+    if against:
+        need(libraries, against)
+        reference = versions[against]
+        if reference is None:
+            fail(f"The version of {against} cannot be read, so it cannot be the reference.")
+        described = against
+    else:
+        readable = [version for version in versions.values() if version is not None]
+        if not readable:
+            fail("No library's version can be read.")
+        reference = max(readable)
+        described = "the newest library"
+    older = [name for name, version in versions.items() if version is not None and version < reference]
+    for name in older:
+        typer.echo(f"{name}\t{libraries[name]}\t{versions[name]}")
+    unreadable = [name for name, version in versions.items() if version is None]
+    typer.echo(f"Reference: {reference} ({described}). {len(older)} older.", err=True)
+    if unreadable:
+        typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
 def copy_command(
