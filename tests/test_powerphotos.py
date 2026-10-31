@@ -69,6 +69,13 @@ def test_libraries_lists_names_and_paths(mac):
     result = runner.invoke(app, ["photos", "libraries"])
     assert result.exit_code == 0
     assert "photos-2018\t" in result.output
+    assert result.output.splitlines()[0].endswith("\t19607")  # the version of the fake libraries
+
+
+def test_libraries_shows_unknown_for_a_library_whose_version_cannot_be_read(mac, tmp_path):
+    (tmp_path / "Source.photoslibrary" / "database" / "Photos.sqlite").unlink()
+    result = runner.invoke(app, ["photos", "libraries"])
+    assert any(line.startswith("Source\t") and line.endswith("\tunknown") for line in result.output.splitlines())
 
 
 def test_copy_passes_the_range_and_media_and_makes_until_inclusive(mac):
@@ -165,3 +172,45 @@ def test_split_rejects_a_bad_year_range(mac):
 def test_model_version_reads_the_database_and_tolerates_a_missing_one(tmp_path):
     assert pp.model_version(make_library(tmp_path, "x", 19320)) == 19320
     assert pp.model_version(tmp_path / "missing.photoslibrary") is None
+
+
+def wal_library(root: Path, before: int, after: int):
+    """A library whose upgrade (before -> after) is only in the write-ahead log, as while Photos still has it open.
+
+    Returns the library and the open connection, which has to stay open for the log to remain.
+    """
+    library = root / "w.photoslibrary"
+    (library / "database").mkdir(parents=True)
+    connection = sqlite3.connect(library / "database" / "Photos.sqlite")
+    connection.execute("pragma journal_mode=wal")
+    connection.execute("pragma wal_autocheckpoint=0")
+    connection.execute("create table Z_METADATA (Z_VERSION integer, Z_PLIST blob)")
+    connection.execute("insert into Z_METADATA values (1, ?)", (plistlib.dumps({"PLModelVersion": before}),))
+    connection.commit()
+    connection.execute("pragma wal_checkpoint(truncate)")
+    connection.execute("update Z_METADATA set Z_PLIST = ?", (plistlib.dumps({"PLModelVersion": after}),))
+    connection.commit()
+    return library, connection
+
+
+def test_model_version_sees_an_upgrade_that_is_still_in_the_write_ahead_log(tmp_path):
+    library, connection = wal_library(tmp_path, 19320, 19607)
+    assert pp.model_version(library) == 19607
+    connection.close()
+
+
+def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_opened_in_place(tmp_path, monkeypatch):
+    library, connection = wal_library(tmp_path, 19320, 19607)
+    real = pp.read_version
+    opened = []
+
+    def read_version(database, options):
+        opened.append(database)
+        if len(opened) == 1:
+            raise sqlite3.OperationalError("unable to open database file")  # e.g. a network share
+        return real(database, options)
+
+    monkeypatch.setattr(pp, "read_version", read_version)
+    assert pp.model_version(library) == 19607
+    assert opened[1] != opened[0]  # the second read was of a copy
+    connection.close()

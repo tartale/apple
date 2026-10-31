@@ -104,10 +104,14 @@ def copy_one(
 
 
 def libraries_command() -> None:
-    """[macOS only] List the libraries in PowerPhotos and where each is on disk."""
+    """[macOS only] List the libraries in PowerPhotos with where each is on disk and its Photos database version.
+
+    A library with a lower version than the one you copy from must be upgraded by Photos before it accepts photos.
+    """
     require_macos()
     for name, path in known_libraries().items():
-        typer.echo(f"{name}\t{path}")
+        version = pp.model_version(path)
+        typer.echo(f"{name}\t{path}\t{version if version is not None else 'unknown'}")
 
 
 def copy_command(

@@ -2,6 +2,7 @@
 import fcntl
 import plistlib
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -47,20 +48,37 @@ def libraries() -> Dict[str, Path]:
     return found
 
 
+def read_version(database: Path, uri_options: str) -> int:
+    connection = sqlite3.connect(f"file:{database}?{uri_options}", uri=True)
+    try:
+        row = connection.execute("select Z_PLIST from Z_METADATA").fetchone()
+    finally:
+        connection.close()
+    return int(plistlib.loads(row[0])["PLModelVersion"])
+
+
 def model_version(library: Path) -> Optional[int]:
     """The Photos database version (PLModelVersion) of a library, or None when it cannot be read.
 
     A library made by an older Photos has a lower number, and Photos must upgrade it before it accepts photos.
+    The value Photos just wrote can still be in the write-ahead log (Photos.sqlite-wal) and not yet in the database
+    file, so the log is read too: the database is opened read-only, or, where that cannot work (a read-only location, a
+    network share), a copy of the database with its log is read.
     """
     database = library / "database" / "Photos.sqlite"
+    errors = (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException)
     try:
-        connection = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
-        try:
-            row = connection.execute("select Z_PLIST from Z_METADATA").fetchone()
-        finally:
-            connection.close()
-        return int(plistlib.loads(row[0])["PLModelVersion"])
-    except (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException):
+        return read_version(database, "mode=ro")
+    except errors:
+        pass
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            for suffix in ("", "-wal", "-shm"):
+                source = database.with_name(database.name + suffix)
+                if source.exists():
+                    shutil.copyfile(source, Path(scratch) / source.name)
+            return read_version(Path(scratch) / database.name, "mode=ro")
+    except (OSError, *errors):
         return None
 
 
