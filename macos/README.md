@@ -16,7 +16,7 @@ Copies one media type of a library into one library per year (`photos-2018`, `ph
 ./apple photos copy --from "Default Library" --to photos-2018 --since 2018-01-01 --until 2018-12-31 --media videos
 ```
 
-`./apple photos libraries` lists the names PowerPhotos knows. The destination libraries must already exist in PowerPhotos (its scripting has no command to create one). A photo is a video by its file extension, because PowerPhotos' `photo` class has no media-type property.
+`./apple photos libraries` lists the names PowerPhotos knows, with each library's path and Photos database version (a destination with a lower version than the source needs a Photos upgrade). The destination libraries must already exist in PowerPhotos (its scripting has no command to create one). A photo is a video by its file extension, because PowerPhotos' `photo` class has no media-type property.
 
 A destination made by an older Photos must be upgraded by Photos before it accepts photos. The command compares each destination's Photos database version (`PLModelVersion`) with the source's before copying, and again if PowerPhotos refuses a copy. `--on-upgrade` chooses what happens: `skip` (the default, for unattended runs) leaves that destination out and says so, `ask` prompts in the terminal (skip, quit, or open the library in Photos to upgrade it and retry; it skips when there is no terminal), `stop` ends with an error.
 
