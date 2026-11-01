@@ -57,16 +57,23 @@ def read_version(database: Path, uri_options: str) -> int:
     return int(plistlib.loads(row[0])["PLModelVersion"])
 
 
-def model_version(library: Path) -> Optional[int]:
+def model_version(library: Path, exact: bool = True) -> Optional[int]:
     """The Photos database version (PLModelVersion) of a library, or None when it cannot be read.
 
     A library made by an older Photos has a lower number, and Photos must upgrade it before it accepts photos.
-    The value Photos just wrote can still be in the write-ahead log (Photos.sqlite-wal) and not yet in the database
-    file, so the log is read too: the database is opened read-only, or, where that cannot work (a read-only location, a
+    Without exact the database file is read where it is, without locking: instant even on a network share, but a version
+    Photos just wrote and has not yet checkpointed out of the log is missed.
+    With exact, the value Photos just wrote, which can still be in the write-ahead log (Photos.sqlite-wal) and not yet
+    in the database file, is found too: the database is opened read-only, or, where that cannot work (a read-only location, a
     network share), a copy of the database with its log is read.
     """
     database = library / "database" / "Photos.sqlite"
     errors = (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException)
+    if not exact:
+        try:
+            return read_version(database, "mode=ro&immutable=1")
+        except errors:
+            return None
     try:
         return read_version(database, "mode=ro")
     except errors:

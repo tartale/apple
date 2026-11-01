@@ -1,5 +1,6 @@
 """`./apple photos libraries|copy|split`: move photos between Photos libraries with PowerPhotos (macOS only)."""
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -116,6 +117,8 @@ def libraries_command(
     """[macOS only] List the libraries in PowerPhotos with where each is on disk and its Photos database version.
 
     A library with a lower version than the one you copy from must be upgraded by Photos before it accepts photos.
+    The listing reads each database as it is on disk, which is instant but can miss a version Photos wrote moments ago;
+    --outdated reads the write-ahead log too, which is exact but copies each database, slow over a network share.
     With --outdated, only those are listed (one per line on stdout, so it can be used in a script); libraries whose version
     cannot be read, such as iPhoto or Aperture libraries, are named on stderr.
     """
@@ -123,7 +126,8 @@ def libraries_command(
     if against and not outdated:
         raise typer.BadParameter("--against needs --outdated")
     libraries = known_libraries()
-    versions = {name: pp.model_version(path) for name, path in libraries.items()}
+    with ThreadPoolExecutor(max_workers=8) as pool:  # an exact read can mean copying a database over the network; overlap them
+        versions = dict(zip(libraries, pool.map(lambda path: pp.model_version(path, exact=outdated), libraries.values())))
     if not outdated:
         for name, path in libraries.items():
             version = versions[name]

@@ -46,6 +46,7 @@ def mac(tmp_path, monkeypatch):
 
     class Mac:
         libraries = libs
+        republish = staticmethod(publish)
         make = staticmethod(lambda name, version: libs.update({name: make_library(tmp_path, name, version)}) or publish(libs))
 
         @staticmethod
@@ -213,6 +214,27 @@ def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_op
     monkeypatch.setattr(pp, "read_version", read_version)
     assert pp.model_version(library) == 19607
     assert opened[1] != opened[0]  # the second read was of a copy
+    connection.close()
+
+
+def test_a_version_read_that_is_not_exact_reads_the_database_where_it_is_without_the_log(tmp_path, monkeypatch):
+    library, connection = wal_library(tmp_path, 19320, 19607)
+    opened = []
+    real = pp.read_version
+    monkeypatch.setattr(pp, "read_version", lambda database, options: opened.append(options) or real(database, options))
+    assert pp.model_version(library, exact=False) == 19320  # the upgrade is only in the log
+    assert opened == ["mode=ro&immutable=1"]
+    connection.close()
+
+
+def test_the_listing_does_not_read_the_log_but_outdated_does(mac):
+    library, connection = wal_library(mac.libraries["Source"].parent, 19320, 19607)
+    mac.libraries["old"] = library
+    mac.republish(mac.libraries)
+    listed = runner.invoke(app, ["photos", "libraries"])
+    assert "old\t" in listed.output and listed.output.count("19607") == 3 and "\t19320" in listed.output
+    outdated = runner.invoke(app, ["photos", "libraries", "--outdated"])
+    assert outdated.stdout == ""  # exact: old is 19607 like the rest
     connection.close()
 
 
