@@ -31,7 +31,8 @@ main() {
   venv=${APPLE_VENV:-$("$python" "$here/scripts/venvpath.py" "$here")}
   stamp=$venv/.installed
 
-  if [ ! -x "$venv/bin/python" ] || ! pyok "$venv/bin/python"; then
+  # A venv is usable when its python runs and can run pip; one that cannot is replaced
+  if [ ! -x "$venv/bin/python" ] || ! pyok "$venv/bin/python" || ! "$venv/bin/python" -m pip --version >/dev/null 2>&1; then
     # Clear first, never build over the top: `python -m venv` leaves existing bin/python symlinks alone, so recreating
     # over a venv built elsewhere gives a chimera that dies later with "No such file or directory". Only ever remove a
     # directory that is actually a venv.
@@ -65,7 +66,7 @@ main() {
 
   if [ ! -f "$stamp" ] || [ "$here/pyproject.toml" -nt "$stamp" ]; then
     echo "Installing the dependencies into $venv..." >&2
-    "$venv/bin/pip" install --quiet --upgrade -e "$here" >&2 || { echo "Installing the dependencies failed (see above); the next run will try again." >&2; return 1; }
+    "$venv/bin/python" -m pip install --quiet --upgrade -e "$here" >&2 || { echo "Installing the dependencies failed (see above); the next run will try again." >&2; return 1; }
     touch "$stamp"
   fi
 

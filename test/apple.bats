@@ -25,10 +25,16 @@ case \$1 in
   -c) case \$2 in *ensurepip*) [ -n "\${FAKE_NO_VENV_MODULE:-}" ] && exit 1;; esac; exit 0;;
   *venvpath.py) exec "\$REAL_PYTHON" "\$@";;
   -m) mkdir -p "\$3/bin"
-      printf '#!/bin/bash\necho "pip \$*" >> "\$CALLS"\nexit ${1:-0}\n' > "\$3/bin/pip"
-      printf '#!/bin/bash\necho "venv-python \$* APPLE_PROG=\$APPLE_PROG" >> "\$CALLS"\n' > "\$3/bin/python"
+      cat > "\$3/bin/python" <<'PYTHON'
+#!/bin/bash
+echo "venv-python \$* APPLE_PROG=\$APPLE_PROG" >> "\$CALLS"
+if [ "\$1 \$2" = "-m pip" ]; then
+  [ "\$3" = install ] && exit \${PIP_INSTALL_STATUS:-0}
+  exit 0
+fi
+PYTHON
       : > "\$3/pyvenv.cfg"
-      chmod +x "\$3/bin/pip" "\$3/bin/python";;
+      chmod +x "\$3/bin/python";;
 esac
 SCRIPT
   chmod +x "$BATS_TEST_TMPDIR/fake/python3.13"
@@ -39,7 +45,7 @@ SCRIPT
   run "$PROJECT/apple" photos --help
   [ "$status" -eq 0 ]
   grep -q "python3.13 -m venv $APPLE_VENV" "$CALLS"
-  grep -q "pip install --quiet --upgrade -e $PROJECT" "$CALLS"
+  grep -q "venv-python -m pip install --quiet --upgrade -e $PROJECT" "$CALLS"
   grep -q "venv-python -m apple photos --help" "$CALLS"
   [ -f "$APPLE_VENV/.installed" ]
 }
@@ -51,7 +57,7 @@ SCRIPT
   run "$PROJECT/apple" doctor
   [ "$status" -eq 0 ]
   ! grep -q -- '-m venv' "$CALLS"
-  ! grep -q '^pip' "$CALLS"
+  ! grep -q -- '-m pip install' "$CALLS"
   grep -q "venv-python -m apple doctor" "$CALLS"
 }
 
@@ -62,7 +68,7 @@ SCRIPT
   : > "$CALLS"
   run "$PROJECT/apple" doctor
   [ "$status" -eq 0 ]
-  grep -q "^pip install" "$CALLS"
+  grep -q -- "-m pip install" "$CALLS"
 }
 
 @test "the program name shown in help is the command as typed" {
@@ -100,16 +106,29 @@ SCRIPT
 }
 
 @test "a failed install exits 1, leaves no stamp, and the next run tries again" {
-  fake_python 1
-  run "$PROJECT/apple" doctor
+  fake_python
+  PIP_INSTALL_STATUS=1 run "$PROJECT/apple" doctor
   [ "$status" -eq 1 ]
   [[ $output == *"the next run will try again"* ]]
   [ ! -f "$APPLE_VENV/.installed" ]
-  printf '#!/bin/bash\necho "pip $*" >> "$CALLS"\n' > "$APPLE_VENV/bin/pip"   # the network is back
+  : > "$CALLS"
+  run "$PROJECT/apple" doctor   # the network is back
+  [ "$status" -eq 0 ]
+  grep -q -- "-m pip install" "$CALLS"
+}
+
+@test "a venv whose python runs but cannot run pip is replaced, and pip is run as python -m pip" {
+  fake_python
+  "$PROJECT/apple" doctor
+  # the venv's pip is gone (what a Homebrew Python upgrade or a cleaned cache can leave behind)
+  printf '#!/bin/bash\n[ "$1 $2" = "-m pip" ] && exit 1\nexit 0\n' > "$APPLE_VENV/bin/python"
   : > "$CALLS"
   run "$PROJECT/apple" doctor
   [ "$status" -eq 0 ]
-  grep -q "^pip install" "$CALLS"
+  [[ $output == *"Replacing the unusable venv"* ]]
+  grep -q -- "-m venv $APPLE_VENV" "$CALLS"
+  grep -q -- "venv-python -m pip install" "$CALLS"
+  [ -f "$APPLE_VENV/.installed" ]
 }
 
 @test "by default the venv is on the local disk, under the cache directory, named for the OS, architecture and checkout path" {
