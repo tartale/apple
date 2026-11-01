@@ -202,16 +202,16 @@ def test_model_version_sees_an_upgrade_that_is_still_in_the_write_ahead_log(tmp_
 
 def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_opened_in_place(tmp_path, monkeypatch):
     library, connection = wal_library(tmp_path, 19320, 19607)
-    real = pp.read_version
+    real = pp.read_file
     opened = []
 
-    def read_version(database, options):
+    def read_file(database, reader, mode="ro"):
         opened.append(database)
         if len(opened) == 1:
             raise sqlite3.OperationalError("unable to open database file")  # e.g. a network share
-        return real(database, options)
+        return real(database, reader, mode)
 
-    monkeypatch.setattr(pp, "read_version", read_version)
+    monkeypatch.setattr(pp, "read_file", read_file)
     assert pp.model_version(library) == 19607
     assert opened[1] != opened[0]  # the second read was of a copy
     connection.close()
@@ -220,10 +220,10 @@ def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_op
 def test_a_version_read_that_is_not_exact_reads_the_database_where_it_is_without_the_log(tmp_path, monkeypatch):
     library, connection = wal_library(tmp_path, 19320, 19607)
     opened = []
-    real = pp.read_version
-    monkeypatch.setattr(pp, "read_version", lambda database, options: opened.append(options) or real(database, options))
+    real = pp.read_file
+    monkeypatch.setattr(pp, "read_file", lambda database, reader, mode="ro": opened.append(mode) or real(database, reader, mode))
     assert pp.model_version(library, exact=False) == 19320  # the upgrade is only in the log
-    assert opened == ["mode=ro&immutable=1"]
+    assert opened == ["ro&immutable=1"]
     connection.close()
 
 
@@ -284,3 +284,79 @@ def test_outdated_against_an_unknown_or_unreadable_library_fails(mac, tmp_path):
 
 def test_against_without_outdated_is_a_usage_error(mac):
     assert runner.invoke(app, ["photos", "libraries", "--against", "Source"]).exit_code == 2
+
+
+def add_photos(library: Path, photos) -> Path:
+    """Gives a fake library the tables diff reads. photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, trashed])."""
+    connection = sqlite3.connect(library / "database" / "Photos.sqlite")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
+    for number, (when, size, name, *trashed) in enumerate(photos, 1):
+        seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
+        connection.execute("insert into ZASSET values (?, ?, ?, ?)", (number, seconds, f"UUID{number}.jpg", int(bool(trashed))))
+        connection.execute("insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?)", (number, number, size, name))
+    connection.commit()
+    connection.close()
+    return library
+
+
+def diff(mac, left, right, *options):
+    for name, photos in (("Source", left), ("photos-2018", right)):
+        add_photos(mac.libraries[name], photos)
+    return runner.invoke(app, ["photos", "diff", "Source", "photos-2018", *options])
+
+
+A = ("2018-03-01 10:00:00", 100, "a.jpg")
+B = ("2018-03-02 11:00:00", 100, "b.jpg")
+C = ("2018-03-03 12:00:00", 100, "c.mov")
+D = ("2018-03-04 09:00:00", 100, "d.jpg")
+
+
+def test_diff_lists_what_is_in_only_one_library_and_exits_1(mac):
+    result = diff(mac, [A, B, C], [B, D])
+    assert result.exit_code == 1
+    assert result.stdout.splitlines() == [
+        "< 2018-03-01 10:00:00\t100\ta.jpg", "< 2018-03-03 12:00:00\t100\tc.mov", "> 2018-03-04 09:00:00\t100\td.jpg",
+    ]
+    assert "Only in Source: 2. Only in photos-2018: 1. In both: 1." in result.output
+    assert mac.calls("list-photos.applescript") == []  # read from the database, not through PowerPhotos
+
+
+def test_diff_of_matching_libraries_prints_nothing_and_exits_0(mac):
+    result = diff(mac, [A], [A])
+    assert result.exit_code == 0
+    assert result.stdout == ""
+
+
+def test_diff_counts_repeated_photos(mac):
+    assert diff(mac, [A, A], [A]).stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg"]
+
+
+def test_diff_ignores_the_trash(mac):
+    assert diff(mac, [A, (*B, "trashed")], [A]).exit_code == 0
+
+
+def test_diff_tells_apart_photos_that_differ_only_in_size(mac):
+    other = ("2018-03-01 10:00:00", 200, "a.jpg")
+    assert diff(mac, [A], [other]).stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg", "> 2018-03-01 10:00:00\t200\ta.jpg"]
+
+
+def test_diff_summary_prints_only_the_counts(mac):
+    result = diff(mac, [A], [], "--summary")
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "Only in Source: 1." in result.output
+
+
+def test_diff_takes_library_paths_and_needs_no_macos(tmp_path, monkeypatch):
+    monkeypatch.setattr(apple_platform, "is_macos", lambda: False)
+    one = add_photos(make_library(tmp_path, "one", 19607), [A, B])
+    two = add_photos(make_library(tmp_path, "two", 19607), [B])
+    result = runner.invoke(app, ["photos", "diff", str(one), str(two)])
+    assert result.stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg"]
+
+
+def test_diff_names_an_unknown_library(mac):
+    result = runner.invoke(app, ["photos", "diff", "Source", "Nope"])
+    assert result.exit_code == 1
+    assert "No library named Nope" in result.output

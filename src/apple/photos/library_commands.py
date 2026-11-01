@@ -1,5 +1,6 @@
-"""`./apple photos libraries|copy|split`: move photos between Photos libraries with PowerPhotos (macOS only)."""
+"""`./apple photos libraries|diff|copy|split`: compare and move photos between Photos libraries with PowerPhotos (macOS only)."""
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -56,6 +57,14 @@ def need(libraries: dict, name: str) -> Path:
     if name not in libraries:
         fail(f"No library named {name} in PowerPhotos. Libraries: {', '.join(sorted(libraries))}")
     return libraries[name]
+
+
+def find_library(name_or_path: str) -> Path:
+    """A library given as the path of a .photoslibrary, or by its name in PowerPhotos (macOS only)."""
+    if Path(name_or_path).is_dir():
+        return Path(name_or_path)
+    require_macos()
+    return need(known_libraries(), name_or_path)
 
 
 def resolve_upgrade(name: str, path: Path, source_version: Optional[int], mode: OnUpgrade, reason: str) -> bool:
@@ -153,6 +162,37 @@ def libraries_command(
     typer.echo(f"Reference: {reference} ({described}). {len(older)} older.", err=True)
     if unreadable:
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
+
+
+def diff_command(
+    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
+    right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
+    summary: Annotated[bool, typer.Option("--summary", help="Print only the counts.")] = False,
+) -> None:
+    """Show which photos and videos are in one library and not the other.
+
+    Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
+    .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Prints
+    `<` for each one only in LEFT and `>` for each only in RIGHT (date, size and file name, tab-separated; sorted by
+    date), then the counts on stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
+    """
+
+    try:
+        left_path, right_path = find_library(left), find_library(right)
+        first, second = pp.photos(left_path), pp.photos(right_path)
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+    only_left, only_right = first - second, second - first
+    if not summary:
+        marked = [("<", key) for key in only_left.elements()] + [(">", key) for key in only_right.elements()]
+        for mark, (when, size, name) in sorted(marked, key=lambda item: (item[1], item[0])):
+            typer.echo(f"{mark} {when}\t{size}\t{name}")
+    typer.echo(
+        f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. "
+        f"In both: {sum((first & second).values())}.",
+        err=True,
+    )
+    raise typer.Exit(1 if only_left or only_right else 0)
 
 
 def copy_command(
