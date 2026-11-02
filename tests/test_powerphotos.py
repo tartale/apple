@@ -1,6 +1,7 @@
 import fcntl
 import json
 import plistlib
+import re
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +25,13 @@ def make_library(root: Path, name: str, version: int) -> Path:
     connection.commit()
     connection.close()
     return library
+
+
+@pytest.fixture(autouse=True)
+def scratch_root(tmp_path, monkeypatch):
+    """Database copies are made under the cache directory; keep them out of the real one."""
+    monkeypatch.setattr(pp, "SCRATCH_ROOT", tmp_path / "scratch")
+    return tmp_path / "scratch"
 
 
 @pytest.fixture
@@ -200,7 +208,7 @@ def test_model_version_sees_an_upgrade_that_is_still_in_the_write_ahead_log(tmp_
     connection.close()
 
 
-def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_opened_in_place(tmp_path, monkeypatch):
+def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_opened_in_place(tmp_path, monkeypatch, scratch_root):
     library, connection = wal_library(tmp_path, 19320, 19607)
     real = pp.read_file
     opened = []
@@ -214,6 +222,7 @@ def test_model_version_reads_a_copy_with_its_log_where_the_database_cannot_be_op
     monkeypatch.setattr(pp, "read_file", read_file)
     assert pp.model_version(library) == 19607
     assert opened[1] != opened[0]  # the second read was of a copy
+    assert scratch_root in opened[1].parents  # on local disk, not in TMPDIR
     connection.close()
 
 
@@ -289,6 +298,8 @@ def test_against_without_outdated_is_a_usage_error(mac):
 def add_photos(library: Path, photos) -> Path:
     """Gives a fake library the tables diff reads. photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, trashed])."""
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
+    connection.execute("drop table if exists ZASSET")
+    connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
     connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer)")
     connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
     for number, (when, size, name, *trashed) in enumerate(photos, 1):
@@ -316,7 +327,7 @@ def test_diff_lists_what_is_in_only_one_library_and_exits_1(mac):
     result = diff(mac, [A, B, C], [B, D])
     assert result.exit_code == 1
     assert result.stdout.splitlines() == [
-        "< 2018-03-01 10:00:00\t100\ta.jpg", "< 2018-03-03 12:00:00\t100\tc.mov", "> 2018-03-04 09:00:00\t100\td.jpg",
+        "<  2018-03-01 10:00:00  100  a.jpg", "<  2018-03-03 12:00:00  100  c.mov", ">  2018-03-04 09:00:00  100  d.jpg",
     ]
     assert "Only in Source: 2. Only in photos-2018: 1. In both: 1." in result.output
     assert mac.calls("list-photos.applescript") == []  # read from the database, not through PowerPhotos
@@ -329,7 +340,7 @@ def test_diff_of_matching_libraries_prints_nothing_and_exits_0(mac):
 
 
 def test_diff_counts_repeated_photos(mac):
-    assert diff(mac, [A, A], [A]).stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg"]
+    assert diff(mac, [A, A], [A]).stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_ignores_the_trash(mac):
@@ -338,7 +349,7 @@ def test_diff_ignores_the_trash(mac):
 
 def test_diff_tells_apart_photos_that_differ_only_in_size(mac):
     other = ("2018-03-01 10:00:00", 200, "a.jpg")
-    assert diff(mac, [A], [other]).stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg", "> 2018-03-01 10:00:00\t200\ta.jpg"]
+    assert diff(mac, [A], [other]).stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg", ">  2018-03-01 10:00:00  200  a.jpg"]
 
 
 def test_diff_summary_prints_only_the_counts(mac):
@@ -353,10 +364,204 @@ def test_diff_takes_library_paths_and_needs_no_macos(tmp_path, monkeypatch):
     one = add_photos(make_library(tmp_path, "one", 19607), [A, B])
     two = add_photos(make_library(tmp_path, "two", 19607), [B])
     result = runner.invoke(app, ["photos", "diff", str(one), str(two)])
-    assert result.stdout.splitlines() == ["< 2018-03-01 10:00:00\t100\ta.jpg"]
+    assert result.stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_names_an_unknown_library(mac):
     result = runner.invoke(app, ["photos", "diff", "Source", "Nope"])
     assert result.exit_code == 1
     assert "No library named Nope" in result.output
+
+
+def test_diff_text_columns_are_aligned_with_sizes_on_the_right(mac):
+    long = ("2018-03-03 12:00:00", 25000, "longer-name.mov")
+    result = diff(mac, [A, long], [])
+    assert result.stdout.splitlines() == [
+        "<  2018-03-01 10:00:00    100  a.jpg",
+        "<  2018-03-03 12:00:00  25000  longer-name.mov",
+    ]
+
+
+def test_diff_only_shows_one_side_without_the_marks(mac):
+    assert diff(mac, [A, B], [B, D], "--only", "left").stdout.splitlines() == ["2018-03-01 10:00:00  100  a.jpg"]
+    assert diff(mac, [A, B], [B, D], "--only", "right").stdout.splitlines() == ["2018-03-04 09:00:00  100  d.jpg"]
+
+
+def test_diff_csv_and_json_carry_the_side(mac):
+    csv_out = diff(mac, [A], [D], "--format", "csv").stdout.splitlines()
+    assert csv_out == ["side,date,size,name", "left,2018-03-01 10:00:00,100,a.jpg", "right,2018-03-04 09:00:00,100,d.jpg"]
+    records = json.loads(diff(mac, [A], [D], "--format", "json").stdout)
+    assert records[0] == {"side": "left", "date": "2018-03-01 10:00:00", "size": 100, "name": "a.jpg"}
+    assert diff(mac, [A], [D], "--format", "csv", "--only", "left").stdout.splitlines()[0] == "date,size,name"
+
+
+def test_diff_fields_chooses_and_orders_the_columns(mac):
+    assert diff(mac, [A], [], "--fields", "name,size", "--only", "left").stdout.splitlines() == ["a.jpg  100"]
+    bad = diff(mac, [A], [], "--fields", "name,name")
+    assert bad.exit_code == 2 and "at most once" in bad.output
+    assert diff(mac, [A], [], "--fields", "colour").exit_code == 2
+
+
+def test_diff_sort_orders_by_date_name_or_size(mac):
+    big = ("2018-03-05 08:00:00", 900, "a-late.jpg")
+    small = ("2018-03-02 08:00:00", 5, "z-early.jpg")
+    names = lambda *o: [line.split()[-1] for line in diff(mac, [big, small, A], [], "--only", "left", *o).stdout.splitlines()]
+    assert names() == ["a.jpg", "z-early.jpg", "a-late.jpg"]
+    assert names("--sort", "name") == ["a-late.jpg", "a.jpg", "z-early.jpg"]
+    assert names("--sort", "size") == ["z-early.jpg", "a.jpg", "a-late.jpg"]
+
+
+def copy_list(args, text, **options):
+    return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", *args], input=text, **options)
+
+
+def test_copy_list_copies_the_names_in_diff_csv_output(mac):
+    result = copy_list(["--list", "-"], "side,date,size,name\nleft,2018-03-01 10:00:00,100,\"a, b.jpg\"\nleft,x,1,c.mov\n")
+    assert result.exit_code == 0 and "photos-2018: found 3" in result.output
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a, b.jpg", "c.mov"], "true"]]
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_copy_list_reads_json_plain_names_and_files(mac, tmp_path):
+    copy_list(["--list", "-"], '[{"side": "left", "name": "a.jpg"}, {"name": "b.mov"}]')
+    copy_list(["--list", "-"], "c.jpg\n\nd.mov\n")
+    listing = tmp_path / "names.txt"
+    listing.write_text("e.jpg\n")
+    copy_list(["--list", str(listing)], "")
+    assert [call[2] for call in mac.calls("copy-named.applescript")] == [["a.jpg", "b.mov"], ["c.jpg", "d.mov"], ["e.jpg"]]
+
+
+def test_copy_list_without_a_name_column_is_an_error(mac):
+    result = copy_list(["--list", "-"], "side,date\nleft,2018-03-01 10:00:00\n")
+    assert result.exit_code == 2 and "no name column" in result.output
+    assert mac.calls("copy-named.applescript") == []
+
+
+def test_an_empty_list_copies_nothing_and_succeeds(mac):
+    for text in ("", "\n", "side,name\n", "[]"):
+        result = copy_list(["--list", "-"], text)
+        assert result.exit_code == 0 and "no files copied" in result.output
+    assert mac.calls("copy-named.applescript") == []
+
+
+def test_copy_list_cannot_be_combined_with_a_range_or_media(mac):
+    for option in (["--since", "2018-01-01"], ["--until", "2018-12-31"], ["--media", "videos"]):
+        assert copy_list(["--list", "-", *option], "a.jpg\n").exit_code == 2
+
+
+def test_names_the_source_lacks_are_reported(mac, monkeypatch):
+    monkeypatch.setenv("FAKE_NAMED_MISSING", "gone.jpg,gone2.jpg")
+    result = copy_list(["--list", "-"], "a.jpg\ngone.jpg\ngone2.jpg\n")
+    assert "Not in Source: gone.jpg" in result.output and "Not in Source: gone2.jpg" in result.output
+
+
+def test_no_duplicate_check_needs_a_list_and_is_passed_through_with_one(mac):
+    assert copy_list(["--no-duplicate-check"], "").exit_code == 2
+    assert mac.calls("copy-photos.applescript") == []
+    copy_list(["--list", "-", "--no-duplicate-check"], "a.jpg\n")
+    assert mac.calls("copy-named.applescript")[0][3] == "false"
+
+
+def test_the_extension_lists_match_the_applescript():
+    script = (pp.APPLESCRIPTS / "copy-photos.applescript").read_text()
+    for kind, key in (("photoExtensions", "photos"), ("videoExtensions", "videos")):
+        listed = re.search(rf"property {kind} : \{{([^}}]*)\}}", script).group(1)
+        assert tuple(re.findall(r'"([^"]+)"', listed)) == pp.EXTENSIONS[key]
+
+
+def test_copy_named_applescript_passes_the_duplicate_setting_explicitly():
+    script = (pp.APPLESCRIPTS / "copy-named.applescript").read_text()
+    assert "with skip duplicates" in script and "without skip duplicates" in script
+
+
+def year_libraries(mac, source, **destinations):
+    add_photos(mac.libraries["Source"], source)
+    for name, photos in destinations.items():
+        add_photos(mac.libraries[name.replace("_", "-")], photos)
+
+
+def split(*options):
+    return runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", *options])
+
+
+def test_split_skips_a_year_whose_library_already_has_everything(mac):
+    year_libraries(mac, [A, B], photos_2018=[A, B])
+    result = split()
+    assert result.exit_code == 0 and "photos-2018: up to date" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_copies_a_year_that_is_missing_something(mac):
+    year_libraries(mac, [A, B], photos_2018=[A])
+    assert "photos-2018: found" in split().output
+    assert len(mac.calls("copy-photos.applescript")) == 1
+
+
+def test_split_ignores_photos_of_the_other_media_and_the_trash_when_judging_a_year(mac):
+    year_libraries(mac, [A, C, (*B, "trashed")], photos_2018=[A])
+    assert "up to date" in split().output
+
+
+def test_split_no_skip_complete_copies_even_a_complete_year(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    split("--no-skip-complete")
+    assert len(mac.calls("copy-photos.applescript")) == 1
+
+
+def test_split_copies_when_a_year_library_cannot_be_read(mac):
+    year_libraries(mac, [A])  # photos-2018 has no photo tables
+    split()
+    assert len(mac.calls("copy-photos.applescript")) == 1
+
+
+def test_a_photo_near_new_year_may_be_in_the_neighbouring_years_library(mac):
+    new_year = ("2018-01-01 05:00:00", 100, "ny.jpg")
+    mac.make("photos-2017", 19607)
+    year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[new_year])
+    assert "up to date" in split().output
+    year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[])
+    assert "photos-2018: found" in split().output
+
+
+def test_split_no_duplicate_check_copies_only_the_missing_names_without_the_check(mac):
+    new_year = ("2018-01-01 05:00:00", 100, "ny.jpg")
+    year_libraries(mac, [A, B, new_year], photos_2018=[A])
+    result = split("--no-duplicate-check")
+    assert "photos-2018: found" in result.output
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["b.jpg", "ny.jpg"], "false"]]  # near New Year too
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_no_duplicate_check_leaves_a_complete_year_alone(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    assert "up to date" in split("--no-duplicate-check").output
+    assert mac.calls("copy-named.applescript") == []
+
+
+def test_split_no_duplicate_check_needs_the_databases_and_the_skip_check(mac):
+    year_libraries(mac, [A])  # photos-2018 cannot be read
+    result = split("--no-duplicate-check")
+    assert result.exit_code == 1 and "cannot be read" in result.output
+    assert split("--no-duplicate-check", "--no-skip-complete").exit_code == 2
+    assert mac.calls("copy-named.applescript") == []
+
+
+def two_videos_2016(mac, monkeypatch, tmp_path):
+    other = make_library(tmp_path / "elsewhere", "videos-2016", 19607)
+    monkeypatch.setenv("FAKE_LIBRARIES", "\n".join(f"{n}\t{p}/" for n, p in [*mac.libraries.items(), ("photos-2018", other)]))
+
+
+def test_libraries_sharing_a_name_stop_copy_and_diff_and_outdated(mac, monkeypatch, tmp_path):
+    two_videos_2016(mac, monkeypatch, tmp_path)
+    for args in (["copy", "--from", "Source", "--to", "photos-2018"], ["diff", "Source", "photos-2018"], ["libraries", "--outdated"]):
+        result = runner.invoke(app, ["photos", *args])
+        assert result.exit_code == 1 and "share a name" in result.output and "photos-2018" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_the_listing_shows_libraries_that_share_a_name_and_says_so(mac, monkeypatch, tmp_path):
+    two_videos_2016(mac, monkeypatch, tmp_path)
+    result = runner.invoke(app, ["photos", "libraries"])
+    assert result.exit_code == 0
+    assert result.stdout.count("photos-2018\t") == 2
+    assert "share a name" in result.output
