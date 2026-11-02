@@ -10,7 +10,7 @@ import tempfile
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Iterator, Optional, TypeVar
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -51,14 +51,32 @@ def run_applescript(name: str, *args: str) -> str:
     return result.stdout.strip()
 
 
-def libraries() -> Dict[str, Path]:
-    """The libraries in PowerPhotos' list: name -> path on disk."""
-    found = {}
+def listing() -> List[Tuple[str, Path]]:
+    """Every library in PowerPhotos' list as (name, path on disk). PowerPhotos allows two with the same name."""
+    found = []
     for line in run_applescript("libraries.applescript").splitlines():
         name, _, path = line.partition("\t")
         if name:
-            found[name] = Path(path)
+            found.append((name, Path(path)))
     return found
+
+
+def duplicate_names(entries: List[Tuple[str, Path]]) -> str:
+    """A sentence naming the libraries that share a name and where each is, or "" when every name is unique."""
+    paths: Dict[str, List[Path]] = {}
+    for name, path in entries:
+        paths.setdefault(name, []).append(path)
+    clashes = [f"{name} ({', '.join(str(path) for path in where)})" for name, where in paths.items() if len(where) > 1]
+    return f"These PowerPhotos libraries share a name, so it is not clear which one is meant: {'; '.join(clashes)}." if clashes else ""
+
+
+def libraries() -> Dict[str, Path]:
+    """The libraries in PowerPhotos' list: name -> path on disk. Raises PowerPhotosError when two share a name."""
+    entries = listing()
+    clash = duplicate_names(entries)
+    if clash:
+        raise PowerPhotosError(f"{clash} Rename one in PowerPhotos.")
+    return dict(entries)
 
 
 PHOTOS_QUERY = """

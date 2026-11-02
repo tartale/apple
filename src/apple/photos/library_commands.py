@@ -175,14 +175,23 @@ def libraries_command(
     require_macos()
     if against and not outdated:
         raise typer.BadParameter("--against needs --outdated")
-    libraries = known_libraries()
+    try:
+        entries = pp.listing()
+    except pp.PowerPhotosError as error:
+        fail(f"Could not list the PowerPhotos libraries: {error}")
+    clash = pp.duplicate_names(entries)
+    if clash and outdated:
+        fail(f"{clash} Rename one in PowerPhotos.")
     with ThreadPoolExecutor(max_workers=8) as pool:  # an exact read can mean copying a database over the network; overlap them
-        versions = dict(zip(libraries, pool.map(lambda path: pp.model_version(path, exact=outdated), libraries.values())))
+        read = list(pool.map(lambda entry: pp.model_version(entry[1], exact=outdated), entries))
     if not outdated:
-        for name, path in libraries.items():
-            version = versions[name]
+        for (name, path), version in zip(entries, read):
             typer.echo(f"{name}\t{path}\t{version if version is not None else 'unknown'}")
+        if clash:
+            typer.echo(clash, err=True)
         return
+    libraries = dict(entries)
+    versions = {name: version for (name, _), version in zip(entries, read)}
 
     if against:
         need(libraries, against)
