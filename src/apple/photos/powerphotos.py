@@ -1,5 +1,6 @@
 """Talks to PowerPhotos through the bundled AppleScript files, and reads library versions and contents from disk."""
 import fcntl
+import os
 import plistlib
 import re
 import shutil
@@ -14,7 +15,16 @@ from typing import Callable, Dict, Iterator, Optional, TypeVar
 T = TypeVar("T")
 
 APPLESCRIPTS = Path(__file__).parent / "applescript"
+# Where database copies are read: on local disk, since SQLite cannot use a write-ahead log on a network share, and
+# TMPDIR can point into a checkout that is one.
+SCRATCH_ROOT = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "apple" / "scratch"
 LOCK_FILE = Path(tempfile.gettempdir()) / "apple-powerphotos.lock"
+
+# The file name endings that count as photos and as videos. The same lists are in copy-photos.applescript.
+EXTENSIONS = {
+    "photos": (".jpg", ".jpeg", ".png", ".heic", ".gif", ".tif", ".tiff", ".dng", ".cr2", ".nef", ".arw"),
+    "videos": (".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"),
+}
 
 UPGRADE_NEEDED = 5  # PowerPhotos' error number for "Library needs upgrade"
 
@@ -82,7 +92,8 @@ def read_database(library: Path, reader: Callable[[sqlite3.Connection], T]) -> T
         return read_file(database, reader)
     except READ_ERRORS as in_place:
         first = in_place
-    with tempfile.TemporaryDirectory() as scratch:
+    SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as scratch:
         for suffix in ("", "-wal"):  # the -shm index is rebuilt from the log
             source = database.with_name(database.name + suffix)
             if source.exists():
