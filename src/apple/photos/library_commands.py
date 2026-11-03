@@ -14,6 +14,8 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
+from apple.photos import split_plan
+from apple.photos.common import is_dry_run
 
 
 class Media(str, Enum):
@@ -25,6 +27,11 @@ class Media(str, Enum):
 class SplitMedia(str, Enum):
     photos = "photos"
     videos = "videos"
+
+
+class OnMissing(str, Enum):
+    stop = "stop"
+    skip = "skip"
 
 
 class OnUpgrade(str, Enum):
@@ -367,37 +374,6 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
         return None
 
 
-def missing_in_year(source_photos: Counter, year: int, media: str, read) -> Optional[tuple]:
-    """What the library for a year lacks of that year's photos in the source, judged from the databases.
-
-    Returns (missing, uncertain), or None when that year's library is missing or cannot be read. The databases keep UTC
-    dates and PowerPhotos files by local date, so a photo within a day of New Year may belong to the year before or
-    after: missing holds the photos of the year proper that its library lacks, and uncertain the ones near New Year that
-    are in none of this year's library and its neighbours'. read(year) gives that year's library as pp.photos does, or
-    None.
-    """
-    destination = read(year)
-    if destination is None:
-        return None
-    first_day, last_day = f"{year}-01-02", f"{year}-12-31"
-    core, edge = Counter(), Counter()
-    for (when, size, name), count in source_photos.items():
-        if not name.lower().endswith(pp.EXTENSIONS[media]):
-            continue
-        if first_day <= when < last_day:
-            core[(when, size, name)] = count
-        elif f"{year - 1}-12-31" <= when < f"{year + 1}-01-02":
-            edge[(when, size, name)] = count
-    nearby = destination + (read(year - 1) or Counter()) + (read(year + 1) or Counter())
-    return core - destination, edge - nearby
-
-
-def complete_year(source_photos: Counter, year: int, media: str, read) -> bool:
-    """True when the library for a year holds every photo of that year in the source (see missing_in_year)."""
-    found = missing_in_year(source_photos, year, media, read)
-    return found is not None and not found[0] and not found[1]
-
-
 def split_command(
     source: SourceOption,
     media: Annotated[SplitMedia, typer.Option(help="Split photos or videos.")],
@@ -405,27 +381,45 @@ def split_command(
     destination_name: Annotated[
         str, typer.Option("--to", help="Destination library name for each year; {media} and {year} are filled in.")
     ] = "{media}-{year}",
+    max_size: Annotated[
+        Optional[str],
+        typer.Option(
+            help="A cap on the size of each library, such as 200GB (decimal units, the sum of the original files). A year over "
+            "the cap goes into NAME-1, NAME-2 ... each a run of whole days from January 1 on, filled up to the cap in turn."
+        ),
+    ] = None,
     skip_complete: Annotated[
         bool,
         typer.Option(
             "--skip-complete/--no-skip-complete",
-            help="Leave out a year whose library already holds all of that year's photos, judged from the databases "
+            help="Leave out a library that already holds all the photos of its dates, judged from the databases "
             "(a few seconds, where each PowerPhotos copy into a large library makes it reindex).",
         ),
     ] = True,
     no_duplicate_check: NoDuplicateCheckOption = False,
+    on_missing: Annotated[
+        OnMissing,
+        typer.Option(help="When a destination library is not in PowerPhotos: stop before copying anything, or skip it and go on."),
+    ] = OnMissing.stop,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Copy nothing; show the libraries each year goes into and what each needs. Same as DRY_RUN=true.")
+    ] = False,
 ) -> None:
     """[macOS only] Copy a library into one library per year (photos-2018, photos-2019 ...) with PowerPhotos.
 
-    The destination libraries must already exist in PowerPhotos. A year whose library already has every photo is
-    reported as up to date and not copied again.
+    The destination libraries must already exist in PowerPhotos. A library that already has every photo of its dates
+    is reported as up to date and not copied again.
 
-    --no-duplicate-check catches stragglers: it works out from the databases which photos of each year the library
+    --max-size caps each library: a year over the cap is divided into runs of whole days, chronologically, into
+    photos-2018-1, photos-2018-2 ... A rerun after new photos arrive can move a boundary, and a photo near one may be
+    filed in either part.
+
+    --no-duplicate-check catches stragglers: it works out from the databases which photos of each library's dates it
     lacks and copies just those, matched by file name and without PowerPhotos' duplicate check. A missing photo whose
-    file name another photo in the source shares copies that one too. A photo within a day of New Year, whose year the
-    databases cannot settle, is copied into the library of every year in --years if no library for that year or the
-    ones beside it has it, so it can end up in two year libraries.
+    file name another photo in the source shares copies that one too. A photo within a day of the start or end of a
+    library's dates, whose library the databases cannot settle, is copied into every library it could belong to that
+    lacks it, so it can end up in two.
     """
     require_macos()
     first, _, last = years.partition("-")
@@ -437,40 +431,71 @@ def split_command(
     if no_duplicate_check and not skip_complete:
         raise typer.BadParameter("--no-duplicate-check works out what is missing, so it cannot be used with --no-skip-complete")
     try:
+        max_bytes = split_plan.parse_size(max_size) if max_size is not None else None
+    except ValueError as error:
+        raise typer.BadParameter(str(error))
+    dry = is_dry_run(dry_run)
+    try:
         with pp.one_at_a_time():
             libraries = known_libraries()
-            source_photos = read_photos(libraries, source) if skip_complete else None
-            if no_duplicate_check and source_photos is None:
-                fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
+            source_photos = read_photos(libraries, source) if skip_complete or max_bytes else None
+            if (no_duplicate_check or max_bytes) and source_photos is None:
+                fail(f"The photos of {source} cannot be read from its database, so " + (
+                    "what is missing cannot be worked out." if no_duplicate_check else "its size cannot be worked out."))
+            plans = {}
+
+            def plan(year: int) -> list:
+                if year not in plans:
+                    name = destination_name.format(media=media.value, year=year)
+                    plans[year] = split_plan.plan_year(source_photos, year, media.value, name, max_bytes)
+                return plans[year]
+
             cache = {}
 
-            def read_year(year: int):
-                name = destination_name.format(media=media.value, year=year)
+            def read_library(name: str):
                 if name not in cache:
                     cache[name] = read_photos(libraries, name)
                 return cache[name]
 
+            def nearby_names(year: int, own: str) -> list:
+                return [p.name for y in (year - 1, year, year + 1) for p in plan(y) if p.name != own]
+
+            work = [(year, part) for year in range(first_year, last_year + 1) for part in plan(year)]
+            absent = [part.name for _, part in work if part.name not in libraries]
+            if absent and on_missing == OnMissing.stop and not dry:
+                fail(f"Not in PowerPhotos: {', '.join(absent)}. Create them there, or use --on-missing skip.")
             for year in range(first_year, last_year + 1):
-                name = destination_name.format(media=media.value, year=year)
-                if source_photos is not None and complete_year(source_photos, year, media.value, read_year):
-                    typer.echo(f"{name}: up to date")
-                    continue
-                if no_duplicate_check:
-                    found = missing_in_year(source_photos, year, media.value, read_year)
-                    if found is None:
-                        fail(f"The photos of {name} cannot be read from its database, so what is missing cannot be worked out.")
-                    names = sorted({file_name for _, _, file_name in found[0] + found[1]})  # near New Year too: any year will do
-                    if not names:
-                        typer.echo(f"{name}: nothing to copy")
+                parts = plan(year)
+                if len(parts) > 1:
+                    typer.echo(f"{parts[0].name.rsplit('-', 1)[0]}: {split_plan.format_size(sum(p.size for p in parts))} over the "
+                               f"{split_plan.format_size(max_bytes)} cap, in {len(parts)} libraries")
+                for part in parts:
+                    label = f"{part.name} ({part.start.isoformat()} to {(part.end - timedelta(days=1)).isoformat()}, {split_plan.format_size(part.size)})" if max_bytes else part.name
+                    if part.name not in libraries:
+                        typer.echo(f"{label}: " + ("library missing" if dry else "skipped (not in PowerPhotos)"))
                         continue
-                    found = copy_one(
-                        libraries, source, name, None, None, media.value, on_upgrade, names, check_duplicates=False
-                    )
-                    typer.echo(f"{name}: skipped (needs a Photos upgrade)" if found is None else f"{name}: found {found}")
-                    continue
-                found = copy_one(
-                    libraries, source, name, date(year, 1, 1), date(year + 1, 1, 1), media.value, on_upgrade
-                )
-                typer.echo(f"{name}: skipped (needs a Photos upgrade)" if found is None else f"{name}: found {found}")
+                    found = None
+                    if source_photos is not None:
+                        near = [read_library(name) for name in nearby_names(year, part.name)]
+                        found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_library(part.name), near)
+                        if found is not None and not found[0] and not found[1]:
+                            typer.echo(f"{label}: up to date")
+                            continue
+                    if dry:
+                        typer.echo(f"{label}: would copy")
+                        continue
+                    if no_duplicate_check:
+                        if found is None:
+                            fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
+                        names = sorted({file_name for _, _, file_name in found[0] + found[1]})  # near the ends too: any library will do
+                        if not names:
+                            typer.echo(f"{label}: nothing to copy")
+                            continue
+                        copied = copy_one(
+                            libraries, source, part.name, None, None, media.value, on_upgrade, names, check_duplicates=False
+                        )
+                    else:
+                        copied = copy_one(libraries, source, part.name, part.start, part.end, media.value, on_upgrade)
+                    typer.echo(f"{label}: skipped (needs a Photos upgrade)" if copied is None else f"{label}: found {copied}")
     except pp.Busy as error:
         fail(str(error))
