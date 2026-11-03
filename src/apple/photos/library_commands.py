@@ -277,6 +277,13 @@ def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) ->
             ).rstrip())
 
 
+def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]) -> Counter:
+    """The photos dated from since to until, both days included (either may be None for no limit)."""
+    first = since.date().isoformat() if since else ""
+    last = until.date().isoformat() if until else "9999-99-99"
+    return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
+
+
 def diff_command(
     left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
     right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
@@ -285,20 +292,27 @@ def diff_command(
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
     fields: Annotated[str, typer.Option(help="The columns to show and their order: any of date, size, name, comma-separated.")] = ",".join(DIFF_FIELDS),
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
+    since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
+    until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
-    .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Text output
+    .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. --since and
+    --until limit both libraries to a range of dates, in UTC as the databases keep them, so the counts are for that range
+    too. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
     columns = parse_fields(fields)
+    if since and until and until < since:
+        raise typer.BadParameter("--until is before --since")
     try:
         left_path, right_path = find_library(left), find_library(right)
         first, second = pp.photos(left_path), pp.photos(right_path)
     except pp.PowerPhotosError as error:
         fail(str(error))
+    first, second = (within(photos, since, until) for photos in (first, second))
     only_left, only_right = first - second, second - first
     if not summary:
         print_diff(diff_rows(only_left, only_right, only, sort), columns, only is None, format)
