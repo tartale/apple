@@ -82,7 +82,7 @@ def libraries() -> Dict[str, Path]:
 PHOTOS_QUERY = """
     select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME)
     from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
-    where a.ZTRASHEDSTATE = 0
+    where a.ZTRASHEDSTATE = 0 and a.ZVISIBILITYSTATE = 0
 """
 READ_ERRORS = (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException)
 
@@ -142,7 +142,7 @@ def model_version(library: Path, exact: bool = True) -> Optional[int]:
 
 
 def photos(library: Path) -> Counter:
-    """What a library holds (not in the trash), as a count of (date, size, file name) triples. Read from the database;
+    """What a library holds (not in the trash, and visible: PowerPhotos does not list the items Photos keeps out of view), as a count of (date, size, file name) triples. Read from the database;
     PowerPhotos is not involved. Raises PowerPhotosError when the database cannot be read."""
     try:
         rows = read_database(library, lambda db: db.execute(PHOTOS_QUERY).fetchall())
