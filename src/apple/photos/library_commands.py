@@ -294,13 +294,14 @@ def diff_command(
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
+    media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. --since and
-    --until limit both libraries to a range of dates, in UTC as the databases keep them, so the counts are for that range
-    too. Text output
+    --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
+    so the counts are for that selection too. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
@@ -313,6 +314,7 @@ def diff_command(
     except pp.PowerPhotosError as error:
         fail(str(error))
     first, second = (within(photos, since, until) for photos in (first, second))
+    first, second = (pp.of_media(photos, media.value) for photos in (first, second))
     only_left, only_right = first - second, second - first
     if not summary:
         print_diff(diff_rows(only_left, only_right, only, sort), columns, only is None, format)
