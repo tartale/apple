@@ -291,6 +291,26 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
     return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
 
 
+def ignoring_date(first: Counter, second: Counter) -> tuple:
+    """(only in first, only in second, count in both) when a photo is its size and file name, whatever its date: the same
+    clip imported twice with a shifted time is one photo, and the extra copies are the ones left over."""
+    def grouped(photos: Counter) -> dict:
+        groups = {}
+        for (when, size, name), count in sorted(photos.items()):
+            groups.setdefault((size, name), []).extend([(when, size, name)] * count)
+        return groups
+
+    left_groups, right_groups = grouped(first), grouped(second)
+    only_left, only_right, both = Counter(), Counter(), 0
+    for key in left_groups.keys() | right_groups.keys():
+        left_items, right_items = left_groups.get(key, []), right_groups.get(key, [])
+        shared = min(len(left_items), len(right_items))
+        both += shared
+        only_left.update(left_items[shared:])
+        only_right.update(right_items[shared:])
+    return only_left, only_right, both
+
+
 def diff_command(
     left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
     right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
@@ -302,13 +322,17 @@ def diff_command(
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
+    ignore_date: Annotated[
+        bool,
+        typer.Option("--ignore-date", help="Treat photos with the same size and file name as the same photo, whatever their dates (finds a clip imported twice with a shifted time). Repeated names from different cameras can match wrongly."),
+    ] = False,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
-    so the counts are for that selection too. Text output
+    so the counts are for that selection too. --ignore-date matches photos on size and file name alone. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
@@ -322,14 +346,13 @@ def diff_command(
         fail(str(error))
     first, second = (within(photos, since, until) for photos in (first, second))
     first, second = (pp.of_media(photos, media.value) for photos in (first, second))
-    only_left, only_right = first - second, second - first
+    if ignore_date:
+        only_left, only_right, both = ignoring_date(first, second)
+    else:
+        only_left, only_right, both = first - second, second - first, sum((first & second).values())
     if not summary:
         print_diff(diff_rows(only_left, only_right, only, sort), columns, only is None, format)
-    typer.echo(
-        f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. "
-        f"In both: {sum((first & second).values())}.",
-        err=True,
-    )
+    typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
