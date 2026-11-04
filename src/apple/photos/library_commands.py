@@ -354,7 +354,7 @@ def diff_command(
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
     fields: Annotated[
         Optional[str],
-        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, comma-separated. The default is date,size,name, and with --include-hidden also hidden,burst (true or false)."),
+        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, comma-separated. The default is all but the last two with --exclude-hidden, which would only ever say false. hidden and burst are true or false."),
     ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
@@ -364,23 +364,23 @@ def diff_command(
         bool,
         typer.Option("--ignore-date", help="Treat photos with the same size and file name as the same photo, whatever their dates (finds a clip imported twice with a shifted time). Repeated names from different cameras can match wrongly."),
     ] = False,
-    include_hidden: Annotated[
+    exclude_hidden: Annotated[
         bool,
-        typer.Option("--include-hidden", help="Compare the items Photos keeps out of view too (mostly burst members), which PowerPhotos does not list and so cannot copy."),
+        typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members), which PowerPhotos does not list and so cannot copy: compare only what it can see. How many were left out is reported on stderr."),
     ] = False,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Items Photos
-    keeps out of view (hidden: mostly burst members) are not compared, since PowerPhotos does not list them and cannot copy
-    them: how many were left out is reported on stderr, and --include-hidden compares them too. --since and
+    keeps out of view (hidden: mostly burst members) are compared too and marked in the hidden and burst columns, though
+    PowerPhotos does not list them and cannot copy them; --exclude-hidden leaves them out and reports how many on stderr. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
     so the counts are for that selection too. --ignore-date matches photos on size and file name alone. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + (["hidden", "burst"] if include_hidden else [])
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"])
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
@@ -395,7 +395,7 @@ def diff_command(
     visible = [selected(d.visible) for d in data]
     hidden = [selected(d.hidden) for d in data]
     bursts = [selected(d.bursts) for d in data]
-    first, second = (visible[i] + hidden[i] if include_hidden else visible[i] for i in (0, 1))
+    first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
     if ignore_date:
         only_left, only_right, both = ignoring_date(first, second)
     else:
@@ -404,11 +404,11 @@ def diff_command(
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])})
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
-    if not include_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
+    if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
         typer.echo(
             "Not compared, hidden in Photos and not listed by PowerPhotos: "
             f"{sum(hidden[0].values())} in {left} ({sum(bursts[0].values())} burst members), "
-            f"{sum(hidden[1].values())} in {right} ({sum(bursts[1].values())} burst members). --include-hidden compares them.",
+            f"{sum(hidden[1].values())} in {right} ({sum(bursts[1].values())} burst members).",
             err=True,
         )
     raise typer.Exit(1 if only_left or only_right else 0)
@@ -432,7 +432,7 @@ def copy_command(
     Photos already in the destination are skipped, so reruns add only what is new. Nothing is removed from the source.
     With --list, every photo in the source with a listed file name is copied, so a name that more than one photo has
     copies all of them. Names PowerPhotos does not list in the source are reported on stderr, and so are hidden items in the list
-    (the hidden column of `diff --include-hidden`), which are left out. An empty list copies nothing and succeeds.
+    (the hidden column of `diff`), which are left out. An empty list copies nothing and succeeds.
     --no-duplicate-check copies the listed photos even when the destination has them, which avoids PowerPhotos'
     comparison against a large library; use it only with a list of what is missing, such as from `apple photos diff`.
     """
