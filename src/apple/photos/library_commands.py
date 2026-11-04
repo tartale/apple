@@ -570,7 +570,7 @@ def split_command(
 
             cache = {}
 
-            def read_library(name: str):
+            def read_destination(name: str):
                 if name not in cache:
                     cache[name] = read_photos(libraries, name)
                 return cache[name]
@@ -594,8 +594,8 @@ def split_command(
                         continue
                     found = None
                     if source_photos is not None:
-                        near = [read_library(name) for name in nearby_names(year, part.name)]
-                        found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_library(part.name), near)
+                        near = [read_destination(name) for name in nearby_names(year, part.name)]
+                        found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_destination(part.name), near)
                         if found is not None and not found[0] and not found[1]:
                             typer.echo(f"{label}: up to date")
                             continue
