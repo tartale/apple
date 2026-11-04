@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, NamedTuple, Optional
 
 import typer
 
@@ -141,12 +141,41 @@ def report_hidden(hidden: dict) -> None:
     typer.echo(f"{len(hidden)} hidden items ({sum(hidden.values())} burst members) were not copied: PowerPhotos cannot see them.", err=True)
 
 
+class CopyResult(NamedTuple):
+    """sent: how many source photos were handed to PowerPhotos to copy, or None when the destination was skipped;
+    unlisted: the file names asked for that PowerPhotos lists no photo for in the source."""
+    sent: Optional[int]
+    unlisted: list
+
+
+def describe_copy(result: CopyResult, check_duplicates: bool = True) -> str:
+    """What happened, for the line that names the destination."""
+    if result.sent is None:
+        return "skipped (needs a Photos upgrade)"
+    if check_duplicates:
+        return f"asked PowerPhotos to copy {result.sent} (it skips any the library already has)"
+    return f"copied {result.sent} (no duplicate check)"
+
+
+def report_unlisted(unlisted: list, source: str) -> None:
+    """Says on stderr which wanted photos PowerPhotos could not find in the source, and why that matters."""
+    if not unlisted:
+        return
+    typer.echo(
+        f"  {len(unlisted)} not copied: the database of {source} has them, but PowerPhotos lists no photo with "
+        "these names, so it cannot copy them:", err=True,
+    )
+    for name in unlisted[:20]:
+        typer.echo(f"    {name}", err=True)
+    if len(unlisted) > 20:
+        typer.echo(f"    ... and {len(unlisted) - 20} more", err=True)
+
+
 def copy_one(
     libraries: dict, source: str, destination: str, since: Optional[date], before: Optional[date],
     media: str, mode: OnUpgrade, names: Optional[list] = None, check_duplicates: bool = True,
-) -> Optional[int]:
-    """Copies one date range, or the photos with the given file names; returns how many photos matched, or None when the
-    destination was skipped."""
+) -> CopyResult:
+    """Copies one date range, or the photos with the given file names."""
     source_path = need(libraries, source)
     destination_path = need(libraries, destination)
     source_version = pp.model_version(source_path)
@@ -154,7 +183,7 @@ def copy_one(
     if source_version is not None and destination_version is not None and destination_version < source_version:
         reason = f"It is in an older format than {source}."
         if not resolve_upgrade(destination, destination_path, source_version, mode, reason):
-            return None
+            return CopyResult(None, [])
     pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
         if names is None:
@@ -168,15 +197,13 @@ def copy_one(
         while True:
             try:
                 output = pp.run_applescript(script, *args)
-                for line in output.splitlines():
-                    if line.startswith("missing\t"):
-                        typer.echo(f"Not copied: PowerPhotos does not list {line.partition(chr(9))[2]} in {source}", err=True)
-                return int(output.rsplit(" ", 1)[-1])
+                unlisted = [line.partition("\t")[2] for line in output.splitlines() if line.startswith("missing\t")]
+                return CopyResult(int(output.rsplit(" ", 1)[-1]), unlisted)
             except pp.PowerPhotosError as error:
                 if error.number != pp.UPGRADE_NEEDED:
                     fail(f"PowerPhotos failed: {error}")
                 if not resolve_upgrade(destination, destination_path, source_version, mode, str(error)):
-                    return None
+                    return CopyResult(None, [])
 
 
 def libraries_command(
@@ -450,7 +477,7 @@ def copy_command(
             return
     try:
         with pp.one_at_a_time():
-            found = copy_one(
+            result = copy_one(
                 known_libraries(), source, destination,
                 since.date() if since else None,
                 until.date() + timedelta(days=1) if until else None,
@@ -458,7 +485,8 @@ def copy_command(
             )
     except pp.Busy as error:
         fail(str(error))
-    typer.echo(f"{destination}: skipped (needs a Photos upgrade)" if found is None else f"{destination}: found {found}")
+    typer.echo(f"{destination}: {describe_copy(result, not no_duplicate_check)}")
+    report_unlisted(result.unlisted, source)
 
 
 def read_library(libraries: dict, name: str) -> Optional[pp.Photos]:
@@ -589,7 +617,7 @@ def split_command(
                         note = ""
                         if source_data is not None:
                             left_out = split_plan.count_in_range(source_data.hidden, part.start, part.end, kind)
-                            note = f", {left_out} hidden not copied" if left_out else ""
+                            note = f"; {left_out} hidden items in {source} not copied (Photos keeps them out of view)" if left_out else ""
                         if part.name not in libraries:
                             typer.echo(f"{label}: " + ("library missing" if dry else "skipped (not in PowerPhotos)") + note)
                             continue
@@ -610,11 +638,12 @@ def split_command(
                             if not names:
                                 typer.echo(f"{label}: nothing to copy{note}")
                                 continue
-                            copied = copy_one(
+                            result = copy_one(
                                 libraries, source, part.name, None, None, kind, on_upgrade, names, check_duplicates=False
                             )
                         else:
-                            copied = copy_one(libraries, source, part.name, part.start, part.end, kind, on_upgrade)
-                        typer.echo((f"{label}: skipped (needs a Photos upgrade)" if copied is None else f"{label}: found {copied}") + note)
+                            result = copy_one(libraries, source, part.name, part.start, part.end, kind, on_upgrade)
+                        typer.echo(f"{label}: {describe_copy(result, not no_duplicate_check)}{note}")
+                        report_unlisted(result.unlisted, source)
     except pp.Busy as error:
         fail(str(error))
