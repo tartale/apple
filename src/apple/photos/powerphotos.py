@@ -10,7 +10,7 @@ import tempfile
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
+from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -80,9 +80,10 @@ def libraries() -> Dict[str, Path]:
 
 
 PHOTOS_QUERY = """
-    select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME)
+    select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
+           a.ZVISIBILITYSTATE != 0, a.ZAVALANCHEKIND != 0
     from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
-    where a.ZTRASHEDSTATE = 0 and a.ZVISIBILITYSTATE = 0
+    where a.ZTRASHEDSTATE = 0
 """
 READ_ERRORS = (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException)
 
@@ -148,14 +149,34 @@ def of_media(photos: Counter, media: str) -> Counter:
     return Counter({key: count for key, count in photos.items() if key[2].lower().endswith(EXTENSIONS[media])})
 
 
-def photos(library: Path) -> Counter:
-    """What a library holds (not in the trash, and visible: PowerPhotos does not list the items Photos keeps out of view), as a count of (date, size, file name) triples. Read from the database;
-    PowerPhotos is not involved. Raises PowerPhotosError when the database cannot be read."""
+class Photos(NamedTuple):
+    """What a library holds, not counting the trash, each a count of (date, size, file name) triples: the visible items,
+    the hidden ones (Photos keeps them out of view and PowerPhotos does not list them), and which of the hidden ones are
+    members of a burst."""
+    visible: Counter
+    hidden: Counter
+    bursts: Counter
+
+
+def library_photos(library: Path) -> Photos:
+    """Reads a library's photos from its database; PowerPhotos is not involved. Raises PowerPhotosError when the
+    database cannot be read."""
     try:
         rows = read_database(library, lambda db: db.execute(PHOTOS_QUERY).fetchall())
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
-    return Counter((when, str(size), name) for when, size, name in rows)
+    visible, hidden, bursts = Counter(), Counter(), Counter()
+    for when, size, name, is_hidden, is_burst in rows:
+        key = (when, str(size), name)
+        (hidden if is_hidden else visible)[key] += 1
+        if is_hidden and is_burst:
+            bursts[key] += 1
+    return Photos(visible, hidden, bursts)
+
+
+def photos(library: Path) -> Counter:
+    """The visible items of a library (see library_photos): the ones PowerPhotos lists."""
+    return library_photos(library).visible
 
 
 def open_in_photos(library: Path) -> None:
