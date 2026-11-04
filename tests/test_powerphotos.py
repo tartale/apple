@@ -805,3 +805,56 @@ def test_split_says_how_many_hidden_items_it_cannot_copy(mac):
     year_libraries(mac, [A, (*B, "burst"), (*C, "hidden"), ("2018-05-01 10:00:00", 100, "p.jpg", "burst")], photos_2018=[A])
     result = split()
     assert "Source: 2 hidden photos (2 burst members) are not copied" in result.output  # c is a movie, so not counted for photos
+
+
+def split_all(*options):
+    return runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "all", "--years", "2018", *options])
+
+
+def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac):
+    year_libraries(mac, [A, C], photos_2018=[])
+    mac.make("videos-2018", 19607)
+    add_photos(mac.libraries["videos-2018"], [])
+    result = split_all()
+    assert result.exit_code == 0
+    assert mac.calls("copy-photos.applescript") == [
+        ["Source", "photos-2018", "2018-01-01", "2019-01-01", "photos"],
+        ["Source", "videos-2018", "2018-01-01", "2019-01-01", "videos"],
+    ]
+    assert "all-2018" not in result.output
+
+
+def test_split_media_all_checks_both_kinds_for_missing_libraries_before_copying_either(mac):
+    year_libraries(mac, [A, C], photos_2018=[])  # videos-2018 is not in PowerPhotos
+    result = split_all()
+    assert result.exit_code == 1 and "Not in PowerPhotos: videos-2018" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+    skipped = split_all("--on-missing", "skip")
+    assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018"]
+    assert "videos-2018: skipped (not in PowerPhotos)" in skipped.output
+
+
+def test_split_media_all_skips_only_the_kind_that_is_complete(mac):
+    year_libraries(mac, [A, C], photos_2018=[A])
+    mac.make("videos-2018", 19607)
+    add_photos(mac.libraries["videos-2018"], [])
+    result = split_all()
+    assert "photos-2018: up to date" in result.output
+    assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["videos-2018"]
+
+
+def test_each_split_library_line_says_how_many_hidden_items_its_dates_leave_out(mac):
+    year_libraries(mac, [A, (*B, "burst"), (*C, "hidden")], photos_2018=[A])
+    assert "photos-2018: up to date, 1 hidden not copied" in split().output  # b is a hidden photo; the movie is another kind
+    year_libraries(mac, [A], photos_2018=[A])
+    assert "hidden not copied" not in split().output
+
+
+def test_count_in_range_counts_the_media_and_dates_asked_for():
+    from collections import Counter
+    from datetime import date
+    from apple.photos.split_plan import count_in_range
+    items = Counter({("2018-03-01 10:00:00", "1", "a.jpg"): 2, ("2018-03-02 10:00:00", "1", "v.mov"): 1, ("2019-01-01 00:00:00", "1", "b.jpg"): 1})
+    assert count_in_range(items, date(2018, 1, 1), date(2019, 1, 1), "photos") == 2
+    assert count_in_range(items, date(2018, 1, 1), date(2019, 1, 1), "all") == 3
+    assert count_in_range(items, date(2018, 3, 2), date(2018, 3, 3), "videos") == 1
