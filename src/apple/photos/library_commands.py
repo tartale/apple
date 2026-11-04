@@ -589,31 +589,35 @@ def split_command(
                                f"{split_plan.format_size(max_bytes)} cap, in {len(parts)} libraries")
                 for part in parts:
                     label = f"{part.name} ({part.start.isoformat()} to {(part.end - timedelta(days=1)).isoformat()}, {split_plan.format_size(part.size)})" if max_bytes else part.name
+                    note = ""
+                    if source_data is not None:
+                        left_out = split_plan.count_in_range(source_data.hidden, part.start, part.end, media.value)
+                        note = f", {left_out} hidden not copied" if left_out else ""
                     if part.name not in libraries:
-                        typer.echo(f"{label}: " + ("library missing" if dry else "skipped (not in PowerPhotos)"))
+                        typer.echo(f"{label}: " + ("library missing" if dry else "skipped (not in PowerPhotos)") + note)
                         continue
                     found = None
                     if source_photos is not None:
                         near = [read_destination(name) for name in nearby_names(year, part.name)]
                         found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_destination(part.name), near)
                         if found is not None and not found[0] and not found[1]:
-                            typer.echo(f"{label}: up to date")
+                            typer.echo(f"{label}: up to date{note}")
                             continue
                     if dry:
-                        typer.echo(f"{label}: would copy")
+                        typer.echo(f"{label}: would copy{note}")
                         continue
                     if no_duplicate_check:
                         if found is None:
                             fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
                         names = sorted({file_name for _, _, file_name in found[0] + found[1]})  # near the ends too: any library will do
                         if not names:
-                            typer.echo(f"{label}: nothing to copy")
+                            typer.echo(f"{label}: nothing to copy{note}")
                             continue
                         copied = copy_one(
                             libraries, source, part.name, None, None, media.value, on_upgrade, names, check_duplicates=False
                         )
                     else:
                         copied = copy_one(libraries, source, part.name, part.start, part.end, media.value, on_upgrade)
-                    typer.echo(f"{label}: skipped (needs a Photos upgrade)" if copied is None else f"{label}: found {copied}")
+                    typer.echo((f"{label}: skipped (needs a Photos upgrade)" if copied is None else f"{label}: found {copied}") + note)
     except pp.Busy as error:
         fail(str(error))

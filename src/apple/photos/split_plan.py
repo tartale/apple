@@ -63,6 +63,13 @@ def plan_year(source_photos: Optional[Counter], year: int, media: str, name: str
     ]
 
 
+def count_in_range(counted: Counter, start: date, end: date, media: str) -> int:
+    """How many of the items (see plan_year) are dated from start up to end, in UTC, and of the media."""
+    return sum(
+        count for (when, _, _), count in pp.of_media(counted, media).items() if start.isoformat() <= when[:10] < end.isoformat()
+    )
+
+
 def missing_in_range(
     source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]]
 ) -> Optional[Tuple[Counter, Counter]]:
