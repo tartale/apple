@@ -24,11 +24,6 @@ class Media(str, Enum):
     videos = "videos"
 
 
-class SplitMedia(str, Enum):
-    photos = "photos"
-    videos = "videos"
-
-
 class OnMissing(str, Enum):
     stop = "stop"
     skip = "skip"
@@ -484,7 +479,7 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
 
 def split_command(
     source: SourceOption,
-    media: Annotated[SplitMedia, typer.Option(help="Split photos or videos.")],
+    media: Annotated[Media, typer.Option(help="Split photos, videos or both. Named in the destination libraries as {media}, so with all they are called all-2018 unless --to says otherwise.")],
     years: Annotated[str, typer.Option(help="One year or a range, such as 2018 or 2018-2020.")],
     destination_name: Annotated[
         str, typer.Option("--to", help="Destination library name for each year; {media} and {year} are filled in.")
@@ -553,7 +548,7 @@ def split_command(
                 if hidden_here:
                     bursts_here = pp.of_media(source_data.bursts, media.value)
                     typer.echo(
-                        f"{source}: {sum(hidden_here.values())} hidden {media.value} ({sum(bursts_here.values())} burst members) "
+                        f"{source}: {sum(hidden_here.values())} hidden items ({sum(bursts_here.values())} burst members) "
                         "are not copied: Photos keeps them out of view and PowerPhotos does not list them.",
                         err=True,
                     )
