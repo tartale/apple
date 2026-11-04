@@ -81,7 +81,8 @@ def libraries() -> Dict[str, Path]:
 
 PHOTOS_QUERY = """
     select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
-           a.ZVISIBILITYSTATE != 0, a.ZAVALANCHEKIND != 0, a.ZDIRECTORY, a.ZFILENAME
+           a.ZVISIBILITYSTATE != 0, a.ZAVALANCHEKIND != 0, a.ZDIRECTORY, a.ZFILENAME,
+           x.ZSYNDICATIONIDENTIFIER is not null
     from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
     where a.ZTRASHEDSTATE = 0
 """
@@ -152,12 +153,15 @@ def of_media(photos: Counter, media: str) -> Counter:
 class Photos(NamedTuple):
     """What a library holds, not counting the trash, each a count of (date, size, file name) triples: the visible items,
     the hidden ones (Photos keeps them out of view and PowerPhotos does not list them), and which of the hidden ones are
-    members of a burst. files says where each item's original should be, as paths below the library."""
+    members of a burst. files says where each item's original should be, as paths below the library. shared holds the
+    keys of the items that came from Messages (Shared with You): until they are saved to the library, Photos keeps a
+    placeholder with no original."""
     library: Path
     visible: Counter
     hidden: Counter
     bursts: Counter
     files: dict
+    shared: set
 
     def original_missing(self, key: tuple) -> bool:
         """True when the item's original file is not stored in the library (Photos keeps a placeholder for photos whose
@@ -176,15 +180,17 @@ def library_photos(library: Path) -> Photos:
         rows = read_database(library, lambda db: db.execute(PHOTOS_QUERY).fetchall())
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
-    visible, hidden, bursts, files = Counter(), Counter(), Counter(), {}
-    for when, size, name, is_hidden, is_burst, directory, stored_as in rows:
+    visible, hidden, bursts, files, shared = Counter(), Counter(), Counter(), {}, set()
+    for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared in rows:
         key = (when, str(size), name)
         (hidden if is_hidden else visible)[key] += 1
         if is_hidden and is_burst:
             bursts[key] += 1
+        if is_shared:
+            shared.add(key)
         if directory is not None and stored_as:
             files.setdefault(key, []).append(f"originals/{directory}/{stored_as}")
-    return Photos(library, visible, hidden, bursts, files)
+    return Photos(library, visible, hidden, bursts, files, shared)
 
 
 def photos(library: Path) -> Counter:

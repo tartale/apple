@@ -108,7 +108,8 @@ def is_true(value) -> bool:
 def parse_list(text: str) -> tuple:
     """(file names to copy, hidden items) from the output of `./apple photos diff` (json or csv, with a name column and
     optionally true/false hidden, burst and missing columns) or one name per line. Returns the names to copy, the hidden
-    items as a dict of name -> whether it is a burst member, and the names whose original is not stored in the library.
+    items as a dict of name -> whether it is a burst member, and the items whose original is not stored in the library as a
+    dict of name -> whether it came from Messages.
     PowerPhotos lists neither kind, so neither is copied."""
     stripped = text.strip()
     if stripped.startswith("["):
@@ -125,29 +126,35 @@ def parse_list(text: str) -> tuple:
             raise typer.BadParameter("the list has no name column; run diff with --fields including name")
         else:
             records = [{"name": line.strip()} for line in lines if line.strip()]
-    names, hidden, missing = [], {}, []
+    names, hidden, missing = [], {}, {}
     for record in records:
         if is_true(record.get("hidden")):
             hidden[record["name"]] = is_true(record.get("burst"))
         elif is_true(record.get("missing")):
-            missing.append(record["name"])
+            missing[record["name"]] = is_true(record.get("shared"))
         else:
             names.append(record["name"])
     return names, hidden, missing
 
 
-def report_missing(names: list, source: str) -> None:
-    """Says on stderr which wanted photos were left out because their original is not stored in the source."""
-    if not names:
-        return
-    typer.echo(
-        f"  {len(names)} not copied: the original is not stored in {source} (a photo shared with you in Messages, or one "
-        "whose original lives only in iCloud), so PowerPhotos does not list it and cannot copy it:", err=True,
+def report_missing(missing: dict, source: str) -> None:
+    """Says on stderr which wanted photos were left out because their original is not stored in the source. missing is
+    a dict of name -> whether the photo came from Messages (Shared with You)."""
+    groups = (
+        ([name for name, shared in missing.items() if shared],
+         "shared with you in Messages and not saved to the library {source}, so there is no original to copy. Save them "
+         "to the library in Photos, then run this again:"),
+        ([name for name, shared in missing.items() if not shared],
+         "the original is not stored in {source} (it may live only in iCloud), so PowerPhotos does not list it and "
+         "cannot copy it:"),
     )
-    for name in names[:20]:
-        typer.echo(f"    {name}", err=True)
-    if len(names) > 20:
-        typer.echo(f"    ... and {len(names) - 20} more", err=True)
+    for names, text in groups:
+        if names:
+            typer.echo(f"  {len(names)} not copied: " + text.format(source=source), err=True)
+            for name in names[:20]:
+                typer.echo(f"    {name}", err=True)
+            if len(names) > 20:
+                typer.echo(f"    ... and {len(names) - 20} more", err=True)
 
 
 def report_hidden(hidden: dict) -> None:
@@ -283,7 +290,7 @@ def libraries_command(
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
-DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing")
+DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing", "shared")
 DEFAULT_FIELDS = ["date", "size", "name"]
 
 
@@ -315,7 +322,7 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
     """The photos to show as dicts of side, date, size (int or None), name, hidden, burst and missing (true or false), in
     the order asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden
     items and of its burst members; libraries gives its pp.Photos, which says whether an original is not stored there
-    (found by looking at the files, so only when with_missing)."""
+    (found by looking at the files, so only when with_missing), and shared whether the item came from Messages."""
     rows = []
     for side, counted in ((Side.left, only_left), (Side.right, only_right)):
         if which in (None, side):
@@ -325,6 +332,7 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
                     "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
                     "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
                     "missing": libraries[side.value].original_missing(key) if with_missing else False,
+                    "shared": key in libraries[side.value].shared,
                 })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
@@ -397,7 +405,7 @@ def diff_command(
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
     fields: Annotated[
         Optional[str],
-        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, missing, comma-separated. hidden, burst and missing are true or false: missing means the original file is not stored in the library (a photo shared with you in Messages, or one whose original lives only in iCloud), so PowerPhotos cannot list or copy it. The default is date,size,name,hidden,burst,missing; with --exclude-hidden, without hidden and burst, which would only ever say false."),
+        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, missing, shared, comma-separated. hidden, burst, missing and shared are true or false: missing means the original file is not stored in the library, so PowerPhotos cannot list or copy it; shared means the photo came from Messages (Shared with You), and when it is also missing, saving it to the library in Photos makes it copyable. The default is date,size,name,hidden,burst,missing,shared; with --exclude-hidden, without hidden and burst, which would only ever say false."),
     ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
@@ -423,7 +431,7 @@ def diff_command(
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing"]
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing", "shared"]
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
@@ -652,17 +660,17 @@ def split_command(
                         if dry:
                             typer.echo(f"{label}: would copy{note}")
                             continue
-                        no_original = []
+                        no_original = {}
                         if no_duplicate_check:
                             if found is None:
                                 fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
                             keys_by_name = {}
                             for key in list(found[0] + found[1]):  # near the ends too: any library will do
                                 keys_by_name.setdefault(key[2], []).append(key)
-                            no_original = sorted(
-                                name for name, keys in keys_by_name.items()
+                            no_original = {
+                                name: any(key in source_data.shared for key in keys) for name, keys in sorted(keys_by_name.items())
                                 if source_data is not None and all(source_data.original_missing(key) for key in keys)
-                            )
+                            }
                             names = sorted(set(keys_by_name) - set(no_original))
                             if not names:
                                 typer.echo(f"{label}: nothing to copy{note}")
