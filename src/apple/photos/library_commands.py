@@ -312,6 +312,8 @@ def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) ->
             [{"left": "<", "right": ">"}[row["side"]] if column == "side" else cell_text(row[column]) for column in columns]
             for row in rows
         ]
+        if cells:
+            cells.insert(0, ["" if column == "side" else column for column in columns])
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))] if cells else []
         for cell in cells:
             typer.echo("  ".join(
