@@ -300,13 +300,13 @@ def add_photos(library: Path, photos) -> Path:
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
     connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, ?, ?)",
-            (number, seconds, f"UUID{number}.jpg", int("trashed" in flags), 2 if "hidden" in flags else 0),
+            "insert into ZASSET values (?, ?, ?, ?, ?, ?)",
+            (number, seconds, f"UUID{number}.jpg", int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
         )
         connection.execute("insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?)", (number, number, size, name))
     connection.commit()
@@ -315,9 +315,16 @@ def add_photos(library: Path, photos) -> Path:
 
 
 def diff(mac, left, right, *options):
+    """Runs diff on two fake libraries, showing just date, size and name unless --fields says otherwise."""
     for name, photos in (("Source", left), ("photos-2018", right)):
         add_photos(mac.libraries[name], photos)
-    return runner.invoke(app, ["photos", "diff", "Source", "photos-2018", *options])
+    columns = [] if "--fields" in options else ["--fields", "date,size,name"]
+    return runner.invoke(app, ["photos", "diff", "Source", "photos-2018", *columns, *options])
+
+
+def shown(result):
+    """The rows of diff's text output, without the header and with each run of padding squeezed to two spaces."""
+    return [re.sub(r" {2,}", "  ", line) for line in result.stdout.splitlines()[1:]]
 
 
 A = ("2018-03-01 10:00:00", 100, "a.jpg")
@@ -329,7 +336,7 @@ D = ("2018-03-04 09:00:00", 100, "d.jpg")
 def test_diff_lists_what_is_in_only_one_library_and_exits_1(mac):
     result = diff(mac, [A, B, C], [B, D])
     assert result.exit_code == 1
-    assert result.stdout.splitlines() == [
+    assert shown(result) == [
         "<  2018-03-01 10:00:00  100  a.jpg", "<  2018-03-03 12:00:00  100  c.mov", ">  2018-03-04 09:00:00  100  d.jpg",
     ]
     assert "Only in Source: 2. Only in photos-2018: 1. In both: 1." in result.output
@@ -343,7 +350,7 @@ def test_diff_of_matching_libraries_prints_nothing_and_exits_0(mac):
 
 
 def test_diff_counts_repeated_photos(mac):
-    assert diff(mac, [A, A], [A]).stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
+    assert shown(diff(mac, [A, A], [A])) == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_ignores_the_trash(mac):
@@ -352,7 +359,7 @@ def test_diff_ignores_the_trash(mac):
 
 def test_diff_tells_apart_photos_that_differ_only_in_size(mac):
     other = ("2018-03-01 10:00:00", 200, "a.jpg")
-    assert diff(mac, [A], [other]).stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg", ">  2018-03-01 10:00:00  200  a.jpg"]
+    assert shown(diff(mac, [A], [other])) == ["<  2018-03-01 10:00:00  100  a.jpg", ">  2018-03-01 10:00:00  200  a.jpg"]
 
 
 def test_diff_summary_prints_only_the_counts(mac):
@@ -366,8 +373,8 @@ def test_diff_takes_library_paths_and_needs_no_macos(tmp_path, monkeypatch):
     monkeypatch.setattr(apple_platform, "is_macos", lambda: False)
     one = add_photos(make_library(tmp_path, "one", 19607), [A, B])
     two = add_photos(make_library(tmp_path, "two", 19607), [B])
-    result = runner.invoke(app, ["photos", "diff", str(one), str(two)])
-    assert result.stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
+    result = runner.invoke(app, ["photos", "diff", str(one), str(two), "--fields", "date,size,name"])
+    assert shown(result) == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_names_an_unknown_library(mac):
@@ -376,18 +383,22 @@ def test_diff_names_an_unknown_library(mac):
     assert "No library named Nope" in result.output
 
 
-def test_diff_text_columns_are_aligned_with_sizes_on_the_right(mac):
+def test_diff_text_has_a_header_and_aligned_columns_with_sizes_on_the_right(mac):
     long = ("2018-03-03 12:00:00", 25000, "longer-name.mov")
     result = diff(mac, [A, long], [])
     assert result.stdout.splitlines() == [
+        "   date                  size  name",
         "<  2018-03-01 10:00:00    100  a.jpg",
         "<  2018-03-03 12:00:00  25000  longer-name.mov",
     ]
+    assert diff(mac, [A], [D], "--format", "csv").stdout.startswith("side,date,size,name\n")
+    assert diff(mac, [A, A], [A]).stdout.count("a.jpg") == 1  # the header is printed once, and only when there is something to show
+    assert diff(mac, [A], [A]).stdout == ""
 
 
 def test_diff_only_shows_one_side_without_the_marks(mac):
-    assert diff(mac, [A, B], [B, D], "--only", "left").stdout.splitlines() == ["2018-03-01 10:00:00  100  a.jpg"]
-    assert diff(mac, [A, B], [B, D], "--only", "right").stdout.splitlines() == ["2018-03-04 09:00:00  100  d.jpg"]
+    assert shown(diff(mac, [A, B], [B, D], "--only", "left")) == ["2018-03-01 10:00:00  100  a.jpg"]
+    assert shown(diff(mac, [A, B], [B, D], "--only", "right")) == ["2018-03-04 09:00:00  100  d.jpg"]
 
 
 def test_diff_csv_and_json_carry_the_side(mac):
@@ -399,7 +410,7 @@ def test_diff_csv_and_json_carry_the_side(mac):
 
 
 def test_diff_fields_chooses_and_orders_the_columns(mac):
-    assert diff(mac, [A], [], "--fields", "name,size", "--only", "left").stdout.splitlines() == ["a.jpg  100"]
+    assert shown(diff(mac, [A], [], "--fields", "name,size", "--only", "left")) == ["a.jpg  100"]
     bad = diff(mac, [A], [], "--fields", "name,name")
     assert bad.exit_code == 2 and "at most once" in bad.output
     assert diff(mac, [A], [], "--fields", "colour").exit_code == 2
@@ -408,7 +419,7 @@ def test_diff_fields_chooses_and_orders_the_columns(mac):
 def test_diff_sort_orders_by_date_name_or_size(mac):
     big = ("2018-03-05 08:00:00", 900, "a-late.jpg")
     small = ("2018-03-02 08:00:00", 5, "z-early.jpg")
-    names = lambda *o: [line.split()[-1] for line in diff(mac, [big, small, A], [], "--only", "left", *o).stdout.splitlines()]
+    names = lambda *o: [line.split()[-1] for line in shown(diff(mac, [big, small, A], [], "--only", "left", *o))]
     assert names() == ["a.jpg", "z-early.jpg", "a-late.jpg"]
     assert names("--sort", "name") == ["a-late.jpg", "a.jpg", "z-early.jpg"]
     assert names("--sort", "size") == ["z-early.jpg", "a.jpg", "a-late.jpg"]
@@ -455,7 +466,7 @@ def test_copy_list_cannot_be_combined_with_a_range_or_media(mac):
 def test_names_the_source_lacks_are_reported(mac, monkeypatch):
     monkeypatch.setenv("FAKE_NAMED_MISSING", "gone.jpg,gone2.jpg")
     result = copy_list(["--list", "-"], "a.jpg\ngone.jpg\ngone2.jpg\n")
-    assert "Not in Source: gone.jpg" in result.output and "Not in Source: gone2.jpg" in result.output
+    assert "PowerPhotos does not list gone.jpg in Source" in result.output and "PowerPhotos does not list gone2.jpg in Source" in result.output
 
 
 def test_no_duplicate_check_needs_a_list_and_is_passed_through_with_one(mac):
@@ -570,23 +581,27 @@ def test_the_listing_shows_libraries_that_share_a_name_and_says_so(mac, monkeypa
     assert "share a name" in result.output
 
 
-def test_diff_ignores_items_photos_keeps_out_of_view(mac):
-    assert diff(mac, [A, (*B, "hidden")], [A]).exit_code == 0
+def test_diff_compares_hidden_items_unless_told_to_leave_them_out(mac):
+    result = diff(mac, [A, (*B, "hidden")], [A])
+    assert result.exit_code == 1 and shown(result) == ["<  2018-03-02 11:00:00  100  b.jpg"]
+    left_out = diff(mac, [A, (*B, "burst")], [A], "--exclude-hidden")
+    assert left_out.exit_code == 0
+    assert "Not compared, hidden in Photos and not listed by PowerPhotos: 1 in Source (1 burst members), 0 in photos-2018 (0 burst members)." in left_out.output
 
 
 def test_diff_since_and_until_limit_both_libraries_to_a_range_of_days(mac):
     result = diff(mac, [A, B, C, D], [B], "--since", "2018-03-02", "--until", "2018-03-03")
-    assert result.stdout.splitlines() == [">  2018-03-02 11:00:00  100  b.jpg"][:0] + ["<  2018-03-03 12:00:00  100  c.mov"]
+    assert shown(result) == ["<  2018-03-03 12:00:00  100  c.mov"]
     assert "Only in Source: 1. Only in photos-2018: 0. In both: 1." in result.output  # b is in both; a and d are out of range
-    assert diff(mac, [A, D], [], "--since", "2018-03-04").stdout.splitlines() == ["<  2018-03-04 09:00:00  100  d.jpg"]
-    assert diff(mac, [A, D], [], "--until", "2018-03-01").stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
+    assert shown(diff(mac, [A, D], [], "--since", "2018-03-04")) == ["<  2018-03-04 09:00:00  100  d.jpg"]
+    assert shown(diff(mac, [A, D], [], "--until", "2018-03-01")) == ["<  2018-03-01 10:00:00  100  a.jpg"]
     assert diff(mac, [A], [], "--since", "2018-03-05", "--until", "2018-03-01").exit_code == 2
 
 
 def test_diff_media_compares_only_photos_or_only_videos(mac):
-    assert diff(mac, [A, C], [], "--media", "videos", "--only", "left").stdout.splitlines() == ["2018-03-03 12:00:00  100  c.mov"]
-    assert diff(mac, [A, C], [], "--media", "photos", "--only", "left").stdout.splitlines() == ["2018-03-01 10:00:00  100  a.jpg"]
-    assert len(diff(mac, [A, C], [], "--media", "all", "--only", "left").stdout.splitlines()) == 2
+    assert shown(diff(mac, [A, C], [], "--media", "videos", "--only", "left")) == ["2018-03-03 12:00:00  100  c.mov"]
+    assert shown(diff(mac, [A, C], [], "--media", "photos", "--only", "left")) == ["2018-03-01 10:00:00  100  a.jpg"]
+    assert len(shown(diff(mac, [A, C], [], "--media", "all", "--only", "left"))) == 2
 
 
 def test_the_named_copy_script_treats_jpeg_as_jpg():
@@ -741,3 +756,52 @@ def test_split_max_size_must_be_a_size_and_needs_the_source_database(mac):
     assert split("--max-size", "lots").exit_code == 2
     result = split("--max-size", "1GB")  # Source has no photo tables in this fixture
     assert result.exit_code == 1 and "size cannot be worked out" in result.output
+
+
+def test_diff_default_columns_include_hidden_and_burst_as_true_or_false(mac):
+    add_photos(mac.libraries["Source"], [A, (*B, "burst"), (*C, "hidden")])
+    add_photos(mac.libraries["photos-2018"], [])
+    text = runner.invoke(app, ["photos", "diff", "Source", "photos-2018"]).stdout.splitlines()
+    assert text[0].split() == ["date", "size", "name", "hidden", "burst"]
+    assert [line.split()[-3:] for line in text[1:]] == [["a.jpg", "false", "false"], ["b.jpg", "true", "true"], ["c.mov", "true", "false"]]
+    records = json.loads(runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "json"]).stdout)
+    assert [(r["name"], r["hidden"], r["burst"]) for r in records] == [("a.jpg", False, False), ("b.jpg", True, True), ("c.mov", True, False)]
+    csv_lines = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "csv"]).stdout.splitlines()
+    assert csv_lines[0] == "side,date,size,name,hidden,burst" and csv_lines[2].endswith(",b.jpg,true,true")
+    columns = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--exclude-hidden", "--format", "csv"]).stdout.splitlines()
+    assert columns == ["side,date,size,name", "left,2018-03-01 10:00:00,100,a.jpg"]
+
+
+def test_diff_ignore_date_matches_the_same_clip_imported_with_a_shifted_time(mac):
+    shifted = ("2018-03-01 11:00:00", 100, "a.jpg")
+    assert diff(mac, [A], [shifted]).exit_code == 1
+    result = diff(mac, [A], [shifted], "--ignore-date")
+    assert result.exit_code == 0 and "In both: 1." in result.output
+    twice = diff(mac, [A], [A, shifted], "--ignore-date")  # the destination holds the clip twice: one extra
+    assert twice.exit_code == 1 and shown(twice) == [">  2018-03-01 11:00:00  100  a.jpg"]
+    different = diff(mac, [A], [("2018-03-01 11:00:00", 999, "a.jpg")], "--ignore-date")
+    assert different.exit_code == 1  # a different size is a different photo
+
+
+def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):
+    result = copy_list(["--list", "-"], "side,name,hidden,burst\nleft,a.jpg,false,false\nleft,b.jpg,true,true\nleft,c.jpg,true,false\n")
+    assert result.exit_code == 0
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "true"]]
+    assert "Not copied: b.jpg: hidden in Photos (a burst member)" in result.output
+    assert "Not copied: c.jpg: hidden in Photos, so" in result.output
+    assert "2 hidden items (1 burst members) were not copied" in result.output
+    as_json = copy_list(["--list", "-"], '[{"name": "d.jpg", "hidden": true, "burst": true}]')
+    assert as_json.exit_code == 0 and "no files copied (everything listed is hidden in Photos)" in as_json.output
+    assert len(mac.calls("copy-named.applescript")) == 1
+
+
+def test_a_long_list_of_hidden_items_is_summarised(mac):
+    rows = "".join(f"left,h{n}.jpg,true,true\n" for n in range(30))
+    result = copy_list(["--list", "-"], "side,name,hidden,burst\n" + rows)
+    assert "Not copied: h0.jpg" not in result.output and "30 hidden items (30 burst members) were not copied" in result.output
+
+
+def test_split_says_how_many_hidden_items_it_cannot_copy(mac):
+    year_libraries(mac, [A, (*B, "burst"), (*C, "hidden"), ("2018-05-01 10:00:00", 100, "p.jpg", "burst")], photos_2018=[A])
+    result = split()
+    assert "Source: 2 hidden photos (2 burst members) are not copied" in result.output  # c is a movie, so not counted for photos

@@ -106,21 +106,44 @@ def resolve_upgrade(name: str, path: Path, source_version: Optional[int], mode: 
         typer.echo(f"{name} still needs the upgrade.", err=True)
 
 
-def parse_names(text: str) -> list:
-    """File names from the output of `./apple photos diff` (json or csv, with a name column) or one name per line."""
+def is_true(value) -> bool:
+    return value is True or str(value).strip().lower() == "true"
+
+
+def parse_list(text: str) -> tuple:
+    """(file names to copy, hidden items) from the output of `./apple photos diff` (json or csv, with a name column and
+    optionally true/false hidden and burst columns) or one name per line. Hidden items are a dict of name -> whether it
+    is a burst member: PowerPhotos does not list them, so they are not copied."""
     stripped = text.strip()
     if stripped.startswith("["):
         try:
-            return [str(record["name"]) for record in json.loads(stripped)]
-        except (ValueError, KeyError, TypeError):
+            records = [{key: value for key, value in record.items()} | {"name": str(record["name"])} for record in json.loads(stripped)]
+        except (ValueError, KeyError, TypeError, AttributeError):
             raise typer.BadParameter("the list is not json from `apple photos diff --format json`")
-    lines = stripped.splitlines()
-    header = next(csv.reader([lines[0]])) if lines else []
-    if "name" in header:
-        return [record["name"] for record in csv.DictReader(lines)]
-    if header and set(header) <= {"side", "date", "size"}:
-        raise typer.BadParameter("the list has no name column; run diff with --fields including name")
-    return [line.strip() for line in lines if line.strip()]
+    else:
+        lines = stripped.splitlines()
+        header = next(csv.reader([lines[0]])) if lines else []
+        if "name" in header:
+            records = list(csv.DictReader(lines))
+        elif header and set(header) <= {"side", "date", "size", "hidden", "burst"}:
+            raise typer.BadParameter("the list has no name column; run diff with --fields including name")
+        else:
+            records = [{"name": line.strip()} for line in lines if line.strip()]
+    names, hidden = [], {}
+    for record in records:
+        if is_true(record.get("hidden")):
+            hidden[record["name"]] = is_true(record.get("burst"))
+        else:
+            names.append(record["name"])
+    return names, hidden
+
+
+def report_hidden(hidden: dict) -> None:
+    """Says on stderr which listed items were left out because Photos hides them (PowerPhotos cannot copy those)."""
+    if len(hidden) <= 20:
+        for name, burst in hidden.items():
+            typer.echo(f"Not copied: {name}: hidden in Photos{' (a burst member)' if burst else ''}, so PowerPhotos does not list it", err=True)
+    typer.echo(f"{len(hidden)} hidden items ({sum(hidden.values())} burst members) were not copied: PowerPhotos cannot see them.", err=True)
 
 
 def copy_one(
@@ -152,7 +175,7 @@ def copy_one(
                 output = pp.run_applescript(script, *args)
                 for line in output.splitlines():
                     if line.startswith("missing\t"):
-                        typer.echo(f"Not in {source}: {line.partition(chr(9))[2]}", err=True)
+                        typer.echo(f"Not copied: PowerPhotos does not list {line.partition(chr(9))[2]} in {source}", err=True)
                 return int(output.rsplit(" ", 1)[-1])
             except pp.PowerPhotosError as error:
                 if error.number != pp.UPGRADE_NEEDED:
@@ -221,7 +244,8 @@ def libraries_command(
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
-DIFF_FIELDS = ("date", "size", "name")
+DIFF_FIELDS = ("date", "size", "name", "hidden", "burst")
+DEFAULT_FIELDS = ["date", "size", "name"]
 
 
 class Side(str, Enum):
@@ -248,19 +272,30 @@ def parse_fields(text: str) -> list:
     return fields
 
 
-def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort) -> list:
-    """The photos to show as dicts of side, date, size (int or None) and name, in the order asked for."""
+def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict) -> list:
+    """The photos to show as dicts of side, date, size (int or None), name, hidden and burst (true or false), in the order
+    asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden items and
+    of its burst members."""
     rows = []
     for side, counted in ((Side.left, only_left), (Side.right, only_right)):
         if which in (None, side):
-            for when, size, name in counted.elements():
-                rows.append({"side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name})
+            for key in counted.elements():
+                when, size, name = key
+                rows.append({
+                    "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
+                    "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
+                })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
         DiffSort.name: lambda r: (r["name"], r["date"], r["size"] or 0, r["side"]),
         DiffSort.size: lambda r: (r["size"] or 0, r["date"], r["name"], r["side"]),
     }[sort]
     return sorted(rows, key=order)
+
+
+def cell_text(value) -> str:
+    """A value as text: true and false for booleans, nothing for a missing value."""
+    return "" if value is None else ("true" if value else "false") if isinstance(value, bool) else str(value)
 
 
 def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) -> None:
@@ -271,12 +306,14 @@ def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) ->
         writer = csv.writer(sys.stdout, lineterminator="\n")
         writer.writerow(columns)
         for row in rows:
-            writer.writerow(["" if row[column] is None else row[column] for column in columns])
+            writer.writerow([cell_text(row[column]) for column in columns])
     else:
         cells = [
-            [{"left": "<", "right": ">"}[row["side"]] if column == "side" else "" if row[column] is None else str(row[column]) for column in columns]
+            [{"left": "<", "right": ">"}[row["side"]] if column == "side" else cell_text(row[column]) for column in columns]
             for row in rows
         ]
+        if cells:
+            cells.insert(0, ["" if column == "side" else column for column in columns])
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))] if cells else []
         for cell in cells:
             typer.echo("  ".join(
@@ -291,45 +328,91 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
     return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
 
 
+def ignoring_date(first: Counter, second: Counter) -> tuple:
+    """(only in first, only in second, count in both) when a photo is its size and file name, whatever its date: the same
+    clip imported twice with a shifted time is one photo, and the extra copies are the ones left over."""
+    def grouped(photos: Counter) -> dict:
+        groups = {}
+        for (when, size, name), count in sorted(photos.items()):
+            groups.setdefault((size, name), []).extend([(when, size, name)] * count)
+        return groups
+
+    left_groups, right_groups = grouped(first), grouped(second)
+    only_left, only_right, both = Counter(), Counter(), 0
+    for key in left_groups.keys() | right_groups.keys():
+        left_items, right_items = left_groups.get(key, []), right_groups.get(key, [])
+        shared = min(len(left_items), len(right_items))
+        both += shared
+        only_left.update(left_items[shared:])
+        only_right.update(right_items[shared:])
+    return only_left, only_right, both
+
+
 def diff_command(
     left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
     right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
     summary: Annotated[bool, typer.Option("--summary", help="Print only the counts.")] = False,
     only: Annotated[Optional[Side], typer.Option(help="Show only the photos that are in just the left, or just the right, library; the side column is left out.")] = None,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
-    fields: Annotated[str, typer.Option(help="The columns to show and their order: any of date, size, name, comma-separated.")] = ",".join(DIFF_FIELDS),
+    fields: Annotated[
+        Optional[str],
+        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, comma-separated. The default is all but the last two with --exclude-hidden, which would only ever say false. hidden and burst are true or false."),
+    ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
+    ignore_date: Annotated[
+        bool,
+        typer.Option("--ignore-date", help="Treat photos with the same size and file name as the same photo, whatever their dates (finds a clip imported twice with a shifted time). Repeated names from different cameras can match wrongly."),
+    ] = False,
+    exclude_hidden: Annotated[
+        bool,
+        typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members), which PowerPhotos does not list and so cannot copy: compare only what it can see. How many were left out is reported on stderr."),
+    ] = False,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
-    .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. --since and
+    .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Items Photos
+    keeps out of view (hidden: mostly burst members) are compared too and marked in the hidden and burst columns, though
+    PowerPhotos does not list them and cannot copy them; --exclude-hidden leaves them out and reports how many on stderr. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
-    so the counts are for that selection too. Text output
+    so the counts are for that selection too. --ignore-date matches photos on size and file name alone. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields)
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"])
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
         left_path, right_path = find_library(left), find_library(right)
-        first, second = pp.photos(left_path), pp.photos(right_path)
+        data = [pp.library_photos(left_path), pp.library_photos(right_path)]
     except pp.PowerPhotosError as error:
         fail(str(error))
-    first, second = (within(photos, since, until) for photos in (first, second))
-    first, second = (pp.of_media(photos, media.value) for photos in (first, second))
-    only_left, only_right = first - second, second - first
+
+    def selected(counted: Counter) -> Counter:
+        return pp.of_media(within(counted, since, until), media.value)
+
+    visible = [selected(d.visible) for d in data]
+    hidden = [selected(d.hidden) for d in data]
+    bursts = [selected(d.bursts) for d in data]
+    first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
+    if ignore_date:
+        only_left, only_right, both = ignoring_date(first, second)
+    else:
+        only_left, only_right, both = first - second, second - first, sum((first & second).values())
     if not summary:
-        print_diff(diff_rows(only_left, only_right, only, sort), columns, only is None, format)
-    typer.echo(
-        f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. "
-        f"In both: {sum((first & second).values())}.",
-        err=True,
-    )
+        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])})
+        print_diff(rows, columns, only is None, format)
+    typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
+    if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
+        typer.echo(
+            "Not compared, hidden in Photos and not listed by PowerPhotos: "
+            f"{sum(hidden[0].values())} in {left} ({sum(bursts[0].values())} burst members), "
+            f"{sum(hidden[1].values())} in {right} ({sum(bursts[1].values())} burst members).",
+            err=True,
+        )
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
@@ -350,7 +433,8 @@ def copy_command(
 
     Photos already in the destination are skipped, so reruns add only what is new. Nothing is removed from the source.
     With --list, every photo in the source with a listed file name is copied, so a name that more than one photo has
-    copies all of them. Names the source does not have are listed on stderr. An empty list copies nothing and succeeds.
+    copies all of them. Names PowerPhotos does not list in the source are reported on stderr, and so are hidden items in the list
+    (the hidden column of `diff`), which are left out. An empty list copies nothing and succeeds.
     --no-duplicate-check copies the listed photos even when the destination has them, which avoids PowerPhotos'
     comparison against a large library; use it only with a list of what is missing, such as from `apple photos diff`.
     """
@@ -363,9 +447,11 @@ def copy_command(
     if list_file is not None:
         if since or until or media != Media.all:
             raise typer.BadParameter("--list cannot be combined with --since, --until or --media")
-        names = parse_names(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
+        names, hidden = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
+        if hidden:
+            report_hidden(hidden)
         if not names:  # e.g. a diff that found nothing: there is nothing to copy, which is not an error
-            typer.echo(f"{destination}: no files copied (the list is empty)")
+            typer.echo(f"{destination}: no files copied (" + ("everything listed is hidden in Photos" if hidden else "the list is empty") + ")")
             return
     try:
         with pp.one_at_a_time():
@@ -380,14 +466,20 @@ def copy_command(
     typer.echo(f"{destination}: skipped (needs a Photos upgrade)" if found is None else f"{destination}: found {found}")
 
 
-def read_photos(libraries: dict, name: str) -> Optional[Counter]:
+def read_library(libraries: dict, name: str) -> Optional[pp.Photos]:
     """The photos of a library in PowerPhotos, read from its database, or None when it is unknown or cannot be read."""
     if name not in libraries:
         return None
     try:
-        return pp.photos(libraries[name])
+        return pp.library_photos(libraries[name])
     except pp.PowerPhotosError:
         return None
+
+
+def read_photos(libraries: dict, name: str) -> Optional[Counter]:
+    """The visible photos of a library (see read_library), or None."""
+    found = read_library(libraries, name)
+    return None if found is None else found.visible
 
 
 def split_command(
@@ -454,7 +546,17 @@ def split_command(
     try:
         with pp.one_at_a_time():
             libraries = known_libraries()
-            source_photos = read_photos(libraries, source) if skip_complete or max_bytes else None
+            source_data = read_library(libraries, source) if skip_complete or max_bytes else None
+            source_photos = None if source_data is None else source_data.visible
+            if source_data is not None:
+                hidden_here = pp.of_media(source_data.hidden, media.value)
+                if hidden_here:
+                    bursts_here = pp.of_media(source_data.bursts, media.value)
+                    typer.echo(
+                        f"{source}: {sum(hidden_here.values())} hidden {media.value} ({sum(bursts_here.values())} burst members) "
+                        "are not copied: Photos keeps them out of view and PowerPhotos does not list them.",
+                        err=True,
+                    )
             if (no_duplicate_check or max_bytes) and source_photos is None:
                 fail(f"The photos of {source} cannot be read from its database, so " + (
                     "what is missing cannot be worked out." if no_duplicate_check else "its size cannot be worked out."))
@@ -468,7 +570,7 @@ def split_command(
 
             cache = {}
 
-            def read_library(name: str):
+            def read_destination(name: str):
                 if name not in cache:
                     cache[name] = read_photos(libraries, name)
                 return cache[name]
@@ -492,8 +594,8 @@ def split_command(
                         continue
                     found = None
                     if source_photos is not None:
-                        near = [read_library(name) for name in nearby_names(year, part.name)]
-                        found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_library(part.name), near)
+                        near = [read_destination(name) for name in nearby_names(year, part.name)]
+                        found = split_plan.missing_in_range(source_photos, part.start, part.end, media.value, read_destination(part.name), near)
                         if found is not None and not found[0] and not found[1]:
                             typer.echo(f"{label}: up to date")
                             continue
