@@ -296,15 +296,18 @@ def test_against_without_outdated_is_a_usage_error(mac):
 
 
 def add_photos(library: Path, photos) -> Path:
-    """Gives a fake library the tables diff reads. photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, trashed])."""
+    """Gives a fake library the tables diff reads. photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, "trashed" or "hidden"])."""
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer)")
     connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
-    for number, (when, size, name, *trashed) in enumerate(photos, 1):
+    for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
-        connection.execute("insert into ZASSET values (?, ?, ?, ?)", (number, seconds, f"UUID{number}.jpg", int(bool(trashed))))
+        connection.execute(
+            "insert into ZASSET values (?, ?, ?, ?, ?)",
+            (number, seconds, f"UUID{number}.jpg", int("trashed" in flags), 2 if "hidden" in flags else 0),
+        )
         connection.execute("insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?)", (number, number, size, name))
     connection.commit()
     connection.close()
@@ -565,3 +568,176 @@ def test_the_listing_shows_libraries_that_share_a_name_and_says_so(mac, monkeypa
     assert result.exit_code == 0
     assert result.stdout.count("photos-2018\t") == 2
     assert "share a name" in result.output
+
+
+def test_diff_ignores_items_photos_keeps_out_of_view(mac):
+    assert diff(mac, [A, (*B, "hidden")], [A]).exit_code == 0
+
+
+def test_diff_since_and_until_limit_both_libraries_to_a_range_of_days(mac):
+    result = diff(mac, [A, B, C, D], [B], "--since", "2018-03-02", "--until", "2018-03-03")
+    assert result.stdout.splitlines() == [">  2018-03-02 11:00:00  100  b.jpg"][:0] + ["<  2018-03-03 12:00:00  100  c.mov"]
+    assert "Only in Source: 1. Only in photos-2018: 0. In both: 1." in result.output  # b is in both; a and d are out of range
+    assert diff(mac, [A, D], [], "--since", "2018-03-04").stdout.splitlines() == ["<  2018-03-04 09:00:00  100  d.jpg"]
+    assert diff(mac, [A, D], [], "--until", "2018-03-01").stdout.splitlines() == ["<  2018-03-01 10:00:00  100  a.jpg"]
+    assert diff(mac, [A], [], "--since", "2018-03-05", "--until", "2018-03-01").exit_code == 2
+
+
+def test_diff_media_compares_only_photos_or_only_videos(mac):
+    assert diff(mac, [A, C], [], "--media", "videos", "--only", "left").stdout.splitlines() == ["2018-03-03 12:00:00  100  c.mov"]
+    assert diff(mac, [A, C], [], "--media", "photos", "--only", "left").stdout.splitlines() == ["2018-03-01 10:00:00  100  a.jpg"]
+    assert len(diff(mac, [A, C], [], "--media", "all", "--only", "left").stdout.splitlines()) == 2
+
+
+def test_the_named_copy_script_treats_jpeg_as_jpg():
+    script = (pp.APPLESCRIPTS / "copy-named.applescript").read_text()
+    assert 'ends with ".jpeg"' in script and '& ".jpg"' in script
+
+
+def test_parse_size_takes_decimal_units():
+    from apple.photos.split_plan import format_size, parse_size
+    assert parse_size("200GB") == 200 * 10**9 and parse_size("1.5 tb") == 1_500_000_000_000
+    assert parse_size("500mb") == 500 * 10**6 and parse_size("250") == 250
+    for bad in ("", "GB", "0", "-5GB", "12 parsecs"):
+        with pytest.raises(ValueError):
+            parse_size(bad)
+    assert format_size(1_500_000_000) == "1.5 GB" and format_size(999) == "999 B"
+
+
+def day(date_text, size, name="x.jpg"):
+    return (f"{date_text} 12:00:00", str(size), name)
+
+
+def test_a_year_under_the_cap_is_one_library_with_the_plain_name():
+    from collections import Counter
+    from apple.photos.split_plan import plan_year
+    photos = Counter([day("2018-03-01", 100), day("2018-03-02", 100)])
+    parts = plan_year(photos, 2018, "photos", "photos-2018", 1000)
+    assert [(p.name, p.start.isoformat(), p.end.isoformat(), p.size) for p in parts] == [("photos-2018", "2018-01-01", "2019-01-01", 200)]
+    assert plan_year(photos, 2018, "photos", "photos-2018", None) == parts
+    assert plan_year(None, 2018, "photos", "photos-2018", 1000)[0].size == 0
+
+
+def test_a_year_over_the_cap_is_divided_into_runs_of_whole_days():
+    from collections import Counter
+    from apple.photos.split_plan import plan_year
+    photos = Counter([day("2018-03-01", 100, "a.jpg"), day("2018-03-01", 100, "b.jpg"), day("2018-03-02", 100), day("2018-03-03", 100), day("2018-12-30", 100), day("2019-01-05", 9999)])
+    parts = plan_year(photos, 2018, "photos", "photos-2018", 250)
+    # day 1 holds two photos (200), so day 2 would make 300: it starts the next library
+    assert [(p.name, p.start.isoformat(), p.end.isoformat(), p.size) for p in parts] == [
+        ("photos-2018-1", "2018-01-01", "2018-03-02", 200),
+        ("photos-2018-2", "2018-03-02", "2018-12-30", 200),
+        ("photos-2018-3", "2018-12-30", "2019-01-01", 100),
+    ]
+    assert sum(p.size for p in parts) == 500  # the photo of 2019 and other media are not counted
+
+
+def test_a_single_day_over_the_cap_is_a_library_of_its_own():
+    from collections import Counter
+    from apple.photos.split_plan import plan_year
+    parts = plan_year(Counter([day("2018-03-01", 900), day("2018-03-02", 10)]), 2018, "photos", "p", 100)
+    assert [(p.name, p.size) for p in parts] == [("p-1", 900), ("p-2", 10)]
+
+
+def test_the_cap_counts_only_the_media_asked_for():
+    from collections import Counter
+    from apple.photos.split_plan import plan_year
+    photos = Counter([day("2018-03-01", 500, "v.mov"), day("2018-03-02", 100)])
+    assert len(plan_year(photos, 2018, "photos", "p", 250)) == 1
+
+
+def capped_split(*options):
+    return split("--max-size", "250", *options)
+
+
+def three_days(mac, **destinations):
+    day_a, day_b, day_c = ("2018-03-01 10:00:00", 100, "a.jpg"), ("2018-03-02 10:00:00", 100, "b.jpg"), ("2018-03-03 10:00:00", 100, "c.jpg")
+    year_libraries(mac, [day_a, day_b, day_c], **destinations)
+    return day_a, day_b, day_c
+
+
+def test_split_over_the_cap_copies_each_part_by_its_date_range(mac):
+    three_days(mac)
+    mac.make("photos-2018-1", 19607)
+    mac.make("photos-2018-2", 19607)
+    result = capped_split()
+    assert result.exit_code == 0 and "3 libraries" not in result.output and "in 2 libraries" in result.output
+    assert mac.calls("copy-photos.applescript") == [
+        ["Source", "photos-2018-1", "2018-01-01", "2018-03-03", "photos"],
+        ["Source", "photos-2018-2", "2018-03-03", "2019-01-01", "photos"],
+    ]
+
+
+def test_split_under_the_cap_keeps_the_plain_library_name(mac):
+    three_days(mac)
+    split("--max-size", "10GB")
+    assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018"]
+
+
+def test_split_stops_before_copying_when_a_part_library_is_missing(mac):
+    three_days(mac)
+    mac.make("photos-2018-1", 19607)  # photos-2018-2 is not in PowerPhotos
+    result = capped_split()
+    assert result.exit_code == 1 and "Not in PowerPhotos: photos-2018-2" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_on_missing_skip_copies_the_libraries_that_exist(mac):
+    three_days(mac)
+    mac.make("photos-2018-1", 19607)
+    result = capped_split("--on-missing", "skip")
+    assert result.exit_code == 0 and "photos-2018-2 (2018-03-03 to 2018-12-31" in result.output and "skipped (not in PowerPhotos)" in result.output
+    assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018-1"]
+
+
+def test_split_dry_run_copies_nothing_and_says_what_each_library_needs(mac):
+    day_a, day_b, day_c = three_days(mac)
+    mac.make("photos-2018-1", 19607)
+    add_photos(mac.libraries["photos-2018-1"], [day_a, day_b, day_c])
+    result = capped_split("--dry-run")
+    assert result.exit_code == 0
+    assert "photos-2018-1 (2018-01-01 to 2018-03-02, 200 B): up to date" in result.output
+    assert "photos-2018-2 (2018-03-03 to 2018-12-31, 100 B): library missing" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_the_dry_run_environment_variable_is_a_dry_run_too(mac):
+    three_days(mac)
+    mac.make("photos-2018-1", 19607)
+    mac.make("photos-2018-2", 19607)
+    result = runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", "--max-size", "250"], env={"DRY_RUN": "true"})
+    assert result.exit_code == 0 and "would copy" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_skips_a_part_that_is_complete_and_copies_the_other(mac):
+    day_a, day_b, day_c = three_days(mac)
+    day_d = ("2018-09-01 10:00:00", 100, "d.jpg")
+    add_photos(mac.libraries["Source"], [day_a, day_b, day_c, day_d])
+    mac.make("photos-2018-1", 19607)
+    mac.make("photos-2018-2", 19607)
+    add_photos(mac.libraries["photos-2018-1"], [day_a, day_b])
+    add_photos(mac.libraries["photos-2018-2"], [day_c])  # c is near the boundary: either library may hold it
+    result = capped_split()
+    assert "photos-2018-1 (2018-01-01 to 2018-03-02, 200 B): up to date" in result.output
+    assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018-2"]
+
+
+def test_split_no_duplicate_check_copies_what_a_part_lacks_and_photos_near_its_edges(mac):
+    day_a, day_b, day_c = three_days(mac)
+    mac.make("photos-2018-1", 19607)
+    mac.make("photos-2018-2", 19607)
+    add_photos(mac.libraries["photos-2018-1"], [day_a])
+    add_photos(mac.libraries["photos-2018-2"], [])
+    capped_split("--no-duplicate-check")
+    # b and c are within a day of the boundary between the parts, so either library might be theirs (a, in part 1, is not)
+    assert mac.calls("copy-named.applescript") == [
+        ["Source", "photos-2018-1", ["b.jpg", "c.jpg"], "false"], ["Source", "photos-2018-2", ["b.jpg", "c.jpg"], "false"],
+    ]
+
+
+def test_split_max_size_must_be_a_size_and_needs_the_source_database(mac):
+    assert capped_split("--max-size", "lots").exit_code == 2
+    assert split("--max-size", "lots").exit_code == 2
+    result = split("--max-size", "1GB")  # Source has no photo tables in this fixture
+    assert result.exit_code == 1 and "size cannot be worked out" in result.output

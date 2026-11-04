@@ -36,17 +36,13 @@ def format_size(size: int) -> str:
     return f"{size} B"
 
 
-def of_media(source_photos: Counter, media: str) -> Counter:
-    return Counter({key: count for key, count in source_photos.items() if key[2].lower().endswith(pp.EXTENSIONS[media])})
-
-
 def plan_year(source_photos: Optional[Counter], year: int, media: str, name: str, max_bytes: Optional[int]) -> List[Part]:
     """The libraries a year goes into: one called name, or when its photos are over max_bytes, name-1, name-2 ... each a
     run of whole days from January 1 on, filled up to the cap before the next one starts. A single day over the cap is
     a library of its own. Day boundaries are in UTC, so a photo near one may be filed by PowerPhotos in the next part."""
     start, end = date(year, 1, 1), date(year + 1, 1, 1)
     days: Counter = Counter()
-    for (when, size, _), count in (of_media(source_photos, media) if source_photos else Counter()).items():
+    for (when, size, _), count in (pp.of_media(source_photos, media) if source_photos else Counter()).items():
         if start.isoformat() <= when[:10] < end.isoformat():
             days[when[:10]] += (int(size) if size.isdigit() else 0) * count
     total = sum(days.values())
@@ -83,7 +79,7 @@ def missing_in_range(
     core_from, core_to = (start + one_day).isoformat(), (end - one_day).isoformat()
     edge_from, edge_to = (start - one_day).isoformat(), (end + one_day).isoformat()
     core, edge = Counter(), Counter()
-    for key, count in of_media(source_photos, media).items():
+    for key, count in pp.of_media(source_photos, media).items():
         when = key[0]
         if core_from <= when < core_to:
             core[key] = count
