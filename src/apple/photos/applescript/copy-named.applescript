@@ -3,7 +3,8 @@
 -- The last argument says whether to skip photos the destination already has (true: reruns add only what is new; false:
 -- every listed photo is copied again). Both are passed to PowerPhotos explicitly, since the default of its
 -- "skip duplicates" parameter when left out is not documented. Nothing is removed from the source.
--- Every source photo with a listed file name is copied. Prints "missing<tab><name>" for each listed name that no source
+-- Every source photo with a listed file name is copied. Names are compared without regard to case, and .jpeg counts as .jpg
+-- because PowerPhotos reports a .jpeg file as .jpg. Prints "missing<tab><name>" for each listed name that no source
 -- photo has, then "found <n>". Failures (such as a destination that needs a Photos upgrade, error 5) are left to
 -- osascript to report.
 
@@ -14,7 +15,11 @@ on run argv
 	set destinationName to item 2 of argv
 	set checkDuplicates to (item 4 of argv) is "true"
 	set listedNames to paragraphs of (read (POSIX file (item 3 of argv)) as «class utf8»)
-	set listedText to linefeed & (my joined(listedNames)) & linefeed
+	set normalizedNames to {}
+	repeat with aName in listedNames
+		set end of normalizedNames to my normalized(contents of aName)
+	end repeat
+	set listedText to linefeed & (my joined(normalizedNames)) & linefeed
 
 	set wanted to {}
 	set present to linefeed
@@ -25,7 +30,7 @@ on run argv
 			set allPhotos to photos of sourceLibrary
 			set allNames to filename of photos of sourceLibrary
 			repeat with i from 1 to count of allNames
-				set aName to item i of allNames
+				set aName to my normalized(item i of allNames)
 				if listedText contains (linefeed & aName & linefeed) then
 					set end of wanted to item i of allPhotos
 					if present does not contain (linefeed & aName & linefeed) then set present to present & aName & linefeed
@@ -42,8 +47,9 @@ on run argv
 	end timeout
 
 	set report to ""
-	repeat with aName in listedNames
-		if (contents of aName) is not "" and present does not contain (linefeed & aName & linefeed) then set report to report & "missing" & tab & aName & linefeed
+	repeat with i from 1 to count of listedNames
+		set aName to item i of listedNames
+		if aName is not "" and present does not contain (linefeed & (item i of normalizedNames) & linefeed) then set report to report & "missing" & tab & aName & linefeed
 	end repeat
 	return report & "found " & (count of wanted)
 end run
@@ -54,3 +60,8 @@ on joined(theList)
 	set AppleScript's text item delimiters to ""
 	return joinedText
 end joined
+
+on normalized(fileName)
+	if fileName ends with ".jpeg" then return (text 1 thru -6 of fileName) & ".jpg"
+	return fileName
+end normalized
