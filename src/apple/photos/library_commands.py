@@ -107,8 +107,9 @@ def is_true(value) -> bool:
 
 def parse_list(text: str) -> tuple:
     """(file names to copy, hidden items) from the output of `./apple photos diff` (json or csv, with a name column and
-    optionally true/false hidden and burst columns) or one name per line. Hidden items are a dict of name -> whether it
-    is a burst member: PowerPhotos does not list them, so they are not copied."""
+    optionally true/false hidden, burst and missing columns) or one name per line. Returns the names to copy, the hidden
+    items as a dict of name -> whether it is a burst member, and the names whose original is not stored in the library.
+    PowerPhotos lists neither kind, so neither is copied."""
     stripped = text.strip()
     if stripped.startswith("["):
         try:
@@ -124,13 +125,29 @@ def parse_list(text: str) -> tuple:
             raise typer.BadParameter("the list has no name column; run diff with --fields including name")
         else:
             records = [{"name": line.strip()} for line in lines if line.strip()]
-    names, hidden = [], {}
+    names, hidden, missing = [], {}, []
     for record in records:
         if is_true(record.get("hidden")):
             hidden[record["name"]] = is_true(record.get("burst"))
+        elif is_true(record.get("missing")):
+            missing.append(record["name"])
         else:
             names.append(record["name"])
-    return names, hidden
+    return names, hidden, missing
+
+
+def report_missing(names: list, source: str) -> None:
+    """Says on stderr which wanted photos were left out because their original is not stored in the source."""
+    if not names:
+        return
+    typer.echo(
+        f"  {len(names)} not copied: the original is not stored in {source} (a photo shared with you in Messages, or one "
+        "whose original lives only in iCloud), so PowerPhotos does not list it and cannot copy it:", err=True,
+    )
+    for name in names[:20]:
+        typer.echo(f"    {name}", err=True)
+    if len(names) > 20:
+        typer.echo(f"    ... and {len(names) - 20} more", err=True)
 
 
 def report_hidden(hidden: dict) -> None:
@@ -266,7 +283,7 @@ def libraries_command(
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
-DIFF_FIELDS = ("date", "size", "name", "hidden", "burst")
+DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing")
 DEFAULT_FIELDS = ["date", "size", "name"]
 
 
@@ -294,10 +311,11 @@ def parse_fields(text: str) -> list:
     return fields
 
 
-def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict) -> list:
-    """The photos to show as dicts of side, date, size (int or None), name, hidden and burst (true or false), in the order
-    asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden items and
-    of its burst members."""
+def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool) -> list:
+    """The photos to show as dicts of side, date, size (int or None), name, hidden, burst and missing (true or false), in
+    the order asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden
+    items and of its burst members; libraries gives its pp.Photos, which says whether an original is not stored there
+    (found by looking at the files, so only when with_missing)."""
     rows = []
     for side, counted in ((Side.left, only_left), (Side.right, only_right)):
         if which in (None, side):
@@ -306,6 +324,7 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
                 rows.append({
                     "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
                     "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
+                    "missing": libraries[side.value].original_missing(key) if with_missing else False,
                 })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
@@ -378,7 +397,7 @@ def diff_command(
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
     fields: Annotated[
         Optional[str],
-        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, comma-separated. The default is all but the last two with --exclude-hidden, which would only ever say false. hidden and burst are true or false."),
+        typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, missing, comma-separated. hidden, burst and missing are true or false: missing means the original file is not stored in the library (a photo shared with you in Messages, or one whose original lives only in iCloud), so PowerPhotos cannot list or copy it. The default is date,size,name,hidden,burst,missing; with --exclude-hidden, without hidden and burst, which would only ever say false."),
     ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
@@ -404,7 +423,7 @@ def diff_command(
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"])
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing"]
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
@@ -425,7 +444,7 @@ def diff_command(
     else:
         only_left, only_right, both = first - second, second - first, sum((first & second).values())
     if not summary:
-        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])})
+        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns)
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
     if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
@@ -469,11 +488,13 @@ def copy_command(
     if list_file is not None:
         if since or until or media != Media.all:
             raise typer.BadParameter("--list cannot be combined with --since, --until or --media")
-        names, hidden = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
+        names, hidden, no_original = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
         if hidden:
             report_hidden(hidden)
+        report_missing(no_original, source)
         if not names:  # e.g. a diff that found nothing: there is nothing to copy, which is not an error
-            typer.echo(f"{destination}: no files copied (" + ("everything listed is hidden in Photos" if hidden else "the list is empty") + ")")
+            reason = "the list is empty" if not (hidden or no_original) else "everything listed is hidden in Photos or has no original in " + source
+            typer.echo(f"{destination}: no files copied ({reason})")
             return
     try:
         with pp.one_at_a_time():
@@ -631,12 +652,21 @@ def split_command(
                         if dry:
                             typer.echo(f"{label}: would copy{note}")
                             continue
+                        no_original = []
                         if no_duplicate_check:
                             if found is None:
                                 fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
-                            names = sorted({file_name for _, _, file_name in found[0] + found[1]})  # near the ends too: any library will do
+                            keys_by_name = {}
+                            for key in list(found[0] + found[1]):  # near the ends too: any library will do
+                                keys_by_name.setdefault(key[2], []).append(key)
+                            no_original = sorted(
+                                name for name, keys in keys_by_name.items()
+                                if source_data is not None and all(source_data.original_missing(key) for key in keys)
+                            )
+                            names = sorted(set(keys_by_name) - set(no_original))
                             if not names:
                                 typer.echo(f"{label}: nothing to copy{note}")
+                                report_missing(no_original, source)
                                 continue
                             result = copy_one(
                                 libraries, source, part.name, None, None, kind, on_upgrade, names, check_duplicates=False
@@ -644,6 +674,7 @@ def split_command(
                         else:
                             result = copy_one(libraries, source, part.name, part.start, part.end, kind, on_upgrade)
                         typer.echo(f"{label}: {describe_copy(result, not no_duplicate_check)}{note}")
+                        report_missing(no_original, source)
                         report_unlisted(result.unlisted, source)
     except pp.Busy as error:
         fail(str(error))
