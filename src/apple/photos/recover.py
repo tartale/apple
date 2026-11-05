@@ -18,7 +18,7 @@ import typer
 
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
-from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, fail, find_library, within
+from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
 from apple.platform import require_macos
 
 MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
@@ -157,11 +157,15 @@ def recover_command(
     print_recover(rows, format)
     recoverable = sum(len(hits) for hits in found_by_source.values())
     detail = ", ".join(f"{len(hits)} from {name}" for name, hits in found_by_source.items())
-    typer.echo(
-        f"{len(rows)} photos in {default_library} have no original stored; originals found for {recoverable}"
-        + (f" ({detail})" if detail else "") + f", none for {len(rows) - recoverable}.",
-        err=True,
-    )
+    stuck = len(rows) - recoverable
+    if not rows:
+        message = f"No photo in {default_library} is missing its original: nothing to recover."
+    else:
+        message = f"{count(len(rows), 'photo')} in {default_library} {'has' if len(rows) == 1 else 'have'} no original stored. "
+        message += (f"An original was found for {recoverable} ({detail}). " if recoverable else "No original was found. ")
+        message += "" if not recoverable or not stuck else f"None was found for the other {stuck}."
+        message = message.strip()
+    typer.echo(message, err=True)
     if not recoverable:
         return
     mode = Apply.no if is_dry_run(dry_run) else apply
