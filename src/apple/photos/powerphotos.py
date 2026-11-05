@@ -79,13 +79,22 @@ def libraries() -> Dict[str, Path]:
     return dict(entries)
 
 
-PHOTOS_QUERY = """
-    select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
-           a.ZVISIBILITYSTATE != 0, a.ZAVALANCHEKIND != 0, a.ZDIRECTORY, a.ZFILENAME,
-           x.ZSYNDICATIONIDENTIFIER is not null, a.ZDATECREATED
-    from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
-    where a.ZTRASHEDSTATE = 0
-"""
+def photos_query(db: sqlite3.Connection) -> str:
+    """The query for a library's photos. Older Photos databases lack some columns (a burst is marked by ZAVALANCHEUUID
+    where ZAVALANCHEKIND does not exist yet), so each is used only when it is there."""
+    asset = {row[1] for row in db.execute("pragma table_info(ZASSET)")}
+    attributes = {row[1] for row in db.execute("pragma table_info(ZADDITIONALASSETATTRIBUTES)")}
+    hidden = "a.ZVISIBILITYSTATE != 0" if "ZVISIBILITYSTATE" in asset else "0"
+    burst = "a.ZAVALANCHEKIND != 0" if "ZAVALANCHEKIND" in asset else "a.ZAVALANCHEUUID is not null" if "ZAVALANCHEUUID" in asset else "0"
+    shared = "x.ZSYNDICATIONIDENTIFIER is not null" if "ZSYNDICATIONIDENTIFIER" in attributes else "0"
+    return f"""
+        select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
+               {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED
+        from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
+        where a.ZTRASHEDSTATE = 0
+    """
+
+
 READ_ERRORS = (sqlite3.Error, KeyError, TypeError, ValueError, plistlib.InvalidFileException)
 
 
@@ -180,7 +189,7 @@ def library_photos(library: Path) -> Photos:
     """Reads a library's photos from its database; PowerPhotos is not involved. Raises PowerPhotosError when the
     database cannot be read."""
     try:
-        rows = read_database(library, lambda db: db.execute(PHOTOS_QUERY).fetchall())
+        rows = read_database(library, lambda db: db.execute(photos_query(db)).fetchall())
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
     visible, hidden, bursts, files, shared, superseded = Counter(), Counter(), Counter(), {}, set(), Counter()
