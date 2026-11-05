@@ -1,0 +1,6 @@
+#!/bin/bash
+# Stands in for lsof -c Photos -Fn: prints an "n<path>" line for each line of $FAKE_LSOF.
+while IFS= read -r line; do
+  [ -n "$line" ] && echo "n$line"
+done <<< "${FAKE_LSOF:-}"
+exit 0

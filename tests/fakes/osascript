@@ -2,7 +2,9 @@
 """Stands in for osascript. Logs each call as JSON to $FAKE_OSASCRIPT_LOG (for copy-named.applescript the names file is
 logged as the list of names it holds) and answers from the environment: FAKE_LIBRARIES (name<TAB>path lines),
 FAKE_COPY_ERROR (stderr text; exits 1), FAKE_COPY_FOUND (the count), FAKE_NAMED_MISSING (comma-separated names that
-copy-named.applescript reports as not in the source)."""
+copy-named.applescript reports as not in the source), FAKE_IMPORT_COUNT (how many import-photos.applescript says it
+imported; the default is every file listed) and FAKE_IMPORT_ERROR (stderr text; exits 1). For copy-named.applescript and
+import-photos.applescript the file listing the names or paths is logged as the list it holds."""
 import json
 import os
 import sys
@@ -12,10 +14,17 @@ script, *args = sys.argv[1:]
 name = Path(script).name
 if name == "copy-named.applescript":
     args[2] = Path(args[2]).read_text().splitlines()
+if name == "import-photos.applescript":
+    args[0] = Path(args[0]).read_text().splitlines()
 with open(os.environ["FAKE_OSASCRIPT_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\n")
 if name == "libraries.applescript":
     print(os.environ.get("FAKE_LIBRARIES", ""))
+elif name == "import-photos.applescript":
+    if os.environ.get("FAKE_IMPORT_ERROR"):
+        print(os.environ["FAKE_IMPORT_ERROR"], file=sys.stderr)
+        sys.exit(1)
+    print("imported " + os.environ.get("FAKE_IMPORT_COUNT", str(len(args[0]))))
 elif name in ("copy-photos.applescript", "copy-named.applescript"):
     if os.environ.get("FAKE_COPY_ERROR"):
         print(os.environ["FAKE_COPY_ERROR"], file=sys.stderr)

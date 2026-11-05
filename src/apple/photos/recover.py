@@ -87,6 +87,10 @@ class Apply(str, Enum):
     ask = "ask"
 
 
+def has_terminal() -> bool:
+    return sys.stdin.isatty()
+
+
 def check_open_in_photos(target: Path) -> None:
     """Stops unless Photos has target open: Photos imports into whichever library it has open."""
     opened = pp.libraries_open_in_photos()
@@ -163,7 +167,7 @@ def recover_command(
         check_open_in_photos(path)
         go = True
         if mode == Apply.ask:
-            if not sys.stdin.isatty():
+            if not has_terminal():
                 typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
                 go = False
             else:
