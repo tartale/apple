@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, List, NamedTuple, Optional
@@ -36,13 +36,28 @@ class Source:
     name = ""
     description = ""
 
+    def available(self) -> Optional[str]:
+        """Why this source cannot be used right now, or None when it can."""
+        return None
+
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
         """Where the original of the photo (key is (date, size, file name)) can be had from this source, or None."""
         raise NotImplementedError
 
     def apply(self, found: List[Found]) -> int:
         """Imports what find returned into the library Photos has open; returns how many items were imported."""
-        raise NotImplementedError
+        pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
+            listing = Path(scratch) / "files.txt"
+            listing.write_text("\n".join(path for item in found for path in item.files) + "\n", encoding="utf-8")
+            output = pp.run_applescript("import-photos.applescript", str(listing))
+        return int(output.rsplit(" ", 1)[-1])
+
+
+def with_pair(main: Path, folder_files) -> List[str]:
+    """The photo's file and, with it, the video half of a Live Photo (the same name with another ending), so that Photos
+    imports the pair as one."""
+    return [str(f) for f in folder_files if f.stem.lower() == main.stem.lower()]
 
 
 def messages_attachments() -> Path:
@@ -61,23 +76,56 @@ class Messages(Source):
             candidates = sorted(f for f in folder.iterdir() if f.suffix.lower() in MEDIA_FILES)
             if not candidates:
                 continue
-            wanted = [f for f in candidates if f.name.lower() == key[2].lower()] or candidates[:1]
-            main = wanted[0]
-            # the video half of a Live Photo has the same name, so Photos imports the pair as one
-            files = [f for f in candidates if f.stem.lower() == main.stem.lower()]
-            return Found(self.name, [str(f) for f in files], main.stat().st_size)
+            main = ([f for f in candidates if f.name.lower() == key[2].lower()] or candidates[:1])[0]
+            return Found(self.name, with_pair(main, candidates), main.stat().st_size)
         return None
 
-    def apply(self, found: List[Found]) -> int:
-        pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
-            listing = Path(scratch) / "files.txt"
-            listing.write_text("\n".join(path for item in found for path in item.files) + "\n", encoding="utf-8")
-            output = pp.run_applescript("import-photos.applescript", str(listing))
-        return int(output.rsplit(" ", 1)[-1])
+
+class Backup(Source):
+    """The iCloud backup made by `apple photos backup`: $ICLOUD_ROOT/<account>/originals/..., where a photo's file keeps
+    its capture time as its modification time. A photo matches by file name and a time within two hours (the same photo
+    is an hour out where daylight saving differs); a name alone is not enough, since the numbers in IMG_nnnn.JPG repeat."""
+    name = "backup"
+    description = "the iCloud backup under ICLOUD_ROOT, matched by file name and capture time"
+    tolerance = 7200  # seconds
+
+    def __init__(self):
+        self._root = None
+        self._index = None
+
+    def available(self) -> Optional[str]:
+        root = os.environ.get("ICLOUD_ROOT")
+        if not root:
+            return "ICLOUD_ROOT is not set"
+        if not Path(root).is_dir():
+            return f"{root} is not a folder"
+        return None
+
+    def index(self) -> dict:
+        """lower-case file name -> [(modification time, path)] of every file under the accounts' originals folders."""
+        root = os.environ.get("ICLOUD_ROOT", "")
+        if self._index is None or self._root != root:
+            self._root, self._index = root, {}
+            for originals in sorted(Path(root).glob("*/originals")):
+                for folder, _, names in os.walk(originals):
+                    for file_name in names:
+                        path = Path(folder) / file_name
+                        try:
+                            self._index.setdefault(file_name.lower(), []).append((path.stat().st_mtime, path))
+                        except OSError:
+                            pass
+        return self._index
+
+    def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
+        taken = datetime.strptime(key[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+        near = [(abs(modified - taken), path) for modified, path in self.index().get(key[2].lower(), []) if abs(modified - taken) <= self.tolerance]
+        if not near:
+            return None
+        main = min(near)[1]
+        return Found(self.name, with_pair(main, sorted(p for p in main.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)), main.stat().st_size)
 
 
-SOURCES = {source.name: source for source in (Messages(),)}
+SOURCES = {source.name: source for source in (Messages(), Backup())}
 SourceName = Enum("SourceName", {name: name for name in SOURCES}, type=str)
 
 
@@ -135,7 +183,15 @@ def recover_command(
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
-    chosen = [SOURCES[name.value] for name in source] if source else list(SOURCES.values())
+    chosen = []
+    for candidate in ([SOURCES[name.value] for name in source] if source else list(SOURCES.values())):
+        reason = candidate.available()
+        if reason and source:
+            fail(f"The {candidate.name} source cannot be used: {reason}.")
+        if reason:
+            typer.echo(f"Not looking in {candidate.name}: {reason}.", err=True)
+        else:
+            chosen.append(candidate)
     path = find_library(default_library)
     try:
         photos = pp.library_photos(path)
