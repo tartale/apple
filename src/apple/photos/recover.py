@@ -18,7 +18,7 @@ import typer
 
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
-from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, fail, find_library, within
+from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
 from apple.platform import require_macos
 
 MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
@@ -156,30 +156,38 @@ def recover_command(
         })
     print_recover(rows, format)
     recoverable = sum(len(hits) for hits in found_by_source.values())
-    typer.echo(f"Missing files: {len(rows)}" + (f"; Recoverable: {recoverable}" if rows else ""), err=True)
-    if not recoverable:
-        return
     mode = Apply.no if is_dry_run(dry_run) else apply
-    if mode == Apply.no:
-        typer.echo("Nothing was imported. Use --apply yes (or ask) to import what was found.", err=True)
-        return
-    require_macos()
-    check_open_in_photos(path)
-    if mode == Apply.ask:
-        if not sys.stdin.isatty():
-            typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
-            return
-        if not typer.confirm(f"Import {recoverable} photos into the library Photos has open (it should be {default_library})?", default=False):
-            typer.echo("Nothing was imported.", err=True)
-            return
-    try:
-        with pp.one_at_a_time():
-            for name, hits in found_by_source.items():
-                typer.echo(f"{name}: imported {SOURCES[name].apply(hits)} of {len(hits)}")
-    except pp.Busy as error:
-        fail(str(error))
-    except pp.PowerPhotosError as error:
-        fail(f"Photos failed: {error}")
+    imported = errors = 0
+    if recoverable and mode != Apply.no:
+        require_macos()
+        check_open_in_photos(path)
+        go = True
+        if mode == Apply.ask:
+            if not sys.stdin.isatty():
+                typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
+                go = False
+            else:
+                go = typer.confirm(f"Import {recoverable} photos into the library Photos has open (it should be {default_library})?", default=False)
+        if go:
+            try:
+                with pp.one_at_a_time():
+                    for name, hits in found_by_source.items():
+                        try:
+                            imported += SOURCES[name].apply(hits)
+                        except pp.PowerPhotosError as error:
+                            errors += len(hits)
+                            typer.echo(f"Photos failed to import from {name}: {error}", err=True)
+            except pp.Busy as error:
+                fail(str(error))
+    # skipped: no original was found, the answer was no, or Photos already had it
+    skipped = len(rows) - imported - errors
+    typer.echo(
+        f"Imported {imported} of {len(rows)} missing files; {count(errors, 'error')}, {skipped} skipped"
+        + (" [dry run]" if mode == Apply.no and recoverable else ""),
+        err=True,
+    )
+    if errors:
+        raise typer.Exit(1)
 
 
 def abbreviate(file: str) -> str:
