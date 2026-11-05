@@ -25,10 +25,10 @@ MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff
 
 
 class Found(NamedTuple):
-    """Where a source can get the original: the files to import, and anything worth knowing about them."""
+    """Where a source can get the original: the files to import, and the size in bytes of the photo's own file."""
     source: str
     files: list
-    note: str
+    size: int
 
 
 class Source:
@@ -65,7 +65,7 @@ class Messages(Source):
             main = wanted[0]
             # the video half of a Live Photo has the same name, so Photos imports the pair as one
             files = [f for f in candidates if f.stem.lower() == main.stem.lower()]
-            return Found(self.name, [str(f) for f in files], f"{main.stat().st_size} bytes")
+            return Found(self.name, [str(f) for f in files], main.stat().st_size)
         return None
 
     def apply(self, found: List[Found]) -> int:
@@ -150,9 +150,9 @@ def recover_command(
         if found:
             found_by_source.setdefault(found.source, []).append(found)
         rows.append({
-            "date": key[0], "size": int(key[1]) if key[1].isdigit() else None, "name": key[2], "hidden": wanted[key],
+            "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": wanted[key],
             "shared": key in photos.shared, "source": found.source if found else "none",
-            "file": found.files[0] if found else "", "note": found.note if found else "",
+            "file": found.files[0] if found else "",
         })
     print_recover(rows, format)
     recoverable = sum(len(hits) for hits in found_by_source.values())
@@ -192,36 +192,19 @@ def recover_command(
         raise typer.Exit(1)
 
 
-def abbreviate(file: str) -> str:
-    """A path short enough for a table: the home folder as ~, and a long run in the middle as an ellipsis, keeping the end
-    (the folder, with a long identifier cut short, and the file name)."""
-    if not file:
-        return ""
-    path = Path(file)
-    try:
-        parts = ["~", *path.relative_to(Path.home()).parts]
-    except ValueError:
-        parts = list(path.parts)
-    if len(parts) > 5:
-        parts = parts[:3] + ["..."] + parts[-2:]
-    if len(parts) >= 2 and len(parts[-2]) > 16:
-        parts[-2] = parts[-2][:13] + "..."
-    return "/".join(parts).replace("//", "/")
-
-
 def print_recover(rows: list, format: DiffFormat) -> None:
-    columns = ["date", "size", "name", "hidden", "shared", "source", "file", "note"]
+    """size is the size of the original that was found. The file it was found at is left out of the table, since the name
+    and the source say enough, but csv and json keep it."""
+    columns = ["date", "size", "name", "hidden", "shared", "source"]
     if format == DiffFormat.json:
-        typer.echo(json.dumps([{column: row[column] for column in columns} for row in rows], indent=2))
+        typer.echo(json.dumps([{column: row[column] for column in columns + ["file"]} for row in rows], indent=2))
     elif format == DiffFormat.csv:
         writer = csv.writer(sys.stdout, lineterminator="\n")
-        writer.writerow(columns)
+        writer.writerow(columns + ["file"])
         for row in rows:
-            writer.writerow([cell_text(row[column]) for column in columns])
+            writer.writerow([cell_text(row[column]) for column in columns + ["file"]])
     elif rows:
-        cells = [columns] + [
-            [abbreviate(row[column]) if column == "file" else cell_text(row[column]) for column in columns] for row in rows
-        ]
+        cells = [columns] + [[cell_text(row[column]) for column in columns] for row in rows]
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))]
         for cell in cells:
             typer.echo("  ".join((text.rjust(width) if columns[i] == "size" else text.ljust(width)) for i, (text, width) in enumerate(zip(cell, widths))).rstrip())
