@@ -443,6 +443,7 @@ def diff_command(
     def selected(counted: Counter) -> Counter:
         return pp.of_media(within(counted, since, until), media.value)
 
+    superseded = [selected(d.superseded) for d in data]
     visible = [selected(d.visible) for d in data]
     hidden = [selected(d.hidden) for d in data]
     bursts = [selected(d.bursts) for d in data]
@@ -455,6 +456,12 @@ def diff_command(
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns)
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
+    if sum(superseded[0].values()) or sum(superseded[1].values()):
+        typer.echo(
+            "Not counted, shared placeholders that have an imported copy in the same library: "
+            f"{sum(superseded[0].values())} in {left}, {sum(superseded[1].values())} in {right}.",
+            err=True,
+        )
     if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
         typer.echo(
             "Not compared, hidden in Photos and not listed by PowerPhotos: "
@@ -601,6 +608,11 @@ def split_command(
             libraries = known_libraries()
             source_data = read_library(libraries, source) if skip_complete or max_bytes else None
             source_photos = None if source_data is None else source_data.visible
+            if source_data is not None and sum(source_data.superseded.values()):
+                typer.echo(
+                    f"{source}: {sum(source_data.superseded.values())} shared placeholders have an imported copy in the same "
+                    "library and are not counted.", err=True,
+                )
             if (no_duplicate_check or max_bytes) and source_photos is None:
                 fail(f"The photos of {source} cannot be read from its database, so " + (
                     "what is missing cannot be worked out." if no_duplicate_check else "its size cannot be worked out."))
