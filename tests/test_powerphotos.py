@@ -94,7 +94,7 @@ def test_copy_passes_the_range_and_media_and_makes_until_inclusive(mac):
     )
     assert result.exit_code == 0
     assert mac.calls("copy-photos.applescript") == [["Source", "photos-2018", "2018-03-01", "2019-01-01", "videos"]]
-    assert "photos-2018: found 3" in result.output
+    assert "photos-2018: asked PowerPhotos to copy 3" in result.output
 
 
 def test_copy_with_no_range_passes_dashes_and_all(mac):
@@ -296,19 +296,33 @@ def test_against_without_outdated_is_a_usage_error(mac):
 
 
 def add_photos(library: Path, photos) -> Path:
-    """Gives a fake library the tables diff reads. photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, "trashed" or "hidden"])."""
+    """Gives a fake library the tables and original files diff reads.
+
+    photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, flags]) with flags among "trashed", "hidden", "burst" (a hidden
+    burst member) and "shared" (it came from Messages). An item of size 0 is a placeholder: it has no original file.
+    """
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
-    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text)")
+    (library / "originals" / "A").mkdir(parents=True, exist_ok=True)
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
+        stored_as = f"UUID{number}.jpg"
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, ?, ?, ?)",
-            (number, seconds, f"UUID{number}.jpg", int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
+            "insert into ZASSET values (?, ?, ?, 'A', ?, ?, ?)",
+            (number, seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
         )
-        connection.execute("insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?)", (number, number, size, name))
+        connection.execute(
+            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?)",
+            (number, number, size, name, "at_0_X" if "shared" in flags else None),
+        )
+        original = library / "originals" / "A" / stored_as
+        if size:
+            original.write_bytes(b"x")
+        elif original.exists():
+            original.unlink()
     connection.commit()
     connection.close()
     return library
@@ -431,7 +445,7 @@ def copy_list(args, text, **options):
 
 def test_copy_list_copies_the_names_in_diff_csv_output(mac):
     result = copy_list(["--list", "-"], "side,date,size,name\nleft,2018-03-01 10:00:00,100,\"a, b.jpg\"\nleft,x,1,c.mov\n")
-    assert result.exit_code == 0 and "photos-2018: found 3" in result.output
+    assert result.exit_code == 0 and "photos-2018: asked PowerPhotos to copy 3" in result.output
     assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a, b.jpg", "c.mov"], "true"]]
     assert mac.calls("copy-photos.applescript") == []
 
@@ -466,7 +480,8 @@ def test_copy_list_cannot_be_combined_with_a_range_or_media(mac):
 def test_names_the_source_lacks_are_reported(mac, monkeypatch):
     monkeypatch.setenv("FAKE_NAMED_MISSING", "gone.jpg,gone2.jpg")
     result = copy_list(["--list", "-"], "a.jpg\ngone.jpg\ngone2.jpg\n")
-    assert "PowerPhotos does not list gone.jpg in Source" in result.output and "PowerPhotos does not list gone2.jpg in Source" in result.output
+    assert "2 not copied: the database of Source has them, but PowerPhotos lists no photo with these names" in result.output
+    assert "    gone.jpg" in result.output and "    gone2.jpg" in result.output
 
 
 def test_no_duplicate_check_needs_a_list_and_is_passed_through_with_one(mac):
@@ -507,7 +522,7 @@ def test_split_skips_a_year_whose_library_already_has_everything(mac):
 
 def test_split_copies_a_year_that_is_missing_something(mac):
     year_libraries(mac, [A, B], photos_2018=[A])
-    assert "photos-2018: found" in split().output
+    assert "photos-2018: asked PowerPhotos to copy" in split().output
     assert len(mac.calls("copy-photos.applescript")) == 1
 
 
@@ -534,14 +549,14 @@ def test_a_photo_near_new_year_may_be_in_the_neighbouring_years_library(mac):
     year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[new_year])
     assert "up to date" in split().output
     year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[])
-    assert "photos-2018: found" in split().output
+    assert "photos-2018: asked PowerPhotos to copy" in split().output
 
 
 def test_split_no_duplicate_check_copies_only_the_missing_names_without_the_check(mac):
     new_year = ("2018-01-01 05:00:00", 100, "ny.jpg")
     year_libraries(mac, [A, B, new_year], photos_2018=[A])
     result = split("--no-duplicate-check")
-    assert "photos-2018: found" in result.output
+    assert "photos-2018: copied 3 (no duplicate check)" in result.output
     assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["b.jpg", "ny.jpg"], "false"]]  # near New Year too
     assert mac.calls("copy-photos.applescript") == []
 
@@ -586,7 +601,7 @@ def test_diff_compares_hidden_items_unless_told_to_leave_them_out(mac):
     assert result.exit_code == 1 and shown(result) == ["<  2018-03-02 11:00:00  100  b.jpg"]
     left_out = diff(mac, [A, (*B, "burst")], [A], "--exclude-hidden")
     assert left_out.exit_code == 0
-    assert "Not compared, hidden in Photos and not listed by PowerPhotos: 1 in Source (1 burst members), 0 in photos-2018 (0 burst members)." in left_out.output
+    assert "Not compared, hidden in Photos and not listed by PowerPhotos: 1 in Source (1 burst member), 0 in photos-2018 (0 burst members)." in left_out.output
 
 
 def test_diff_since_and_until_limit_both_libraries_to_a_range_of_days(mac):
@@ -758,18 +773,24 @@ def test_split_max_size_must_be_a_size_and_needs_the_source_database(mac):
     assert result.exit_code == 1 and "size cannot be worked out" in result.output
 
 
-def test_diff_default_columns_include_hidden_and_burst_as_true_or_false(mac):
-    add_photos(mac.libraries["Source"], [A, (*B, "burst"), (*C, "hidden")])
+def test_diff_default_columns_are_true_or_false_flags_after_the_name(mac):
+    add_photos(mac.libraries["Source"], [A, (*B, "burst"), (*C, "hidden"), ("2018-05-01 10:00:00", 0, "p.jpg", "shared")])
     add_photos(mac.libraries["photos-2018"], [])
     text = runner.invoke(app, ["photos", "diff", "Source", "photos-2018"]).stdout.splitlines()
-    assert text[0].split() == ["date", "size", "name", "hidden", "burst"]
-    assert [line.split()[-3:] for line in text[1:]] == [["a.jpg", "false", "false"], ["b.jpg", "true", "true"], ["c.mov", "true", "false"]]
+    assert text[0].split() == ["date", "size", "name", "hidden", "burst", "missing", "shared"]
+    assert [line.split()[4:] for line in text[1:]] == [
+        ["a.jpg", "false", "false", "false", "false"], ["b.jpg", "true", "true", "false", "false"],
+        ["c.mov", "true", "false", "false", "false"], ["p.jpg", "false", "false", "true", "true"],
+    ]
     records = json.loads(runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "json"]).stdout)
-    assert [(r["name"], r["hidden"], r["burst"]) for r in records] == [("a.jpg", False, False), ("b.jpg", True, True), ("c.mov", True, False)]
+    assert [(r["name"], r["hidden"], r["burst"], r["missing"], r["shared"]) for r in records] == [
+        ("a.jpg", False, False, False, False), ("b.jpg", True, True, False, False),
+        ("c.mov", True, False, False, False), ("p.jpg", False, False, True, True),
+    ]
     csv_lines = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "csv"]).stdout.splitlines()
-    assert csv_lines[0] == "side,date,size,name,hidden,burst" and csv_lines[2].endswith(",b.jpg,true,true")
+    assert csv_lines[0] == "side,date,size,name,hidden,burst,missing,shared" and csv_lines[2].endswith(",b.jpg,true,true,false,false")
     columns = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--exclude-hidden", "--format", "csv"]).stdout.splitlines()
-    assert columns == ["side,date,size,name", "left,2018-03-01 10:00:00,100,a.jpg"]
+    assert columns[0] == "side,date,size,name,missing,shared" and len(columns) == 3  # a.jpg and the placeholder; the hidden ones are left out
 
 
 def test_diff_ignore_date_matches_the_same_clip_imported_with_a_shifted_time(mac):
@@ -789,9 +810,9 @@ def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):
     assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "true"]]
     assert "Not copied: b.jpg: hidden in Photos (a burst member)" in result.output
     assert "Not copied: c.jpg: hidden in Photos, so" in result.output
-    assert "2 hidden items (1 burst members) were not copied" in result.output
+    assert "2 hidden items (1 burst member) were not copied" in result.output
     as_json = copy_list(["--list", "-"], '[{"name": "d.jpg", "hidden": true, "burst": true}]')
-    assert as_json.exit_code == 0 and "no files copied (everything listed is hidden in Photos)" in as_json.output
+    assert as_json.exit_code == 0 and "no files copied (everything listed is hidden in Photos or has no original in Source)" in as_json.output
     assert len(mac.calls("copy-named.applescript")) == 1
 
 
@@ -804,7 +825,7 @@ def test_a_long_list_of_hidden_items_is_summarised(mac):
 def test_split_says_how_many_hidden_items_it_cannot_copy(mac):
     year_libraries(mac, [A, (*B, "burst"), (*C, "hidden"), ("2018-05-01 10:00:00", 100, "p.jpg", "burst")], photos_2018=[A])
     result = split()
-    assert "Source: 2 hidden photos (2 burst members) are not copied" in result.output  # c is a movie, so not counted for photos
+    assert "Source: 2 hidden photos (2 burst members) not copied" in result.output  # c is a movie, so not counted for photos
 
 
 def split_all(*options):
@@ -845,7 +866,7 @@ def test_split_media_all_skips_only_the_kind_that_is_complete(mac):
 
 def test_each_split_library_line_says_how_many_hidden_items_its_dates_leave_out(mac):
     year_libraries(mac, [A, (*B, "burst"), (*C, "hidden")], photos_2018=[A])
-    assert "photos-2018: up to date, 1 hidden not copied" in split().output  # b is a hidden photo; the movie is another kind
+    assert "photos-2018: up to date; 1 hidden item in Source not copied" in split().output  # b is a hidden photo; the movie is another kind
     year_libraries(mac, [A], photos_2018=[A])
     assert "hidden not copied" not in split().output
 
@@ -858,3 +879,88 @@ def test_count_in_range_counts_the_media_and_dates_asked_for():
     assert count_in_range(items, date(2018, 1, 1), date(2019, 1, 1), "photos") == 2
     assert count_in_range(items, date(2018, 1, 1), date(2019, 1, 1), "all") == 3
     assert count_in_range(items, date(2018, 3, 2), date(2018, 3, 3), "videos") == 1
+
+
+PLACEHOLDER = ("2018-03-05 10:00:00", 0, "shared.heic", "shared")  # shared with you, never saved: no original
+NO_ORIGINAL = ("2018-03-06 10:00:00", 0, "gone.heic", "hidden")  # not shared, and its original is not stored either
+
+
+def test_a_photo_whose_original_is_not_stored_is_marked_missing_and_shared_when_it_came_from_messages(mac):
+    result = diff(mac, [A, PLACEHOLDER, NO_ORIGINAL], [], "--fields", "name,missing,shared", "--format", "json")
+    assert [(r["name"], r["missing"], r["shared"]) for r in json.loads(result.stdout)] == [
+        ("a.jpg", False, False), ("shared.heic", True, True), ("gone.heic", True, False),
+    ]
+
+
+def test_a_library_without_an_originals_folder_is_never_said_to_miss_files(tmp_path):
+    library = make_library(tmp_path, "old", 15323)
+    add_photos(library, [A, PLACEHOLDER])
+    import shutil
+    shutil.rmtree(library / "originals")
+    assert not any(pp.library_photos(library).original_missing(key) for key in pp.library_photos(library).visible)
+
+
+def test_copy_list_does_not_send_photos_without_an_original_and_tells_shared_ones_from_the_rest(mac):
+    csv_text = "side,name,missing,shared\nleft,a.jpg,false,false\nleft,shared.heic,true,true\nleft,gone.heic,true,false\n"
+    result = copy_list(["--list", "-"], csv_text)
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "true"]]
+    assert "1 not copied: shared with you in Messages and not saved to the library Source" in result.output
+    assert "Save them to the library in Photos, then run this again:\n    shared.heic" in result.output
+    assert "1 not copied: the original is not stored in Source (it may live only in iCloud)" in result.output
+    assert result.output.index("asked PowerPhotos to copy") < result.output.index("shared with you in Messages")  # after the library's own line
+    only = copy_list(["--list", "-"], "name,missing,shared\nshared.heic,true,true\n")
+    assert only.exit_code == 0 and "everything listed is hidden in Photos or has no original in Source" in only.output
+    assert len(mac.calls("copy-named.applescript")) == 1
+
+
+def test_split_no_duplicate_check_leaves_out_photos_that_have_no_original_and_says_why(mac):
+    year_libraries(mac, [A, PLACEHOLDER, (*NO_ORIGINAL[:3],)], photos_2018=[A])
+    result = split("--no-duplicate-check")
+    assert mac.calls("copy-named.applescript") == [] or all("shared.heic" not in call[2] and "gone.heic" not in call[2] for call in mac.calls("copy-named.applescript"))
+    assert "shared with you in Messages and not saved to the library Source" in result.output
+    assert "the original is not stored in Source" in result.output
+    assert "photos-2018: nothing to copy" in result.output
+    assert result.output.index("nothing to copy") < result.output.index("shared with you in Messages")
+
+
+def test_a_placeholder_with_an_imported_copy_is_not_counted_and_the_copy_is(mac):
+    imported = ("2018-03-05 10:00:05", 4321, "shared.heic")  # the same photo, imported: a real file, no link to Messages
+    result = diff(mac, [PLACEHOLDER, imported], [])
+    assert shown(result) == ["<  2018-03-05 10:00:05  4321  shared.heic"]
+    assert "Not counted, shared placeholders that have an imported copy in the same library: 1 in Source, 0 in photos-2018." in result.output
+    alone = diff(mac, [PLACEHOLDER], [])
+    assert len(shown(alone)) == 1 and "Not counted" not in alone.output  # nothing replaces it
+    far = diff(mac, [PLACEHOLDER, ("2018-03-09 10:00:00", 4321, "shared.heic")], [])
+    assert len(shown(far)) == 2  # a photo of the same name days later is not its copy
+    other = diff(mac, [PLACEHOLDER, ("2018-03-05 10:00:05", 4321, "other.heic")], [])
+    assert len(shown(other)) == 2
+
+
+def test_split_does_not_count_a_superseded_placeholder_when_judging_a_library(mac):
+    imported = ("2018-03-05 10:00:05", 4321, "shared.heic")
+    year_libraries(mac, [A, PLACEHOLDER, imported], photos_2018=[A, imported])
+    result = split()
+    assert "photos-2018: up to date" in result.output
+    assert "Source: 1 shared placeholder with an imported copy in the same library not counted." in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_an_older_library_without_the_newer_columns_can_still_be_read(tmp_path):
+    library = tmp_path / "old.photoslibrary"
+    (library / "database").mkdir(parents=True)
+    connection = sqlite3.connect(library / "database" / "Photos.sqlite")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZAVALANCHEUUID text)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text)")
+    connection.execute("insert into ZASSET values (1, 0, 'U1.jpg', 'A', 0, null)")
+    connection.execute("insert into ZASSET values (2, 0, 'U2.jpg', 'A', 0, 'burst-1')")
+    connection.executemany("insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?)", [(1, 1, 10, "a.jpg"), (2, 2, 10, "b.jpg")])
+    connection.commit()
+    connection.close()
+    found = pp.library_photos(library)
+    assert sum(found.visible.values()) == 2 and not found.shared and not found.hidden
+    assert sum(found.bursts.values()) == 0  # no visibility column, so nothing is hidden and a burst is only a hidden burst member
+
+
+def test_counts_say_item_once_and_items_otherwise():
+    from apple.photos.library_commands import count
+    assert count(1, "hidden item") == "1 hidden item" and count(0, "burst member") == "0 burst members" and count(3, "photo") == "3 photos"

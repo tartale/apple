@@ -101,6 +101,11 @@ def resolve_upgrade(name: str, path: Path, source_version: Optional[int], mode: 
         typer.echo(f"{name} still needs the upgrade.", err=True)
 
 
+def count(number: int, noun: str) -> str:
+    """'1 photo', '3 photos'."""
+    return f"{number} {noun}" + ("" if number == 1 else "s")
+
+
 def is_true(value) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
@@ -162,7 +167,7 @@ def report_hidden(hidden: dict) -> None:
     if len(hidden) <= 20:
         for name, burst in hidden.items():
             typer.echo(f"Not copied: {name}: hidden in Photos{' (a burst member)' if burst else ''}, so PowerPhotos does not list it", err=True)
-    typer.echo(f"{len(hidden)} hidden items ({sum(hidden.values())} burst members) were not copied: PowerPhotos cannot see them.", err=True)
+    typer.echo(f"{count(len(hidden), 'hidden item')} ({count(sum(hidden.values()), 'burst member')}) {'was' if len(hidden) == 1 else 'were'} not copied: PowerPhotos cannot see them.", err=True)
 
 
 class CopyResult(NamedTuple):
@@ -465,8 +470,8 @@ def diff_command(
     if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
         typer.echo(
             "Not compared, hidden in Photos and not listed by PowerPhotos: "
-            f"{sum(hidden[0].values())} in {left} ({sum(bursts[0].values())} burst members), "
-            f"{sum(hidden[1].values())} in {right} ({sum(bursts[1].values())} burst members).",
+            f"{sum(hidden[0].values())} in {left} ({count(sum(bursts[0].values()), 'burst member')}), "
+            f"{sum(hidden[1].values())} in {right} ({count(sum(bursts[1].values()), 'burst member')}).",
             err=True,
         )
     raise typer.Exit(1 if only_left or only_right else 0)
@@ -499,17 +504,17 @@ def copy_command(
         raise typer.BadParameter("--until is before --since")
     if no_duplicate_check and list_file is None:
         raise typer.BadParameter("--no-duplicate-check needs --list: without a list it would copy the whole range again")
-    names = None
+    names, hidden, no_original = None, {}, {}
     if list_file is not None:
         if since or until or media != Media.all:
             raise typer.BadParameter("--list cannot be combined with --since, --until or --media")
         names, hidden, no_original = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
-        if hidden:
-            report_hidden(hidden)
-        report_missing(no_original, source)
         if not names:  # e.g. a diff that found nothing: there is nothing to copy, which is not an error
             reason = "the list is empty" if not (hidden or no_original) else "everything listed is hidden in Photos or has no original in " + source
             typer.echo(f"{destination}: no files copied ({reason})")
+            if hidden:
+                report_hidden(hidden)
+            report_missing(no_original, source)
             return
     try:
         with pp.one_at_a_time():
@@ -522,6 +527,10 @@ def copy_command(
     except pp.Busy as error:
         fail(str(error))
     typer.echo(f"{destination}: {describe_copy(result, not no_duplicate_check)}")
+    if names is not None and hidden:
+        report_hidden(hidden)
+    if names is not None:
+        report_missing(no_original, source)
     report_unlisted(result.unlisted, source)
 
 
@@ -610,8 +619,8 @@ def split_command(
             source_photos = None if source_data is None else source_data.visible
             if source_data is not None and sum(source_data.superseded.values()):
                 typer.echo(
-                    f"{source}: {sum(source_data.superseded.values())} shared placeholders have an imported copy in the same "
-                    "library and are not counted.", err=True,
+                    f"{source}: {count(sum(source_data.superseded.values()), 'shared placeholder')} with an imported copy in the same "
+                    "library not counted.", err=True,
                 )
             if (no_duplicate_check or max_bytes) and source_photos is None:
                 fail(f"The photos of {source} cannot be read from its database, so " + (
@@ -644,8 +653,8 @@ def split_command(
                     if hidden_here:
                         bursts_here = pp.of_media(source_data.bursts, kind)
                         typer.echo(
-                            f"{source}: {sum(hidden_here.values())} hidden {kind} ({sum(bursts_here.values())} burst members) "
-                            "are not copied: Photos keeps them out of view and PowerPhotos does not list them.",
+                            f"{source}: {count(sum(hidden_here.values()), 'hidden ' + kind[:-1])} ({count(sum(bursts_here.values()), 'burst member')}) "
+                            "not copied: Photos keeps them out of view and PowerPhotos does not list them.",
                             err=True,
                         )
                 for year in range(first_year, last_year + 1):
@@ -658,7 +667,7 @@ def split_command(
                         note = ""
                         if source_data is not None:
                             left_out = split_plan.count_in_range(source_data.hidden, part.start, part.end, kind)
-                            note = f"; {left_out} hidden items in {source} not copied (Photos keeps them out of view)" if left_out else ""
+                            note = f"; {count(left_out, 'hidden item')} in {source} not copied (Photos keeps them out of view)" if left_out else ""
                         if part.name not in libraries:
                             typer.echo(f"{label}: " + ("library missing" if dry else "skipped (not in PowerPhotos)") + note)
                             continue
