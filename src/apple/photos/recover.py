@@ -157,7 +157,7 @@ def recover_command(
     print_recover(rows, format)
     recoverable = sum(len(hits) for hits in found_by_source.values())
     mode = Apply.no if is_dry_run(dry_run) else apply
-    imported = errors = 0
+    imported = errors = already = 0
     if recoverable and mode != Apply.no:
         require_macos()
         check_open_in_photos(path)
@@ -173,16 +173,20 @@ def recover_command(
                 with pp.one_at_a_time():
                     for name, hits in found_by_source.items():
                         try:
-                            imported += SOURCES[name].apply(hits)
+                            done = SOURCES[name].apply(hits)
+                            imported += done
+                            already += max(len(hits) - done, 0)  # Photos had these: they were not missing after all
                         except pp.PowerPhotosError as error:
                             errors += len(hits)
                             typer.echo(f"Photos failed to import from {name}: {error}", err=True)
             except pp.Busy as error:
                 fail(str(error))
-    # skipped: no original was found, the answer was no, or Photos already had it
-    skipped = len(rows) - imported - errors
+    if already:
+        typer.echo(f"{count(already, 'photo')} already in the library, so not missing: not counted below.", err=True)
+    missing = len(rows) - already
+    skipped = missing - imported - errors  # no original was found, or the answer was no
     typer.echo(
-        f"Imported {imported} of {len(rows)} missing files; {count(errors, 'error')}, {skipped} skipped"
+        f"Imported {imported} of {missing} missing files; {count(errors, 'error')}, {skipped} skipped"
         + (" [dry run]" if mode == Apply.no and recoverable else ""),
         err=True,
     )
