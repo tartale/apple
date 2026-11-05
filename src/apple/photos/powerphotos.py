@@ -86,7 +86,7 @@ def photos_query(db: sqlite3.Connection) -> str:
     attributes = {row[1] for row in db.execute("pragma table_info(ZADDITIONALASSETATTRIBUTES)")}
     hidden = "a.ZVISIBILITYSTATE != 0" if "ZVISIBILITYSTATE" in asset else "0"
     burst = "a.ZAVALANCHEKIND != 0" if "ZAVALANCHEKIND" in asset else "a.ZAVALANCHEUUID is not null" if "ZAVALANCHEUUID" in asset else "0"
-    shared = "x.ZSYNDICATIONIDENTIFIER is not null" if "ZSYNDICATIONIDENTIFIER" in attributes else "0"
+    shared = "x.ZSYNDICATIONIDENTIFIER" if "ZSYNDICATIONIDENTIFIER" in attributes else "null"
     return f"""
         select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
                {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED
@@ -164,7 +164,8 @@ class Photos(NamedTuple):
     the hidden ones (Photos keeps them out of view and PowerPhotos does not list them), and which of the hidden ones are
     members of a burst. files says where each item's original should be, as paths below the library. shared holds the
     keys of the items that came from Messages (Shared with You): until they are saved to the library, Photos keeps a
-    placeholder with no original. superseded counts the placeholders left out of visible and hidden because the library
+    placeholder with no original; identifiers maps each of those keys to its Messages identifier, which names the attachment
+    folder in Messages. superseded counts the placeholders left out of visible and hidden because the library
     also holds a real photo with the same file name taken within two days of it (an imported copy): the picture is
     there, and the placeholder can never be saved."""
     library: Path
@@ -174,6 +175,7 @@ class Photos(NamedTuple):
     files: dict
     shared: set
     superseded: Counter
+    identifiers: dict
 
     def original_missing(self, key: tuple) -> bool:
         """True when the item's original file is not stored in the library (Photos keeps a placeholder for photos whose
@@ -192,7 +194,7 @@ def library_photos(library: Path) -> Photos:
         rows = read_database(library, lambda db: db.execute(photos_query(db)).fetchall())
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
-    visible, hidden, bursts, files, shared, superseded = Counter(), Counter(), Counter(), {}, set(), Counter()
+    visible, hidden, bursts, files, shared, superseded, identifiers = Counter(), Counter(), Counter(), {}, set(), Counter(), {}
     real = {}  # lower-case file name -> capture times (seconds) of the photos that have their original
     for _, size, name, *_, taken in rows:
         if size and taken is not None:
@@ -207,14 +209,29 @@ def library_photos(library: Path) -> Photos:
             bursts[key] += 1
         if is_shared:
             shared.add(key)
+            identifiers[key] = is_shared
         if directory is not None and stored_as:
             files.setdefault(key, []).append(f"originals/{directory}/{stored_as}")
-    return Photos(library, visible, hidden, bursts, files, shared, superseded)
+    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers)
 
 
 def photos(library: Path) -> Counter:
     """The visible items of a library (see library_photos): the ones PowerPhotos lists."""
     return library_photos(library).visible
+
+
+def libraries_open_in_photos() -> List[Path]:
+    """The libraries the running Photos app has open, found from the database file it holds (lsof). Photos also keeps
+    its own Syndication library (Shared with You), which is not one you choose, so it is left out. Empty when Photos is
+    not running."""
+    result = subprocess.run(["lsof", "-c", "Photos", "-Fn"], capture_output=True, text=True)
+    found = []
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and line.endswith(".photoslibrary/database/Photos.sqlite"):
+            library = Path(line[1:]).parent.parent
+            if library.name != "Syndication.photoslibrary" and library not in found:
+                found.append(library)
+    return found
 
 
 def open_in_photos(library: Path) -> None:
