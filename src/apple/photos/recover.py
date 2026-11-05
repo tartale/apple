@@ -181,8 +181,6 @@ def recover_command(
                             typer.echo(f"Photos failed to import from {name}: {error}", err=True)
             except pp.Busy as error:
                 fail(str(error))
-    if already:
-        typer.echo(f"{count(already, 'photo')} already in the library, so not missing: not counted below.", err=True)
     missing = len(rows) - already
     skipped = missing - imported - errors  # no original was found, or the answer was no
     typer.echo(
