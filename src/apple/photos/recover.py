@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import sys
+import stat
 import tempfile
 from datetime import datetime, timezone
 from enum import Enum
@@ -81,39 +82,82 @@ class Messages(Source):
         return None
 
 
-class Backup(Source):
-    """The iCloud backup made by `apple photos backup`: $ICLOUD_ROOT/<account>/originals/..., where a photo's file keeps
-    its capture time as its modification time. A photo matches by file name and a time within two hours (the same photo
-    is an hour out where daylight saving differs); a name alone is not enough, since the numbers in IMG_nnnn.JPG repeat."""
-    name = "backup"
-    description = "the iCloud backup under ICLOUD_ROOT, matched by file name and capture time"
+HIDDEN_DIRECTORIES = ".HFS+ Private Directory Data\r"
+
+
+def directory_link_target(status, volume: Path) -> Optional[Path]:
+    """Time Machine hard-links whole directories. Mounted on Linux, such a directory shows as an empty file whose link
+    count is the id of the real directory, which HFS+ keeps in <volume>/.HFS+ Private Directory Data/dir_<id>. The real
+    directory for a directory-link, or None for anything else."""
+    if stat.S_ISREG(status.st_mode) and status.st_size == 0 and status.st_nlink >= 100000:
+        target = volume / HIDDEN_DIRECTORIES / f"dir_{status.st_nlink}"
+        return target if target.is_dir() else None
+    return None
+
+
+def volume_of(path: Path) -> Optional[Path]:
+    """The disk root above path that holds Time Machine's hidden directory store, if any."""
+    for parent in (path, *path.parents):
+        if (parent / HIDDEN_DIRECTORIES).is_dir():
+            return parent
+    return None
+
+
+def media_files(root: Path):
+    """(path, status) of every photo or video file under root, following Time Machine's directory links on Linux. Each
+    real directory is read once, however many backups link to it."""
+    volume = volume_of(root)
+    seen = set()
+
+    def walk(folder: Path):
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                status = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            real = Path(entry.path) if stat.S_ISDIR(status.st_mode) else (directory_link_target(status, volume) if volume else None)
+            if real is not None:
+                if real not in seen:
+                    seen.add(real)
+                    yield from walk(real)
+            elif stat.S_ISREG(status.st_mode) and Path(entry.name).suffix.lower() in MEDIA_FILES:
+                yield Path(entry.path), status
+
+    top = root
+    if volume:
+        try:
+            link = directory_link_target(os.lstat(root), volume)
+        except OSError:
+            link = None
+        top = link or root
+    yield from walk(top)
+
+
+class ByNameAndTime(Source):
+    """A source that finds an original among files kept by name: a photo matches by file name and a modification time
+    within two hours of its capture time (the same photo is an hour out where daylight saving differs). A name alone is
+    not enough, since the numbers in IMG_nnnn.JPG repeat. Subclasses say where the files are."""
     tolerance = 7200  # seconds
 
     def __init__(self):
-        self._root = None
+        self._roots = None
         self._index = None
 
-    def available(self) -> Optional[str]:
-        root = os.environ.get("ICLOUD_ROOT")
-        if not root:
-            return "ICLOUD_ROOT is not set"
-        if not Path(root).is_dir():
-            return f"{root} is not a folder"
-        return None
+    def roots(self) -> List[Path]:
+        raise NotImplementedError
 
     def index(self) -> dict:
-        """lower-case file name -> [(modification time, path)] of every file under the accounts' originals folders."""
-        root = os.environ.get("ICLOUD_ROOT", "")
-        if self._index is None or self._root != root:
-            self._root, self._index = root, {}
-            for originals in sorted(Path(root).glob("*/originals")):
-                for folder, _, names in os.walk(originals):
-                    for file_name in names:
-                        path = Path(folder) / file_name
-                        try:
-                            self._index.setdefault(file_name.lower(), []).append((path.stat().st_mtime, path))
-                        except OSError:
-                            pass
+        """lower-case file name -> [(modification time, path)] of every photo or video file under the roots."""
+        roots = self.roots()
+        if self._index is None or self._roots != roots:
+            self._roots, self._index = roots, {}
+            for root in roots:
+                for path, status in media_files(root):
+                    self._index.setdefault(path.name.lower(), []).append((status.st_mtime, path))
         return self._index
 
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
@@ -125,7 +169,44 @@ class Backup(Source):
         return Found(self.name, with_pair(main, sorted(p for p in main.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)), main.stat().st_size)
 
 
-SOURCES = {source.name: source for source in (Messages(), Backup())}
+class Backup(ByNameAndTime):
+    name = "backup"
+    description = "the iCloud backup made by `apple photos backup` under ICLOUD_ROOT, matched by file name and capture time"
+
+    def available(self) -> Optional[str]:
+        root = os.environ.get("ICLOUD_ROOT")
+        if not root:
+            return "ICLOUD_ROOT is not set"
+        if not Path(root).is_dir():
+            return f"{root} is not a folder"
+        return None
+
+    def roots(self) -> List[Path]:
+        return sorted(Path(os.environ.get("ICLOUD_ROOT", "")).glob("*/originals"))
+
+
+class Folders(ByNameAndTime):
+    name = "folders"
+    description = (
+        "any folders you name with --folder (or APPLE_PHOTOS_RECOVER_FOLDERS, separated like PATH), such as an iPhoto "
+        "library's Masters or a Time Machine backup, matched by file name and capture time"
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.folders: List[Path] = []
+
+    def available(self) -> Optional[str]:
+        if not self.folders:
+            return "no folder is named: give --folder, or set APPLE_PHOTOS_RECOVER_FOLDERS"
+        missing = [str(folder) for folder in self.folders if not folder.exists()]
+        return f"{', '.join(missing)} does not exist" if missing else None
+
+    def roots(self) -> List[Path]:
+        return self.folders
+
+
+SOURCES = {source.name: source for source in (Messages(), Backup(), Folders())}
 SourceName = Enum("SourceName", {name: name for name in SOURCES}, type=str)
 
 
@@ -168,6 +249,10 @@ def recover_command(
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
+    folder: Annotated[
+        Optional[List[Path]],
+        typer.Option(help="A folder for the folders source to search for originals, such as an iPhoto library's Masters or a Time Machine backup; repeat for several. Also read from APPLE_PHOTOS_RECOVER_FOLDERS, separated like PATH."),
+    ] = None,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo.")] = DiffFormat.text,
 ) -> None:
     """Find where the originals of photos a library does not store can be had from, and optionally import them.
@@ -183,6 +268,8 @@ def recover_command(
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
+    named = folder or [Path(entry) for entry in os.environ.get("APPLE_PHOTOS_RECOVER_FOLDERS", "").split(os.pathsep) if entry]
+    SOURCES["folders"].folders = named
     chosen = []
     for candidate in ([SOURCES[name.value] for name in source] if source else list(SOURCES.values())):
         reason = candidate.available()
