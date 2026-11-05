@@ -220,6 +220,20 @@ def photos(library: Path) -> Counter:
     return library_photos(library).visible
 
 
+def libraries_open_in_photos() -> List[Path]:
+    """The libraries the running Photos app has open, found from the database file it holds (lsof). Photos also keeps
+    its own Syndication library (Shared with You), which is not one you choose, so it is left out. Empty when Photos is
+    not running."""
+    result = subprocess.run(["lsof", "-c", "Photos", "-Fn"], capture_output=True, text=True)
+    found = []
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and line.endswith(".photoslibrary/database/Photos.sqlite"):
+            library = Path(line[1:]).parent.parent
+            if library.name != "Syndication.photoslibrary" and library not in found:
+                found.append(library)
+    return found
+
+
 def open_in_photos(library: Path) -> None:
     subprocess.run(["open", "-a", "Photos", str(library)], check=False)
 

@@ -6,6 +6,7 @@ To add a way, write a Source and put it in SOURCES.
 """
 import csv
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime
@@ -86,6 +87,22 @@ class Apply(str, Enum):
     ask = "ask"
 
 
+def check_importable(target: Path, library: str) -> None:
+    """Stops unless it is safe to import into target: it is the configured default library, and Photos has it open
+    (Photos imports into whichever library it has open)."""
+    named = os.environ.get("PHOTOS_DEFAULT_LIBRARY")
+    if not named:
+        fail("--apply imports only into the default library, and none is set. Set it, for example: "
+             "export PHOTOS_DEFAULT_LIBRARY='Default Library'  (a name from `./apple photos libraries`, or a path)")
+    default = find_library(named)
+    if default.resolve() != target.resolve():
+        fail(f"{target} is not the default library ({default}, from PHOTOS_DEFAULT_LIBRARY), so nothing was imported.")
+    opened = pp.libraries_open_in_photos()
+    if not any(library_open.resolve() == target.resolve() for library_open in opened):
+        shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
+        fail(f"Photos does not have {target} open (open: {shown}). Open it in Photos, then run this again.")
+
+
 def recover_command(
     library: Annotated[str, typer.Argument(help="The library with photos whose originals are missing: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
     source: Annotated[
@@ -109,6 +126,9 @@ def recover_command(
     the files found are imported into the library that Photos has open, so open the library in Photos first. The import
     makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
     is deleted, and nothing is changed unless --apply says so (--dry-run, or DRY_RUN=true, always wins).
+
+    Importing is allowed only into the default library, named by PHOTOS_DEFAULT_LIBRARY, and only while Photos has that
+    library open; otherwise nothing is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
@@ -150,6 +170,7 @@ def recover_command(
         typer.echo("Nothing was imported. Use --apply yes (or ask) to import what was found.", err=True)
         return
     require_macos()
+    check_importable(path, library)
     if mode == Apply.ask:
         if not sys.stdin.isatty():
             typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
@@ -167,6 +188,23 @@ def recover_command(
         fail(f"Photos failed: {error}")
 
 
+def abbreviate(file: str) -> str:
+    """A path short enough for a table: the home folder as ~, and a long run in the middle as an ellipsis, keeping the end
+    (the folder, with a long identifier cut short, and the file name)."""
+    if not file:
+        return ""
+    path = Path(file)
+    try:
+        parts = ["~", *path.relative_to(Path.home()).parts]
+    except ValueError:
+        parts = list(path.parts)
+    if len(parts) > 5:
+        parts = parts[:3] + ["..."] + parts[-2:]
+    if len(parts) >= 2 and len(parts[-2]) > 16:
+        parts[-2] = parts[-2][:13] + "..."
+    return "/".join(parts).replace("//", "/")
+
+
 def print_recover(rows: list, format: DiffFormat) -> None:
     columns = ["date", "size", "name", "hidden", "shared", "source", "file", "note"]
     if format == DiffFormat.json:
@@ -177,7 +215,9 @@ def print_recover(rows: list, format: DiffFormat) -> None:
         for row in rows:
             writer.writerow([cell_text(row[column]) for column in columns])
     elif rows:
-        cells = [columns] + [[cell_text(row[column]) for column in columns] for row in rows]
+        cells = [columns] + [
+            [abbreviate(row[column]) if column == "file" else cell_text(row[column]) for column in columns] for row in rows
+        ]
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))]
         for cell in cells:
             typer.echo("  ".join((text.rjust(width) if columns[i] == "size" else text.ljust(width)) for i, (text, width) in enumerate(zip(cell, widths))).rstrip())
