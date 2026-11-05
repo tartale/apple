@@ -87,16 +87,8 @@ class Apply(str, Enum):
     ask = "ask"
 
 
-def check_importable(target: Path, library: str) -> None:
-    """Stops unless it is safe to import into target: it is the configured default library, and Photos has it open
-    (Photos imports into whichever library it has open)."""
-    named = os.environ.get("PHOTOS_DEFAULT_LIBRARY")
-    if not named:
-        fail("--apply imports only into the default library, and none is set. Set it, for example: "
-             "export PHOTOS_DEFAULT_LIBRARY='Default Library'  (a name from `./apple photos libraries`, or a path)")
-    default = find_library(named)
-    if default.resolve() != target.resolve():
-        fail(f"{target} is not the default library ({default}, from PHOTOS_DEFAULT_LIBRARY), so nothing was imported.")
+def check_open_in_photos(target: Path) -> None:
+    """Stops unless Photos has target open: Photos imports into whichever library it has open."""
     opened = pp.libraries_open_in_photos()
     if not any(library_open.resolve() == target.resolve() for library_open in opened):
         shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
@@ -104,7 +96,14 @@ def check_importable(target: Path, library: str) -> None:
 
 
 def recover_command(
-    library: Annotated[str, typer.Argument(help="The library with photos whose originals are missing: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
+    default_library: Annotated[
+        str,
+        typer.Option(
+            "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
+            help="The default library, the one whose missing originals are looked for and the only one photos are imported into: "
+            "a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY.",
+        ),
+    ],
     source: Annotated[
         Optional[List[SourceName]],
         typer.Option(help=f"Where to look, in this order; repeat to use several. The default is all: {', '.join(f'{n} ({s.description})' for n, s in SOURCES.items())}."),
@@ -127,13 +126,13 @@ def recover_command(
     makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
     is deleted, and nothing is changed unless --apply says so (--dry-run, or DRY_RUN=true, always wins).
 
-    Importing is allowed only into the default library, named by PHOTOS_DEFAULT_LIBRARY, and only while Photos has that
-    library open; otherwise nothing is imported.
+    Photos are imported only into the default library (--default-library, or APPLE_PHOTOS_DEFAULT_LIBRARY), and only
+    while Photos has that library open; otherwise nothing is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     chosen = [SOURCES[name.value] for name in source] if source else list(SOURCES.values())
-    path = find_library(library)
+    path = find_library(default_library)
     try:
         photos = pp.library_photos(path)
     except pp.PowerPhotosError as error:
@@ -159,7 +158,7 @@ def recover_command(
     recoverable = sum(len(hits) for hits in found_by_source.values())
     detail = ", ".join(f"{len(hits)} from {name}" for name, hits in found_by_source.items())
     typer.echo(
-        f"{len(rows)} photos in {library} have no original stored; originals found for {recoverable}"
+        f"{len(rows)} photos in {default_library} have no original stored; originals found for {recoverable}"
         + (f" ({detail})" if detail else "") + f", none for {len(rows) - recoverable}.",
         err=True,
     )
@@ -170,12 +169,12 @@ def recover_command(
         typer.echo("Nothing was imported. Use --apply yes (or ask) to import what was found.", err=True)
         return
     require_macos()
-    check_importable(path, library)
+    check_open_in_photos(path)
     if mode == Apply.ask:
         if not sys.stdin.isatty():
             typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
             return
-        if not typer.confirm(f"Import {recoverable} photos into the library Photos has open (it should be {library})?", default=False):
+        if not typer.confirm(f"Import {recoverable} photos into the library Photos has open (it should be {default_library})?", default=False):
             typer.echo("Nothing was imported.", err=True)
             return
     try:
