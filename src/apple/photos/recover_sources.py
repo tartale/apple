@@ -20,6 +20,11 @@ from apple.photos.progress import Progress, duration
 MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
 HIDDEN_DIRECTORIES = ".HFS+ Private Directory Data\r"
 DEFAULT = "default"
+# Folders a disk keeps for itself, that never hold an original: Synology's thumbnails, macOS's search index, change log and
+# scratch folders, an archive's resource forks, and HFS+'s store of directory links (every directory in it is reached through
+# the link that points at it, so reading it directly would read each twice). Not here: the recycle bins, which hold deleted
+# files that may still be wanted.
+IGNORED_FOLDERS = {"@eaDir", ".Spotlight-V100", ".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100", "__MACOSX", HIDDEN_DIRECTORIES}
 TOLERANCE = 7200  # seconds a file's time may differ from the photo's capture time (the same photo is an hour out across daylight saving)
 
 
@@ -297,7 +302,7 @@ class Folders(ByNameAndTime):
                 self.unreadable.append(str(path))
 
         def skip(path: Path) -> bool:  # libraries with a database are read through it; the rest of the walk is for raw files
-            return has_database(path) or is_current_library_originals(path)
+            return path.name in IGNORED_FOLDERS or has_database(path) or is_current_library_originals(path)
 
         def search(folder: Path):
             if has_database(folder):
@@ -309,7 +314,7 @@ class Folders(ByNameAndTime):
                         yield from library(path, str(folder))
                     elif path.name.endswith(".photoslibrary") and not (path / "Masters").exists():
                         self.unreadable.append(str(path))  # a current-format library whose database is not there
-                elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES:
+                elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES and not path.name.startswith("._"):
                     yield path.name, status.st_mtime, path, "folder", str(folder), ""
 
         for folder in self.folders:
