@@ -280,8 +280,8 @@ class Folders(ByNameAndTime):
 
     def note(self) -> Optional[str]:
         if self.unreadable:
-            shown = ", ".join(self.unreadable[:3]) + (" ..." if len(self.unreadable) > 3 else "")
-            return f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read: {shown}"
+            heading = f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"
+            return "\n".join([heading] + [f"  {library}" for library in self.unreadable])
         return None
 
 
