@@ -176,7 +176,6 @@ class ByNameAndTime(Source):
     def __init__(self):
         self._index = None
         self.progress = Progress()
-        self.searched = ""  # what is being read now, for the progress text
 
     def files(self):
         """(name, time, path, kind, root, library) of each file that could be an original: the name it is known by, its
@@ -195,9 +194,16 @@ class ByNameAndTime(Source):
                 self._index.setdefault(name.lower(), []).append((modified, path, kind, root, library))
                 count += 1
                 if count % 100 == 0:
-                    self.progress.update(f"Indexing {self.searched}: {count:,} files so far ({duration(time.monotonic() - started)})")
-            self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
+                    self.progress.update(self.status(count, started))
+            self.finished(count, started)
         return self._index
+
+    def status(self, count: int, started: float) -> str:
+        """The progress text while indexing: count files so far, since started."""
+        return f"Indexing: {count:,} files so far ({duration(time.monotonic() - started)})"
+
+    def finished(self, count: int, started: float) -> None:
+        self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
 
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
         taken = captured(key)
@@ -251,10 +257,20 @@ class Folders(ByNameAndTime):
         self.folders = folders
         self.default = default
         self.unreadable: List[str] = []
+        self.in_folder = 0  # files indexed so far in the folder being searched, and how many libraries were read there
+        self.libraries_in_folder = 0
+        self.folder_started = 0.0
 
     def problem(self) -> Optional[str]:
         missing = [str(folder) for folder in self.folders if not folder.exists()]
         return f"{', '.join(missing)} does not exist" if missing else None
+
+    def status(self, count: int, started: float) -> str:
+        return f"  Indexing: {self.in_folder:,} files so far ({duration(time.monotonic() - self.folder_started)})"
+
+    def finished(self, count: int, started: float) -> None:
+        if len(self.folders) > 1:
+            self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
 
     def files(self):
         seen = set()  # databases already read: the default library, and the same file reached through another backup
@@ -272,7 +288,8 @@ class Folders(ByNameAndTime):
             if (status.st_dev, status.st_ino) in seen:
                 return
             seen.add((status.st_dev, status.st_ino))
-            self.progress.update(f"Indexing {self.searched}: reading library {path}")
+            self.libraries_in_folder += 1
+            self.progress.update(f"  Indexing: reading library {path}")
             try:
                 for name, taken, original in database_originals(path):
                     yield name, taken, original, "library", root, str(path)
@@ -282,12 +299,10 @@ class Folders(ByNameAndTime):
         def skip(path: Path) -> bool:  # libraries with a database are read through it; the rest of the walk is for raw files
             return has_database(path) or is_current_library_originals(path)
 
-        for folder in self.folders:
-            self.searched = str(folder)
-            self.progress.line(f"Searching {folder} ...")
+        def search(folder: Path):
             if has_database(folder):
                 yield from library(folder, str(folder))
-                continue
+                return
             for path, status, is_directory in walk(folder, skip):
                 if is_directory:
                     if has_database(path):
@@ -296,6 +311,16 @@ class Folders(ByNameAndTime):
                         self.unreadable.append(str(path))  # a current-format library whose database is not there
                 elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES:
                     yield path.name, status.st_mtime, path, "folder", str(folder), ""
+
+        for folder in self.folders:
+            self.in_folder = self.libraries_in_folder = 0
+            self.folder_started = time.monotonic()
+            self.progress.line(f"Searching {folder}")
+            for item in search(folder):
+                self.in_folder += 1
+                yield item
+            libraries = f", {self.libraries_in_folder} librar{'y' if self.libraries_in_folder == 1 else 'ies'} read" if self.libraries_in_folder else ""
+            self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)})")
 
     def note(self) -> Optional[str]:
         if self.unreadable:
