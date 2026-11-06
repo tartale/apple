@@ -23,7 +23,7 @@ from apple.photos.recover_sources import DEFAULT, Found, build_sources, import_f
 from apple.platform import require_macos
 
 SEARCH_VARIABLE = "APPLE_PHOTOS_RECOVER_SEARCH"
-MAP_VARIABLE = "APPLE_PHOTOS_RECOVER_MAP"
+MAP_VARIABLE = "APPLE_PHOTOS_RECOVER_MAPPINGS"
 
 
 class Apply(str, Enum):
@@ -89,7 +89,7 @@ def read_list(text: str) -> List[dict]:
 
 
 def parse_map(entries: Optional[List[str]]) -> List[tuple]:
-    """[(old, new)] in the order given. With no --map, APPLE_PHOTOS_RECOVER_MAP: OLD=NEW entries separated by spaces and
+    """[(old, new)] in the order given. With no --map, APPLE_PHOTOS_RECOVER_MAPPINGS: OLD=NEW entries separated by spaces and
     read as a shell reads words, so that one value can be shared by the machines (a path with a space is quoted)."""
     where = "--map"
     if not entries:
@@ -154,7 +154,7 @@ def recover_command(
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
-        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAP, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
+        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
     ] = None,
     apply: Annotated[
         Apply,
