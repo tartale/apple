@@ -264,16 +264,51 @@ def test_the_default_library_is_never_searched_and_a_shared_database_is_read_onc
     assert len(found.index()["one.heic"]) == 1
 
 
-def test_libraries_that_cannot_be_read_are_listed_one_to_a_line(mac, tmp_path):
+def hollow(folder: Path, name: str, database=None, masters=False) -> Path:
+    """A library folder: with database content (None for no database at all) and optionally a Masters folder holding one.heic."""
+    library = folder / f"{name}.photoslibrary"
+    library.mkdir(parents=True)
+    if database is not None:
+        (library / "database").mkdir()
+        (library / "database" / "Photos.sqlite").write_bytes(database)
+    if masters:
+        make_file(library / "Masters" / "2018" / "one.heic")
+    return library
+
+
+def test_libraries_that_cannot_be_read_are_listed_one_to_a_line_with_the_reason(mac, tmp_path):
     placeholders(mac)
     folder = tmp_path / "libraries"
-    broken = folder / "broken.photoslibrary"
-    (broken / "database").mkdir(parents=True)
-    (broken / "database" / "Photos.sqlite").write_bytes(b"not a database")
-    (folder / "empty.photoslibrary" / "originals").mkdir(parents=True)  # a current-format library with no database
+    broken = hollow(folder, "broken", b"not a database")
+    empty = hollow(folder, "empty", b"")
+    none = hollow(folder, "none")
+    (none / "originals").mkdir()
     result = recover("--folders", str(folder), "--format", "csv")
-    assert "2 libraries could not be read:" in result.output
-    assert f"  {broken}" in result.output and f"  {folder / 'empty.photoslibrary'}" in result.output
+    assert "3 libraries could not be read:" in result.output
+    assert f"  {empty}: the database is empty" in result.output
+    assert f"  {none}: there is no database" in result.output
+    assert f"  {broken}: the database cannot be read (" in result.output and "file is not a database" in result.output
+
+
+def test_a_library_whose_database_cannot_be_read_is_searched_by_the_names_in_its_masters(mac, tmp_path):
+    placeholders(mac)
+    folder = tmp_path / "libraries"
+    library = hollow(folder, "old", b"not a database", masters=True)
+    also = hollow(folder, "also-old", b"")  # an empty database too, and a Masters of its own
+    make_file(also / "Masters" / "other.heic")
+    result = recover("--folders", str(folder), "--format", "json")
+    first = json.loads(result.stdout)[0]
+    assert first["source"] == "folder" and first["library"] == str(library) and first["root"] == str(folder)
+    assert first["files"] == [str(library / "Masters" / "2018" / "one.heic")]
+    assert "could not be read" not in result.output  # there was something to examine
+    assert "2 libraries read" not in result.output and "libraries read" not in result.output  # and none was read through its database
+
+
+def test_the_libraries_read_count_is_for_libraries_read_through_their_database(mac, tmp_path):
+    placeholders(mac)
+    other_library(tmp_path, [(WHEN, 500, "one.heic")])
+    hollow(tmp_path / "libraries", "broken", b"not a database")
+    assert "  1 files, 1 library read" in recover("--folders", str(tmp_path / "libraries"), "--format", "csv").output
 
 
 def test_an_old_library_that_keeps_names_is_searched_like_any_folder(mac, tmp_path):

@@ -487,7 +487,7 @@ class Folders(ByNameAndTime):
         self.unmatched: List[str] = []
         self.default = default
         self.snapshots = snapshots
-        self.unreadable: List[str] = []
+        self.unreadable: List[Tuple[str, str]] = []  # (library, why it could not be examined)
         self.in_folder = 0  # files indexed so far in the folder being searched, and how many libraries were read there
         self.libraries_in_folder = 0
         self.folder_started = 0.0
@@ -519,13 +519,30 @@ class Folders(ByNameAndTime):
             if (status.st_dev, status.st_ino) in seen:
                 return
             seen.add((status.st_dev, status.st_ino))
-            self.libraries_in_folder += 1
             self.progress.update(f"  Indexing: reading library {logical}")
             try:
-                for name, taken, original, original_logical in database_originals(path, logical):
+                originals = list(database_originals(path, logical))
+            except sqlite3.Error as error:
+                originals = None
+                reason = "the database is empty" if status.st_size == 0 else f"the database cannot be read ({error})"
+            if originals is not None:
+                self.libraries_in_folder += 1
+                for name, taken, original, original_logical in originals:
                     yield name, taken, original, original_logical, "library", root, str(logical)
-            except sqlite3.Error:
-                self.unreadable.append(str(logical))
+                return
+            # The database cannot be used, but a library that keeps files under their own names (Masters, as iPhoto did)
+            # can still be searched like any folder.
+            examined = False
+            for subfolder in ("Masters", "Originals", "Modified"):
+                inside = resolve(path / subfolder)
+                if inside is not None and inside.is_dir():
+                    examined = True
+                    for entry in walk(inside, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=logical / subfolder,
+                                      seen_directories=seen_directories, seen_files=seen_files):
+                        if not entry.is_directory:
+                            yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", root, str(logical)
+            if not examined:
+                self.unreadable.append((str(logical), reason))
 
         def skip(logical: Path, real: Path) -> bool:  # libraries with a database are read through it; the rest is for raw files
             return logical.name in IGNORED_FOLDERS or has_database(real) or is_current_library_originals(logical)
@@ -542,7 +559,7 @@ class Folders(ByNameAndTime):
                     if has_database(entry.real):
                         yield from library(entry.real, entry.logical, str(folder))
                     elif entry.logical.name.endswith(".photoslibrary") and not (entry.real / "Masters").exists():
-                        self.unreadable.append(str(entry.logical))  # a current-format library whose database is not there
+                        self.unreadable.append((str(entry.logical), "there is no database"))  # a current-format library without one
                 else:
                     yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", str(folder), ""
 
@@ -574,7 +591,7 @@ class Folders(ByNameAndTime):
         if self.unmatched:
             lines += [f"{len(self.unmatched)} pattern{'' if len(self.unmatched) == 1 else 's'} matched no folder:"] + [f"  {pattern}" for pattern in self.unmatched]
         if self.unreadable:
-            lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"] + [f"  {library}" for library in self.unreadable]
+            lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"] + [f"  {library}: {reason}" for library, reason in self.unreadable]
         return "\n".join(lines) or None
 
 
