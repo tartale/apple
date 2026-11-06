@@ -824,7 +824,10 @@ def test_backup_folders_are_read_once_and_reused(tmp_path, monkeypatch):
     second = rs.Folders([machine], tmp_path / "d.photoslibrary", "all", cache)
     second.progress = progress_module.Progress(said)
     second.index()
-    assert walks == [] and "Reusing the index of 1 backup folder saved" in said.getvalue()
+    assert walks == []
+    shown = said.getvalue()
+    assert f"Searching {machine}\n" in shown and "4 files (" in shown and "[cached 20" in shown  # like a search, and where it came from
+    assert "Reusing" not in shown
     assert sorted(second.index()) == ["p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg"]
     found = second.index()["p0.jpg"][0]
     assert found[1].name == "p0.jpg" and isinstance(found[1], Path) and found[2].parts[-1] == "p0.jpg"  # real and logical paths are Paths again
@@ -904,4 +907,28 @@ def test_refresh_reads_again_and_saves(mac, tmp_path, monkeypatch):
     again = recover("--folders", str(machine), "--refresh", "--format", "csv")
     assert len(walks) > first and "Reusing" not in again.output
     walks_after = len(walks)
-    assert "Reusing the index of 1 backup folder" in recover("--folders", str(machine), "--format", "csv").output and len(walks) == walks_after
+    assert "[cached 20" in recover("--folders", str(machine), "--format", "csv").output and len(walks) == walks_after
+
+
+def test_a_cached_backup_and_a_folder_with_a_photos_library_in_one_search(mac, tmp_path):
+    placeholders(mac)
+    machine = backupdb(tmp_path)
+    library = other_library(tmp_path, [(WHEN, 500, "one.heic")])
+    options = ("--folders", str(machine), "--folders", str(tmp_path / "libraries"), "--format", "json")
+    first = recover(*options)
+    second = recover(*options)  # the backup now comes from the cache; the library is read after it
+    assert second.exit_code == 0 and "Traceback" not in second.output
+    assert json.loads(second.stdout) == json.loads(first.stdout)
+    assert json.loads(second.stdout)[0]["library"] == str(library) and "[cached 20" in second.output
+
+
+def test_a_cached_search_names_each_folder_and_the_libraries_read_in_it(tmp_path):
+    machine = tmp_path / "Backups.backupdb" / "Mac"
+    other_library(machine / "2018-01-01-000000", [(WHEN, 500, "one.heic")], "inside", "Pictures")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([machine], tmp_path, cache)
+    said = io.StringIO()
+    again = rs.Folders([machine], tmp_path / "d.photoslibrary", "all", cache)
+    again.progress = progress_module.Progress(said)
+    again.index()
+    assert "1 file, 1 library read" in said.getvalue() or "1 files, 1 library read" in said.getvalue()
