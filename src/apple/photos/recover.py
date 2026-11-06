@@ -6,6 +6,7 @@ saved, for one). The places to look are in recover_sources.py; the caller says w
 import csv
 import json
 import os
+import shlex
 import sys
 from collections import Counter
 from datetime import datetime
@@ -22,6 +23,7 @@ from apple.photos.recover_sources import DEFAULT, Found, build_sources, import_f
 from apple.platform import require_macos
 
 SEARCH_VARIABLE = "APPLE_PHOTOS_RECOVER_SEARCH"
+MAP_VARIABLE = "APPLE_PHOTOS_RECOVER_MAP"
 
 
 class Apply(str, Enum):
@@ -87,22 +89,35 @@ def read_list(text: str) -> List[dict]:
 
 
 def parse_map(entries: Optional[List[str]]) -> List[tuple]:
-    """[(old, new)] in the order given."""
+    """[(old, new)] in the order given. With no --map, APPLE_PHOTOS_RECOVER_MAP: OLD=NEW entries separated by spaces and
+    read as a shell reads words, so that one value can be shared by the machines (a path with a space is quoted)."""
+    where = "--map"
+    if not entries:
+        where = MAP_VARIABLE
+        try:
+            entries = shlex.split(os.environ.get(MAP_VARIABLE, ""))
+        except ValueError as error:
+            raise typer.BadParameter(f"{MAP_VARIABLE}: {error}")
     mapping = []
-    for entry in entries or []:
+    for entry in entries:
         old, equals, new = entry.partition("=")
         if not equals or not old or not new:
-            raise typer.BadParameter(f"--map {entry!r}: use OLD=NEW, the start of a path in the list and what it is here")
+            raise typer.BadParameter(f"{where} {entry!r}: use OLD=NEW, the start of a path in the list and what it is here")
         mapping.append((old.rstrip("/") or "/", new.rstrip("/")))
     return mapping
 
 
 def translate(path: str, mapping: List[tuple]) -> str:
-    """The path with its start replaced by the first translation, in the order given, whose old start it has (at a folder
-    boundary). A path no translation matches is returned as it is."""
+    """Where the file is here: the path with its start replaced by the first translation, in the order given, whose old
+    start it has (at a folder boundary), if a file exists there; otherwise the path as written, which is right on the
+    machine that made the list. That way one set of translations can be shared by every machine, and each uses the ones
+    that apply to it."""
     for old, new in mapping:
         if path == old or path.startswith(old.rstrip("/") + "/"):
-            return new + path[len(old.rstrip("/")):]
+            translated = new + path[len(old.rstrip("/")):]
+            if Path(translated).exists() or not Path(path).exists():
+                return translated
+            break
     return path
 
 
@@ -139,7 +154,7 @@ def recover_command(
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
-        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones."),
+        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAP, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
     ] = None,
     apply: Annotated[
         Apply,
