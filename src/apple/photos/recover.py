@@ -152,7 +152,7 @@ def recover_command(
     messages_folder: Annotated[Optional[List[Path]], typer.Option(help="Search another folder of Messages attachments, as --messages; repeat for several.")] = None,
     folders: Annotated[
         Optional[List[Path]],
-        typer.Option(help="Search everything under a path, however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The default library is never searched. Repeat for several."),
+        typer.Option(help="Search everything under a path (it may have * ? or [..] in it, to name several folders, such as a Pictures folder in every Time Machine snapshot), however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The default library is never searched. Repeat for several."),
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
@@ -160,8 +160,8 @@ def recover_command(
     ] = None,
     snapshots: Annotated[
         str,
-        typer.Option(help=f"Of the snapshots in a Time Machine Backups.backupdb/<machine> folder under a --folders path, which to read: {', '.join(SNAPSHOTS)}. ends (the default) is the oldest and newest, which together hold nearly everything, and is far faster than all."),
-    ] = "ends",
+        typer.Option(help=f"Of the snapshots in a Time Machine Backups.backupdb/<machine> folder under a --folders path, which to read: {', '.join(SNAPSHOTS)}. all (the default) is every one, so nothing that was only in between is missed; ends is the oldest and newest, much faster when there are many snapshots and a path below the snapshot is not given."),
+    ] = "all",
     apply: Annotated[
         Apply,
         typer.Option(help="Import what was found into the library Photos has open: yes, no (only report), or ask once in the terminal."),

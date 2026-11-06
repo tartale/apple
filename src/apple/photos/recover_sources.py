@@ -4,6 +4,7 @@ A Source looks one photo up (find) and can import what it found. There are two k
 Messages (by the attachment ID the Photos database holds) and Folders (everything under a path: raw files matched by name
 and time, and Photos libraries read through their database). To add a way, write a Source and give it a keyword in KINDS.
 """
+import fnmatch
 import os
 import queue
 import re
@@ -29,7 +30,7 @@ DEFAULT = "default"
 # files that may still be wanted.
 IGNORED_FOLDERS = {"@eaDir", ".Spotlight-V100", ".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100", "__MACOSX", HIDDEN_DIRECTORIES}
 SNAPSHOT = re.compile(r"\d{4}-\d{2}-\d{2}-\d{6}$")  # the folder of a finished Time Machine snapshot (an unfinished one ends in .inProgress)
-SNAPSHOTS = ("ends", "newest", "oldest", "all")
+SNAPSHOTS = ("all", "ends", "newest", "oldest")
 WORKERS = 8  # directories read at once: a disk on a slow link spends its time waiting
 TOLERANCE = 7200  # seconds a file's time may differ from the photo's capture time (the same photo is an hour out across daylight saving)
 
@@ -106,6 +107,61 @@ def volume_of(path: Path) -> Optional[Path]:
     return None
 
 
+def step(real: Path, name: str, volume: Optional[Path] = None) -> Optional[Path]:
+    """Where real/name can be read: itself, or when it is one of Time Machine's directory links (an empty file on Linux) the
+    real folder behind it. None if it does not exist."""
+    candidate = real / name
+    try:
+        status = os.lstat(candidate)
+    except OSError:
+        return None
+    if not stat.S_ISREG(status.st_mode) or status.st_size:
+        return candidate
+    volume = volume or volume_of(real)
+    return (directory_link_target(status, volume) if volume else None) or candidate
+
+
+def resolve(path: Path) -> Optional[Path]:
+    """Where path can be read, stepping through Time Machine's directory links on Linux; None if it does not exist."""
+    parts = path.parts
+    real = Path(parts[0])
+    for name in parts[1:]:
+        found = step(real, name)
+        if found is None:
+            return None
+        real = found
+    return real
+
+
+def has_wildcard(text: str) -> bool:
+    return any(character in text for character in "*?[")
+
+
+def expand(path: Path) -> List[Path]:
+    """The paths a pattern with * ? or [..] in it names, sorted, stepping through Time Machine's directory links on Linux. A
+    path that exists as written is taken as it is, so a folder whose name has a bracket in it still works. A path with no
+    wildcard is returned as it is."""
+    if not has_wildcard(str(path)) or resolve(path) is not None:
+        return [path]
+    candidates = [(Path(path.parts[0]), Path(path.parts[0]))]  # (logical, real)
+    for name in path.parts[1:]:
+        following = []
+        for logical, real in candidates:
+            if has_wildcard(name):
+                try:
+                    names = sorted(fnmatch.filter(os.listdir(real), name))
+                except OSError:
+                    continue
+            else:
+                names = [name]
+            for match in names:
+                found = step(real, match)
+                if found is not None:
+                    following.append((logical / match, found))
+        candidates = following
+    return [logical for logical, _ in candidates]
+
+
 class Entry(NamedTuple):
     """Something found by walk. logical is where it is as the backup shows it and real where it can be read from; they differ
     inside Time Machine's linked folders on Linux. status is None for a directory."""
@@ -121,19 +177,25 @@ def walk(
     snapshots: str = "all",
     notes: Callable[[str], None] = lambda text: None,
     workers: int = WORKERS,
+    logical_root: Optional[Path] = None,
+    seen_directories: Optional[set] = None,
+    seen_files: Optional[set] = None,
 ):
     """Every directory and photo or video file under root, as Entry values in no particular order. Several directories are
     read at once. On Linux Time Machine's linked folders are followed, each real folder once however many snapshots link to
     it; a file hard-linked into many snapshots (the same inode) is reported once. A directory for which skip(logical, real) is
     true is reported and not entered. Of the snapshots in a Backups.backupdb/<machine> folder only those that snapshots
-    ('ends': the oldest and newest, 'newest', 'oldest', or 'all') names are read; notes(text) says which."""
+    ('all', 'ends': the oldest and newest, 'newest' or 'oldest') names are read; notes(text) says which. root is where the
+    folder can be read and logical_root, if different, where it is as the backup shows it. A directory or file already in
+    seen_directories or seen_files (sets that several walks can share) is skipped, and those sets are filled in."""
     volume = volume_of(root)
     try:
         top = os.lstat(root)
     except OSError:
         return
     start = (directory_link_target(top, volume) if volume else None) or root
-    seen_directories, seen_files = set(), set()
+    seen_directories = set() if seen_directories is None else seen_directories  # pass the same sets to several walks to read
+    seen_files = set() if seen_files is None else seen_files  # each directory and file once between them
     lock = threading.Lock()
     tasks: "queue.Queue" = queue.Queue()
     results: "queue.Queue" = queue.Queue()
@@ -141,13 +203,14 @@ def walk(
     stop = threading.Event()
     finished = object()
 
-    def enter(real: Path, logical: Path) -> None:
+    def enter(real: Path, logical: Path) -> bool:
         with lock:
             if real in seen_directories:
-                return
+                return False
             seen_directories.add(real)
             pending[0] += 1
         tasks.put((real, logical))
+        return True
 
     def chosen(entries: list, logical: Path) -> list:
         names = sorted(entry.name for entry in entries if SNAPSHOT.match(entry.name))
@@ -224,10 +287,11 @@ def walk(
                 if last:
                     results.put(finished)
 
+    if not enter(start, logical_root or root):  # already read by an earlier walk: nothing to do
+        return
     threads = [threading.Thread(target=work, daemon=True) for _ in range(workers)]
     for thread in threads:
         thread.start()
-    enter(start, root)
     try:
         while True:
             item = results.get()
@@ -358,9 +422,10 @@ class Folders(ByNameAndTime):
     read through its database, since its files are named by ID. The library being repaired is never searched."""
     name = "folders"
 
-    def __init__(self, folders: List[Path], default: Path, snapshots: str = "ends"):
+    def __init__(self, folders: List[Path], default: Path, snapshots: str = "all"):
         super().__init__()
-        self.folders = folders
+        self.patterns = folders
+        self.folders = [match for folder in folders for match in expand(folder)]
         self.default = default
         self.snapshots = snapshots
         self.unreadable: List[str] = []
@@ -369,7 +434,8 @@ class Folders(ByNameAndTime):
         self.folder_started = 0.0
 
     def problem(self) -> Optional[str]:
-        missing = [str(folder) for folder in self.folders if not folder.exists()]
+        missing = [str(folder) for folder in self.patterns if has_wildcard(str(folder)) and not expand(folder)]
+        missing += [str(folder) for folder in self.folders if resolve(folder) is None]
         return f"{', '.join(missing)} does not exist" if missing else None
 
     def status(self, count: int, started: float) -> str:
@@ -406,11 +472,14 @@ class Folders(ByNameAndTime):
         def skip(logical: Path, real: Path) -> bool:  # libraries with a database are read through it; the rest is for raw files
             return logical.name in IGNORED_FOLDERS or has_database(real) or is_current_library_originals(logical)
 
+        seen_directories, seen_files = set(), set()  # shared by all the folders: a file in many snapshots is indexed once
+
         def search(folder: Path):
-            if has_database(folder):
-                yield from library(folder, folder, str(folder))
+            real = resolve(folder) or folder
+            if has_database(real):
+                yield from library(real, folder, str(folder))
                 return
-            for entry in walk(folder, skip, self.snapshots, lambda text: self.progress.line(text)):
+            for entry in walk(real, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=folder, seen_directories=seen_directories, seen_files=seen_files):
                 if entry.is_directory:
                     if has_database(entry.real):
                         yield from library(entry.real, entry.logical, str(folder))
@@ -458,7 +527,7 @@ def parse_search(text: str) -> List[Tuple[str, List[str]]]:
     return entries
 
 
-def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "ends") -> List[Source]:
+def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "all") -> List[Source]:
     """The sources for a search specification, in order. Entries of the same kind are joined."""
     joined: Dict[str, List[str]] = {}
     order: List[str] = []
