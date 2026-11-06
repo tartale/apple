@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from apple.cli import app
 from apple.photos import powerphotos as pp
 from apple.photos import progress as progress_module
+from apple.photos import recover_cache as cache_module
 from apple.photos import recover as recover_module
 from apple.photos import recover_sources as rs
 # fixtures and helpers shared with the other PowerPhotos tests
@@ -67,6 +68,12 @@ def rows_of(result):
 
 def opened(monkeypatch, *libraries):
     monkeypatch.setenv("FAKE_LSOF", "\n".join(f"{library}/database/Photos.sqlite" for library in libraries))
+
+
+@pytest.fixture(autouse=True)
+def private_cache(tmp_path, monkeypatch):
+    """The cache of indexed places goes to a folder of the test's own, never to the real one."""
+    monkeypatch.setattr(cache_module, "CACHE_ROOT", tmp_path / "recover-cache")
 
 
 @pytest.fixture(autouse=True)
@@ -735,3 +742,166 @@ def test_progress_rewrites_one_line_on_a_terminal_and_is_throttled_elsewhere(mon
 
 def test_durations_are_short():
     assert [progress_module.duration(s) for s in (0, 12, 59.6, 185, 3725)] == ["0s", "12s", "1m 00s", "3m 05s", "1h 02m"]
+
+
+# The cache ---------------------------------------------------------------------------------------------------------------
+
+def test_the_cache_keeps_values_and_says_when_and_ignores_what_it_cannot_use(tmp_path):
+    cache = cache_module.Cache(tmp_path / "c" / "index.sqlite")
+    assert cache.get("k") is None
+    cache.put("k", {"a": [1, "two"]})
+    value, saved = cache.get("k")
+    assert value == {"a": [1, "two"]} and abs(saved - time.time()) < 60
+    assert cache_module.Cache(tmp_path / "c" / "index.sqlite", read=False).get("k") is None  # a refresh does not use it
+    cache.put("k", "newer")
+    assert cache.get("k")[0] == "newer"
+    assert cache_module.fingerprint("a", 1) != cache_module.fingerprint("a", 2)
+
+
+def test_a_cache_that_cannot_be_used_is_only_an_empty_cache(tmp_path):
+    (tmp_path / "file").write_text("x")
+    broken = cache_module.Cache(tmp_path / "file" / "index.sqlite")  # a folder cannot be made below a file
+    broken.put("k", 1)
+    assert broken.get("k") is None
+    damaged = tmp_path / "damaged.sqlite"
+    damaged.write_bytes(b"not a database")
+    cache = cache_module.Cache(damaged)
+    cache.put("k", 1)
+    assert cache.get("k") is None
+
+
+def count_database_reads(monkeypatch):
+    reads = []
+    real = rs.sqlite3.connect
+    monkeypatch.setattr(rs.sqlite3, "connect", lambda *args, **kwargs: (reads.append(args[0]) if str(args[0]).startswith("file:") else None) or real(*args, **kwargs))  # the cache's own file is not counted
+    return reads
+
+
+def test_a_library_database_is_read_again_only_when_it_changes(tmp_path, monkeypatch):
+    library = other_library(tmp_path, [(WHEN, 500, "one.heic")])
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    reads = count_database_reads(monkeypatch)
+    first = list(rs.database_originals(library, library, cache))
+    assert len(first) == 1 and len(reads) == 1
+    assert list(rs.database_originals(library, library, cache)) == first and len(reads) == 1  # from the cache
+    database = library / "database" / "Photos.sqlite"
+    later = database.stat().st_mtime + 10
+    os.utime(database, (later, later))  # the database was written to
+    list(rs.database_originals(library, library, cache))
+    assert len(reads) == 2
+
+
+def test_a_cached_library_is_found_under_the_path_it_is_read_from_now(tmp_path):
+    library = other_library(tmp_path, [(WHEN, 500, "one.heic")])
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    list(rs.database_originals(library, library, cache))
+    elsewhere = Path("/mounted/somewhere/other.photoslibrary")
+    (name, taken, real, logical), = rs.database_originals(library, elsewhere, cache)
+    assert real == library / "originals" / "A" / "UUID1.jpg" and logical == elsewhere / "originals" / "A" / "UUID1.jpg"
+
+
+def run_folders(roots, tmp_path, cache, monkeypatch=None, snapshots="all"):
+    source = rs.Folders(roots, tmp_path / "d.photoslibrary", snapshots, cache)
+    source.index()
+    return source
+
+
+def count_walks(monkeypatch):
+    walks = []
+    real = rs.walk
+    monkeypatch.setattr(rs, "walk", lambda root, *args, **kwargs: walks.append(root) or real(root, *args, **kwargs))
+    return walks
+
+
+def test_backup_folders_are_read_once_and_reused(tmp_path, monkeypatch):
+    machine = backupdb(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    walks = count_walks(monkeypatch)
+    first = run_folders([machine], tmp_path, cache)
+    assert walks and sorted(first.index()) == ["p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg"]
+    walks.clear()
+    said = io.StringIO()
+    second = rs.Folders([machine], tmp_path / "d.photoslibrary", "all", cache)
+    second.progress = progress_module.Progress(said)
+    second.index()
+    assert walks == [] and "Reusing the index of 1 backup folder saved" in said.getvalue()
+    assert sorted(second.index()) == ["p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg"]
+    found = second.index()["p0.jpg"][0]
+    assert found[1].name == "p0.jpg" and isinstance(found[1], Path) and found[2].parts[-1] == "p0.jpg"  # real and logical paths are Paths again
+
+
+def test_a_new_snapshot_a_removed_one_or_another_setting_means_a_new_index(tmp_path, monkeypatch):
+    machine = backupdb(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([machine], tmp_path, cache)
+    walks = count_walks(monkeypatch)
+    make_file(machine / "2019-06-01-000000" / "Pictures" / "new.jpg")
+    assert "new.jpg" in run_folders([machine], tmp_path, cache).index() and walks  # a new snapshot
+    walks.clear()
+    run_folders([machine], tmp_path, cache)
+    assert walks == []  # and now that one is saved
+    shutil.rmtree(machine / "2018-06-01-000000")
+    assert "p1.jpg" not in run_folders([machine], tmp_path, cache).index() and walks  # a removed snapshot
+    walks.clear()
+    run_folders([machine], tmp_path, cache, snapshots="ends")
+    assert walks  # another snapshots setting reads what it needs
+
+
+def test_a_snapshot_still_being_written_is_never_cached(tmp_path, monkeypatch):
+    machine = backupdb(tmp_path)
+    unfinished = machine / "2019-04-01-000000.inProgress" / "Pictures"
+    make_file(unfinished / "partial.jpg")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    walks = count_walks(monkeypatch)
+    run_folders([unfinished], tmp_path, cache)
+    run_folders([unfinished], tmp_path, cache)
+    assert len(walks) == 2  # read both times
+
+
+def test_ordinary_folders_are_read_every_time(tmp_path, monkeypatch):
+    folder = tmp_path / "plain"
+    make_file(folder / "one.jpg")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    walks = count_walks(monkeypatch)
+    run_folders([folder], tmp_path, cache)
+    make_file(folder / "two.jpg")
+    assert sorted(run_folders([folder], tmp_path, cache).index()) == ["one.jpg", "two.jpg"] and len(walks) == 2
+
+
+def test_backups_and_other_folders_in_one_search_are_each_handled_their_own_way(tmp_path, monkeypatch):
+    machine = backupdb(tmp_path)
+    plain = tmp_path / "plain"
+    make_file(plain / "one.jpg")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([machine, plain], tmp_path, cache)
+    walks = count_walks(monkeypatch)
+    make_file(plain / "two.jpg")
+    again = run_folders([machine, plain], tmp_path, cache)
+    assert sorted(again.index()) == ["one.jpg", "p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg", "two.jpg"]
+    assert walks == [plain]  # only the plain folder was read
+
+
+def test_libraries_that_could_not_be_read_are_remembered_with_the_backups(tmp_path):
+    machine = tmp_path / "Backups.backupdb" / "Mac"
+    snapshot = machine / "2018-01-01-000000" / "Pictures"
+    hollow(snapshot, "empty", b"")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    first = run_folders([machine], tmp_path, cache)
+    again = rs.Folders([machine], tmp_path / "d.photoslibrary", "all", cache)
+    again.index()
+    assert first.unreadable == again.unreadable != [] and again.unreadable[0][1] == "empty database"
+
+
+def test_refresh_reads_again_and_saves(mac, tmp_path, monkeypatch):
+    placeholders(mac)
+    machine = backupdb(tmp_path)
+    make_file(machine / "2018-01-01-000000" / "Pictures" / "one.heic")
+    walks = count_walks(monkeypatch)
+    recover("--folders", str(machine), "--format", "csv")
+    first = len(walks)
+    recover("--folders", str(machine), "--format", "csv")
+    assert len(walks) == first  # reused
+    again = recover("--folders", str(machine), "--refresh", "--format", "csv")
+    assert len(walks) > first and "Reusing" not in again.output
+    walks_after = len(walks)
+    assert "Reusing the index of 1 backup folder" in recover("--folders", str(machine), "--format", "csv").output and len(walks) == walks_after

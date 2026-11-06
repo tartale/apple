@@ -20,6 +20,7 @@ import typer
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
+from apple.photos.recover_cache import Cache
 from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, import_files, parse_search
 from apple.platform import require_macos
@@ -162,6 +163,10 @@ def recover_command(
         str,
         typer.Option(help=f"Of the snapshots in a Time Machine Backups.backupdb/<machine> folder under a --folders path, which to read: {', '.join(SNAPSHOTS)}. all (the default) is every one, so nothing that was only in between is missed; ends is the oldest and newest, much faster when there are many snapshots and a path below the snapshot is not given."),
     ] = "all",
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="Read the places again instead of reusing what an earlier run saved: library databases are kept by their size and modification time, and Time Machine backup folders by the names of their snapshots. The new result is saved."),
+    ] = False,
     apply: Annotated[
         Apply,
         typer.Option(help="Import what was found into the library Photos has open: yes, no (only report), or ask once in the terminal."),
@@ -212,7 +217,7 @@ def recover_command(
         path = Path("/nonexistent/default.photoslibrary")
     if snapshots not in SNAPSHOTS:
         raise typer.BadParameter(f"--snapshots must be one of {', '.join(SNAPSHOTS)}")
-    sources = build_sources(entries, path, snapshots)
+    sources = build_sources(entries, path, snapshots, Cache(read=not refresh))
     for source in sources:
         reason = source.problem()
         if reason:

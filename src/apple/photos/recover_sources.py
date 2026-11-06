@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from apple.photos import powerphotos as pp
+from apple.photos.recover_cache import Cache, fingerprint
 from apple.photos.progress import Progress, duration
 
 MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
@@ -454,24 +455,54 @@ def has_database(path: Path) -> bool:
         return False
 
 
-def database_originals(library: Path, logical: Path):
+def database_originals(library: Path, logical: Path, cache: Optional[Cache] = None):
     """(name, time, real path, logical path) for each photo whose original is in a Photos library (library is where it can
     be read, logical where it is as the backup shows it): the name is the one its database gives, since the file is named
-    by an ID."""
+    by an ID. What is read is kept in the cache under the database's path, size and modification time, so it is read again
+    only when the database changes."""
     database = library / "database" / "Photos.sqlite"
-    db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+    status = os.stat(database)
+    key = fingerprint("database", str(database), status.st_size, status.st_mtime_ns)
+    cached = cache.get(key) if cache else None
+    if cached:
+        found = cached[0]
+    else:
+        db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+        try:
+            rows = db.execute(
+                "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME "
+                "from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK where a.ZTRASHEDSTATE = 0"
+            ).fetchall()
+        finally:
+            db.close()
+        found = []
+        for name, taken, directory, stored_as in rows:
+            if name and taken is not None and directory is not None and stored_as:
+                relative = f"originals/{directory}/{stored_as}"
+                if (library / relative).exists():
+                    found.append([name, taken, relative])
+        if cache:
+            cache.put(key, found)
+    for name, taken, relative in found:
+        yield name, taken, library / relative, logical / relative
+
+
+def backup_snapshots(root: Path) -> Optional[list]:
+    """For a root inside a Time Machine Backups.backupdb whose snapshots are finished, the names of the snapshots it can see
+    (the machine folder's, or every machine's), which say when the cache for it is out of date; [] for a root inside one
+    finished snapshot, which cannot change. None for anything else, which is not cached."""
+    parts = root.parts
+    if "Backups.backupdb" not in parts:
+        return None
+    after = parts[parts.index("Backups.backupdb") + 1:]
+    base = Path(*parts[:parts.index("Backups.backupdb") + 1])
+    if len(after) >= 2:
+        return [] if SNAPSHOT.match(after[1]) else None
     try:
-        rows = db.execute(
-            "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME "
-            "from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK where a.ZTRASHEDSTATE = 0"
-        ).fetchall()
-    finally:
-        db.close()
-    for name, taken, directory, stored_as in rows:
-        if name and taken is not None and directory is not None and stored_as:
-            original = library / "originals" / str(directory) / stored_as
-            if original.exists():
-                yield name, taken, original, logical / "originals" / str(directory) / stored_as
+        machines = [base / after[0]] if after else [base / name for name in sorted(os.listdir(base))]
+        return [[machine.name, sorted(name for name in os.listdir(machine) if not name.startswith("."))] for machine in machines]
+    except OSError:
+        return None
 
 
 class Folders(ByNameAndTime):
@@ -480,8 +511,9 @@ class Folders(ByNameAndTime):
     read through its database, since its files are named by ID. The library being repaired is never searched."""
     name = "folders"
 
-    def __init__(self, folders: List[Path], default: Path, snapshots: str = "all"):
+    def __init__(self, folders: List[Path], default: Path, snapshots: str = "all", cache: Optional[Cache] = None):
         super().__init__()
+        self.cache = cache
         self.patterns = folders
         self.folders = [folder for folder in folders if not has_wildcard(str(folder)) or resolve(folder) is not None]  # patterns are expanded when the search starts
         self.unmatched: List[str] = []
@@ -521,7 +553,7 @@ class Folders(ByNameAndTime):
             seen.add((status.st_dev, status.st_ino))
             self.progress.update(f"  Indexing: reading library {logical}")
             try:
-                originals = list(database_originals(path, logical))
+                originals = list(database_originals(path, logical, self.cache))
             except sqlite3.Error as error:
                 originals = None
                 reason = "empty database" if status.st_size == 0 else f"database read error: {error}"
@@ -576,15 +608,39 @@ class Folders(ByNameAndTime):
             else:
                 folders.append(pattern)
         self.folders = folders
-        for folder in self.folders:
-            self.in_folder = self.libraries_in_folder = 0
-            self.folder_started = time.monotonic()
-            self.progress.line(f"Searching {folder}")
-            for item in search(folder):
-                self.in_folder += 1
+
+        def run(roots: List[Path]):
+            for folder in roots:
+                self.in_folder = self.libraries_in_folder = 0
+                self.folder_started = time.monotonic()
+                self.progress.line(f"Searching {folder}")
+                for item in search(folder):
+                    self.in_folder += 1
+                    yield item
+                libraries = f", {self.libraries_in_folder} librar{'y' if self.libraries_in_folder == 1 else 'ies'} read" if self.libraries_in_folder else ""
+                self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)})")
+
+        # Time Machine backups are cached as a group: their finished snapshots do not change, and the key holds the names of
+        # the snapshots, so a new or removed one makes a new entry. Everything else is read every time.
+        listings = {folder: backup_snapshots(folder) for folder in self.folders} if self.cache else {}
+        backups = [folder for folder in self.folders if listings.get(folder) is not None]
+        key = fingerprint("backups", sorted(str(folder) for folder in backups), self.snapshots, str(self.default),
+                          [listings[folder] for folder in sorted(backups)]) if backups else None
+        hit = self.cache.get(key) if key else None
+        if hit:
+            value, saved = hit
+            self.unreadable.extend((library, reason) for library, reason in value["unreadable"])
+            self.progress.line(f"Reusing the index of {len(backups)} backup folder{'' if len(backups) == 1 else 's'} saved "
+                               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(saved))} ({len(value['items']):,} files); --refresh reads them again")
+            for name, modified, real, logical, kind, root, library in value["items"]:
+                yield name, modified, Path(real), Path(logical), kind, root, library
+        elif backups:
+            before, items = len(self.unreadable), []
+            for item in run(backups):
+                items.append([item[0], item[1], str(item[2]), str(item[3]), *item[4:]])
                 yield item
-            libraries = f", {self.libraries_in_folder} librar{'y' if self.libraries_in_folder == 1 else 'ies'} read" if self.libraries_in_folder else ""
-            self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)})")
+            self.cache.put(key, {"items": items, "unreadable": self.unreadable[before:]})
+        yield from run([folder for folder in self.folders if folder not in backups])
 
     def note(self) -> Optional[str]:
         lines = []
@@ -619,7 +675,7 @@ def parse_search(text: str) -> List[Tuple[str, List[str]]]:
     return entries
 
 
-def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "all") -> List[Source]:
+def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "all", cache: Optional[Cache] = None) -> List[Source]:
     """The sources for a search specification, in order. Entries of the same kind are joined."""
     joined: Dict[str, List[str]] = {}
     order: List[str] = []
@@ -633,5 +689,5 @@ def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, s
         if kind == "messages":
             sources.append(Messages(folders))
         else:
-            sources.append(Folders(folders, default_library, snapshots))
+            sources.append(Folders(folders, default_library, snapshots, cache))
     return sources
