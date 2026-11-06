@@ -22,10 +22,14 @@ TOLERANCE = 7200  # seconds a file's time may differ from the photo's capture ti
 
 
 class Found(NamedTuple):
-    """Where a source can get the original: which source, the files to import, and the size in bytes of the photo's file."""
+    """Where a source can get the original. source is what kind of place it is in: messages, folder (a raw file) or library
+    (a file found through a library's database); root is the path that was searched, library the library that holds the file
+    (for a library), files everything to import (a Live Photo's video too) and size the photo's own size in bytes."""
     source: str
     files: list
     size: int
+    root: str = ""
+    library: str = ""
 
 
 class Source:
@@ -156,7 +160,7 @@ class Messages(Source):
                 candidates = sorted(f for f in folder.iterdir() if f.suffix.lower() in MEDIA_FILES)
                 if candidates:
                     main = ([f for f in candidates if f.name.lower() == key[2].lower()] or candidates[:1])[0]
-                    return Found(self.name, with_pair(main, candidates), main.stat().st_size)
+                    return Found("messages", with_pair(main, candidates), main.stat().st_size, str(attachments))
         return None
 
 
@@ -168,23 +172,24 @@ class ByNameAndTime(Source):
         self._index = None
 
     def files(self):
-        """(name, time, path) of each file that could be an original: the name it is known by, its time, where it is."""
+        """(name, time, path, kind, root, library) of each file that could be an original: the name it is known by, its
+        time, where it is, what kind of place it is in, the path that was searched and the library that holds it."""
         raise NotImplementedError
 
     def index(self) -> dict:
         if self._index is None:
             self._index = {}
-            for name, modified, path in self.files():
-                self._index.setdefault(name.lower(), []).append((modified, path))
+            for name, modified, path, kind, root, library in self.files():
+                self._index.setdefault(name.lower(), []).append((modified, path, kind, root, library))
         return self._index
 
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
         taken = captured(key)
-        near = [(abs(modified - taken), path) for modified, path in self.index().get(key[2].lower(), []) if abs(modified - taken) <= TOLERANCE]
+        near = [(abs(entry[0] - taken), entry) for entry in self.index().get(key[2].lower(), []) if abs(entry[0] - taken) <= TOLERANCE]
         if not near:
             return None
-        main = min(near)[1]
-        return Found(self.name, with_pair(main, sorted(p for p in main.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)), main.stat().st_size)
+        _, path, kind, root, library = min(near, key=lambda pair: pair[0])[1]
+        return Found(kind, with_pair(path, sorted(p for p in path.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)), path.stat().st_size, root, library)
 
 
 def is_current_library_originals(path: Path) -> bool:
@@ -243,7 +248,7 @@ class Folders(ByNameAndTime):
         except OSError:
             pass
 
-        def library(path: Path):
+        def library(path: Path, root: str):
             try:
                 status = os.stat(path / "database" / "Photos.sqlite")
             except OSError:
@@ -252,7 +257,8 @@ class Folders(ByNameAndTime):
                 return
             seen.add((status.st_dev, status.st_ino))
             try:
-                yield from database_originals(path)
+                for name, taken, original in database_originals(path):
+                    yield name, taken, original, "library", root, str(path)
             except sqlite3.Error:
                 self.unreadable.append(str(path))
 
@@ -261,16 +267,16 @@ class Folders(ByNameAndTime):
 
         for folder in self.folders:
             if has_database(folder):
-                yield from library(folder)
+                yield from library(folder, str(folder))
                 continue
             for path, status, is_directory in walk(folder, skip):
                 if is_directory:
                     if has_database(path):
-                        yield from library(path)
+                        yield from library(path, str(folder))
                     elif path.name.endswith(".photoslibrary") and not (path / "Masters").exists():
                         self.unreadable.append(str(path))  # a current-format library whose database is not there
                 elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES:
-                    yield path.name, status.st_mtime, path
+                    yield path.name, status.st_mtime, path, "folder", str(folder), ""
 
     def note(self) -> Optional[str]:
         if self.unreadable:

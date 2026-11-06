@@ -61,8 +61,8 @@ def search_entries(messages: bool, messages_folder: Optional[List[Path]], folder
 
 def read_list(text: str) -> List[dict]:
     """The photos to look for, from csv or json with a name and a date column (the output of this command, or of `apple
-    photos diff` with its date and name columns): dicts with name, date, hidden, shared, and file when the list has one
-    and it was found somewhere."""
+    photos diff` with its date and name columns). When the list also says where an original was found (the source, root,
+    library and files columns of this command's output), that is kept. files is an array in json and separated by | in csv."""
     stripped = text.strip()
     try:
         if stripped.startswith("["):
@@ -75,11 +75,33 @@ def read_list(text: str) -> List[dict]:
     for record in records:
         if "name" not in record or "date" not in record:
             raise typer.BadParameter("--list needs a name and a date column")
+        files = record.get("files") or []
+        if isinstance(files, str):
+            files = [entry for entry in files.split("|") if entry]
         items.append({
             "name": str(record["name"]), "date": str(record["date"]), "hidden": is_true(record.get("hidden")),
-            "shared": is_true(record.get("shared")), "file": str(record.get("file") or ""), "source": str(record.get("source") or ""),
+            "shared": is_true(record.get("shared")), "source": str(record.get("source") or ""),
+            "root": str(record.get("root") or ""), "library": str(record.get("library") or ""), "files": [str(f) for f in files],
         })
     return items
+
+
+def parse_map(entries: Optional[List[str]]) -> dict:
+    mapping = {}
+    for entry in entries or []:
+        old, equals, new = entry.partition("=")
+        if not equals or not old or not new:
+            raise typer.BadParameter(f"--map {entry!r}: use OLD=NEW, the path in the list and where it is here")
+        mapping[old.rstrip("/")] = new.rstrip("/")
+    return mapping
+
+
+def translate(path: str, mapping: dict) -> str:
+    """The path with the longest matching start in the mapping replaced."""
+    for old in sorted(mapping, key=len, reverse=True):
+        if path == old or path.startswith(old + "/"):
+            return mapping[old] + path[len(old):]
+    return path
 
 
 def is_true(value) -> bool:
@@ -102,8 +124,9 @@ def recover_command(
             "--list",
             help="Look for the photos in this csv or json file (- for stdin) instead of reading the default library, so the "
             "search can run where the library is not mounted. It needs name and date columns: the output of this command or of "
-            "`apple photos diff --format csv` will do. A row with a file that exists here counts as found there. Not with --messages, "
-            "which finds files by an ID that only the library holds.",
+            "`apple photos diff --format csv` will do. A row that says where its original is (this command's output does) is "
+            "used as it is, once --map has translated the paths, without searching; a row whose files cannot be reached here is "
+            "searched for only if you gave places to search. Not with --messages, which finds files by an ID that only the library holds.",
         ),
     ] = None,
     messages: Annotated[bool, typer.Option("--messages", help="Search Messages' attachments (~/Library/Messages/Attachments; Terminal needs Full Disk Access): the files of photos shared with you, found by the ID in the library.")] = False,
@@ -111,6 +134,10 @@ def recover_command(
     folders: Annotated[
         Optional[List[Path]],
         typer.Option(help="Search everything under a path, however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The default library is never searched. Repeat for several."),
+    ] = None,
+    map_paths: Annotated[
+        Optional[List[str]],
+        typer.Option("--map", help="With --list: OLD=NEW, where a path the list gives is mounted here (the list has the paths as the machine that searched saw them). Repeat for each root; if a root cannot be reached, the message says which to map."),
     ] = None,
     apply: Annotated[
         Apply,
@@ -176,7 +203,7 @@ def recover_command(
             for key in pp.of_media(within(counted, since, until), media.value):
                 wanted[key] = key in photos.hidden
         items = [
-            {"key": key, "hidden": wanted[key], "shared": key in photos.shared, "file": "", "source": ""}
+            {"key": key, "hidden": wanted[key], "shared": key in photos.shared}
             for key in sorted(wanted) if photos.original_missing(key)
         ]
     else:
@@ -188,25 +215,33 @@ def recover_command(
                 continue
             if not pp.of_media(Counter({key: 1}), media.value):
                 continue
-            items.append({"key": key, **{name: entry[name] for name in ("hidden", "shared", "file", "source")}})
+            items.append({"key": key, **{name: entry[name] for name in ("hidden", "shared", "source", "root", "library", "files")}})
 
-    rows, hits = [], []
+    mapping = parse_map(map_paths)
+    rows, hits, unreachable = [], [], {}
     for item in items:
         key = item["key"]
         found = None
-        if item["file"] and Path(item["file"]).exists():  # the list already says where it is, and it can be reached from here
-            main = Path(item["file"])
-            found = Found(item["source"] or "list", [str(main)], main.stat().st_size)
-        else:
+        if item.get("files"):  # the list says where the original is
+            files = [translate(f, mapping) for f in item["files"]]
+            if all(Path(f).exists() for f in files):
+                found = Found(item["source"] or "list", files, Path(files[0]).stat().st_size, item.get("root", ""), item.get("library", ""))
+            else:
+                unreachable[item.get("root") or str(Path(item["files"][0]).parent)] = unreachable.get(item.get("root") or str(Path(item["files"][0]).parent), 0) + 1
+        if not found:
             found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
         if found:
             hits.append(found)
         rows.append({
             "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": item["hidden"],
             "shared": item["shared"], "source": found.source if found else "none",
-            "file": found.files[0] if found else "",
+            "root": found.root if found else "", "library": found.library if found else "", "files": found.files if found else [],
         })
     print_recover(rows, format)
+    if unreachable:
+        roots = ", ".join(f"{root} ({count(n, 'photo')})" for root, n in sorted(unreachable.items()))
+        typer.echo(f"The list says where {sum(unreachable.values())} originals are, but they cannot be reached from here: {roots}.", err=True)
+        typer.echo("Map each root to where it is mounted here: " + " ".join(f"--map {root}=<path here>" for root in sorted(unreachable)), err=True)
     for source in sources:
         if source.note():
             typer.echo(source.note(), err=True)
@@ -245,16 +280,17 @@ def recover_command(
 
 
 def print_recover(rows: list, format: DiffFormat) -> None:
-    """size is the size of the original that was found. The file it was found at is left out of the table, since the name
-    and the source say enough, but csv and json keep it."""
+    """The table has date, size (of the original found), name, hidden, shared and the kind of place it was found in. csv and
+    json also say the root searched, the library, and every file to import (a | separated list in csv, an array in json)."""
     columns = ["date", "size", "name", "hidden", "shared", "source"]
+    extra = ["root", "library", "files"]
     if format == DiffFormat.json:
-        typer.echo(json.dumps([{column: row[column] for column in columns + ["file"]} for row in rows], indent=2))
+        typer.echo(json.dumps([{column: row[column] for column in columns + extra} for row in rows], indent=2))
     elif format == DiffFormat.csv:
         writer = csv.writer(sys.stdout, lineterminator="\n")
-        writer.writerow(columns + ["file"])
+        writer.writerow(columns + extra)
         for row in rows:
-            writer.writerow([cell_text(row[column]) for column in columns + ["file"]])
+            writer.writerow([cell_text(row[column]) for column in columns] + [row["root"], row["library"], "|".join(row["files"])])
     elif rows:
         cells = [columns] + [[cell_text(row[column]) for column in columns] for row in rows]
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))]
