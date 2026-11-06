@@ -86,21 +86,23 @@ def read_list(text: str) -> List[dict]:
     return items
 
 
-def parse_map(entries: Optional[List[str]]) -> dict:
-    mapping = {}
+def parse_map(entries: Optional[List[str]]) -> List[tuple]:
+    """[(old, new)] in the order given."""
+    mapping = []
     for entry in entries or []:
         old, equals, new = entry.partition("=")
         if not equals or not old or not new:
-            raise typer.BadParameter(f"--map {entry!r}: use OLD=NEW, the path in the list and where it is here")
-        mapping[old.rstrip("/")] = new.rstrip("/")
+            raise typer.BadParameter(f"--map {entry!r}: use OLD=NEW, the start of a path in the list and what it is here")
+        mapping.append((old.rstrip("/") or "/", new.rstrip("/")))
     return mapping
 
 
-def translate(path: str, mapping: dict) -> str:
-    """The path with the longest matching start in the mapping replaced."""
-    for old in sorted(mapping, key=len, reverse=True):
-        if path == old or path.startswith(old + "/"):
-            return mapping[old] + path[len(old):]
+def translate(path: str, mapping: List[tuple]) -> str:
+    """The path with its start replaced by the first translation, in the order given, whose old start it has (at a folder
+    boundary). A path no translation matches is returned as it is."""
+    for old, new in mapping:
+        if path == old or path.startswith(old.rstrip("/") + "/"):
+            return new + path[len(old.rstrip("/")):]
     return path
 
 
@@ -137,7 +139,7 @@ def recover_command(
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
-        typer.Option("--map", help="With --list: OLD=NEW, where a path the list gives is mounted here (the list has the paths as the machine that searched saw them). Repeat for each root; if a root cannot be reached, the message says which to map."),
+        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones."),
     ] = None,
     apply: Annotated[
         Apply,
@@ -241,7 +243,7 @@ def recover_command(
     if unreachable:
         roots = ", ".join(f"{root} ({count(n, 'photo')})" for root, n in sorted(unreachable.items()))
         typer.echo(f"The list says where {sum(unreachable.values())} originals are, but they cannot be reached from here: {roots}.", err=True)
-        typer.echo("Map each root to where it is mounted here: " + " ".join(f"--map {root}=<path here>" for root in sorted(unreachable)), err=True)
+        typer.echo("Translate the start of those paths to where they are here, for example --map " + sorted(unreachable)[0] + "=<path here>; the first --map in the order given that matches a path is used.", err=True)
     for source in sources:
         if source.note():
             typer.echo(source.note(), err=True)
