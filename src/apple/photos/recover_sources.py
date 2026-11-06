@@ -137,16 +137,69 @@ def has_wildcard(text: str) -> bool:
     return any(character in text for character in "*?[")
 
 
-def expand(path: Path) -> List[Path]:
-    """The paths a pattern with * ? or [..] in it names, sorted, stepping through Time Machine's directory links on Linux. A
-    path that exists as written is taken as it is, so a folder whose name has a bracket in it still works. A path with no
-    wildcard is returned as it is."""
+PACKAGES = (".photoslibrary", ".photolibrary", ".aplibrary", ".migratedphotolibrary")
+
+
+def folders_below(logical: Path, real: Path, seen: set, counted: Optional[Callable[[], None]] = None):
+    """(logical, real) of this folder and of every folder below it, stepping through Time Machine's directory links on
+    Linux. It does not go into a library package or a folder a disk keeps for itself, which hold no folders anyone means.
+    A folder whose real location is in seen (a set that can be shared by calls) is left out, and the set is filled in: a
+    folder that Time Machine shares between snapshots is then read once."""
+    volume = volume_of(real)
+    if real in seen:
+        return
+    seen.add(real)
+    pending = [(logical, real)]
+    while pending:
+        here = pending.pop()
+        if counted:
+            counted()
+        yield here
+        try:
+            entries = sorted(os.scandir(here[1]), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in reversed(entries):
+            if entry.name in IGNORED_FOLDERS or entry.name.endswith(PACKAGES):
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    target = Path(entry.path)
+                elif volume and Path(entry.name).suffix.lower() not in MEDIA_FILES:
+                    target = directory_link_target(entry.stat(follow_symlinks=False), volume)
+                else:
+                    target = None
+            except OSError:
+                continue
+            if target is not None and target not in seen:
+                seen.add(target)
+                pending.append((here[0] / entry.name, target))
+
+
+def expand(path: Path, progress: Optional[Callable[[str], None]] = None) -> List[Path]:
+    """The paths a pattern with * ? [..] or ** in it names, sorted, stepping through Time Machine's directory links on Linux.
+    ** stands for any number of folders, none included (folders_below says where it does not go); at the end of a pattern
+    it adds nothing, since a search of a folder covers what is below it. A path that exists as written is taken as it is, so
+    a folder whose name has a bracket in it still works. A path with no wildcard is returned as it is. A ** can look at a
+    great many folders, so progress(text), if given, is told how far it is."""
     if not has_wildcard(str(path)) or resolve(path) is not None:
         return [path]
     candidates = [(Path(path.parts[0]), Path(path.parts[0]))]  # (logical, real)
-    for name in path.parts[1:]:
+    below = set()  # the folders already listed for a **, so that one shared by many snapshots is read once
+    looked = [0]
+
+    def counted() -> None:
+        looked[0] += 1
+        if progress and looked[0] % 200 == 0:
+            progress(f"  Expanding {path.name if path.name != '**' else '**'}: {looked[0]:,} folders looked at so far")
+
+    last = len(path.parts) - 1
+    for position, name in enumerate(path.parts[1:], 1):
         following = []
         for logical, real in candidates:
+            if name == "**":
+                following.extend([(logical, real)] if position == last else folders_below(logical, real, below, counted))
+                continue
             if has_wildcard(name):
                 try:
                     names = sorted(fnmatch.filter(os.listdir(real), name))
@@ -159,7 +212,12 @@ def expand(path: Path) -> List[Path]:
                 if found is not None:
                     following.append((logical / match, found))
         candidates = following
-    return [logical for logical, _ in candidates]
+    seen, result = set(), []
+    for logical, _ in candidates:
+        if logical not in seen:
+            seen.add(logical)
+            result.append(logical)
+    return result
 
 
 class Entry(NamedTuple):
@@ -425,7 +483,8 @@ class Folders(ByNameAndTime):
     def __init__(self, folders: List[Path], default: Path, snapshots: str = "all"):
         super().__init__()
         self.patterns = folders
-        self.folders = [match for folder in folders for match in expand(folder)]
+        self.folders = [folder for folder in folders if not has_wildcard(str(folder)) or resolve(folder) is not None]  # patterns are expanded when the search starts
+        self.unmatched: List[str] = []
         self.default = default
         self.snapshots = snapshots
         self.unreadable: List[str] = []
@@ -434,8 +493,7 @@ class Folders(ByNameAndTime):
         self.folder_started = 0.0
 
     def problem(self) -> Optional[str]:
-        missing = [str(folder) for folder in self.patterns if has_wildcard(str(folder)) and not expand(folder)]
-        missing += [str(folder) for folder in self.folders if resolve(folder) is None]
+        missing = [str(folder) for folder in self.patterns if not has_wildcard(str(folder)) and resolve(folder) is None]
         return f"{', '.join(missing)} does not exist" if missing else None
 
     def status(self, count: int, started: float) -> str:
@@ -488,6 +546,19 @@ class Folders(ByNameAndTime):
                 else:
                     yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", str(folder), ""
 
+        folders = []
+        for pattern in self.patterns:
+            if has_wildcard(str(pattern)) and resolve(pattern) is None:
+                self.progress.line(f"Expanding {pattern}")
+                matches = expand(pattern, self.progress.update)
+                if not matches:
+                    self.unmatched.append(str(pattern))
+                else:
+                    self.progress.line(f"  {len(matches):,} folders")
+                folders.extend(matches)
+            else:
+                folders.append(pattern)
+        self.folders = folders
         for folder in self.folders:
             self.in_folder = self.libraries_in_folder = 0
             self.folder_started = time.monotonic()
@@ -499,10 +570,12 @@ class Folders(ByNameAndTime):
             self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)})")
 
     def note(self) -> Optional[str]:
+        lines = []
+        if self.unmatched:
+            lines += [f"{len(self.unmatched)} pattern{'' if len(self.unmatched) == 1 else 's'} matched no folder:"] + [f"  {pattern}" for pattern in self.unmatched]
         if self.unreadable:
-            heading = f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"
-            return "\n".join([heading] + [f"  {library}" for library in self.unreadable])
-        return None
+            lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"] + [f"  {library}" for library in self.unreadable]
+        return "\n".join(lines) or None
 
 
 # The search specification ---------------------------------------------------------------------------------------------
