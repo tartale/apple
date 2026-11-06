@@ -5,10 +5,13 @@ Messages (by the attachment ID the Photos database holds) and Folders (everythin
 and time, and Photos libraries read through their database). To add a way, write a Source and give it a keyword in KINDS.
 """
 import os
+import queue
+import re
 import shlex
 import sqlite3
 import stat
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +28,9 @@ DEFAULT = "default"
 # the link that points at it, so reading it directly would read each twice). Not here: the recycle bins, which hold deleted
 # files that may still be wanted.
 IGNORED_FOLDERS = {"@eaDir", ".Spotlight-V100", ".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100", "__MACOSX", HIDDEN_DIRECTORIES}
+SNAPSHOT = re.compile(r"\d{4}-\d{2}-\d{2}-\d{6}$")  # the folder of a finished Time Machine snapshot (an unfinished one ends in .inProgress)
+SNAPSHOTS = ("ends", "newest", "oldest", "all")
+WORKERS = 8  # directories read at once: a disk on a slow link spends its time waiting
 TOLERANCE = 7200  # seconds a file's time may differ from the photo's capture time (the same photo is an hour out across daylight saving)
 
 
@@ -69,10 +75,11 @@ def import_files(found: List[Found]) -> int:
     return int(output.rsplit(" ", 1)[-1])
 
 
-def with_pair(main: Path, folder_files) -> List[str]:
+def with_pair(logical: Path, real: Path, folder_files) -> List[str]:
     """The photo's file and, with it, the video half of a Live Photo (the same name with another ending), so that Photos
-    imports the pair as one."""
-    return [str(f) for f in folder_files if f.stem.lower() == main.stem.lower()]
+    imports the pair as one. real is where the folder can be read, folder_files the files in it, and logical where the
+    photo is as the backup shows it, which is what is reported."""
+    return [str(logical.parent / f.name) for f in folder_files if f.stem.lower() == real.stem.lower()]
 
 
 def captured(key: tuple) -> float:
@@ -99,52 +106,143 @@ def volume_of(path: Path) -> Optional[Path]:
     return None
 
 
-def walk(root: Path, skip: Callable[[Path], bool] = lambda path: False):
-    """(path, status, is_directory) for every entry under root, following Time Machine's directory links on Linux. A
-    directory for which skip(path) is true is yielded and not entered. Each real directory is read once, however many
-    backups link to it."""
+class Entry(NamedTuple):
+    """Something found by walk. logical is where it is as the backup shows it and real where it can be read from; they differ
+    inside Time Machine's linked folders on Linux. status is None for a directory."""
+    logical: Path
+    real: Path
+    status: Optional[os.stat_result]
+    is_directory: bool
+
+
+def walk(
+    root: Path,
+    skip: Callable[[Path, Path], bool] = lambda logical, real: False,
+    snapshots: str = "all",
+    notes: Callable[[str], None] = lambda text: None,
+    workers: int = WORKERS,
+):
+    """Every directory and photo or video file under root, as Entry values in no particular order. Several directories are
+    read at once. On Linux Time Machine's linked folders are followed, each real folder once however many snapshots link to
+    it; a file hard-linked into many snapshots (the same inode) is reported once. A directory for which skip(logical, real) is
+    true is reported and not entered. Of the snapshots in a Backups.backupdb/<machine> folder only those that snapshots
+    ('ends': the oldest and newest, 'newest', 'oldest', or 'all') names are read; notes(text) says which."""
     volume = volume_of(root)
-    seen = set()
-
-    def real_directory(path: Path, status) -> Optional[Path]:
-        if stat.S_ISDIR(status.st_mode):
-            return path
-        return directory_link_target(status, volume) if volume else None
-
-    def descend(folder: Path):
-        try:
-            entries = list(os.scandir(folder))
-        except OSError:
-            return
-        for entry in entries:
-            try:
-                status = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            path = Path(entry.path)
-            real = real_directory(path, status)
-            if real is None:
-                yield path, status, False
-                continue
-            yield path, status, True
-            if real not in seen and not skip(path):
-                seen.add(real)
-                yield from descend(real)
-
     try:
-        top = real_directory(root, os.lstat(root)) or root
+        top = os.lstat(root)
     except OSError:
         return
-    yield from descend(top)
+    start = (directory_link_target(top, volume) if volume else None) or root
+    seen_directories, seen_files = set(), set()
+    lock = threading.Lock()
+    tasks: "queue.Queue" = queue.Queue()
+    results: "queue.Queue" = queue.Queue()
+    pending = [0]
+    stop = threading.Event()
+    finished = object()
+
+    def enter(real: Path, logical: Path) -> None:
+        with lock:
+            if real in seen_directories:
+                return
+            seen_directories.add(real)
+            pending[0] += 1
+        tasks.put((real, logical))
+
+    def chosen(entries: list, logical: Path) -> list:
+        names = sorted(entry.name for entry in entries if SNAPSHOT.match(entry.name))
+        if snapshots == "all" or len(names) <= 1:
+            return entries
+        keep = {"ends": {names[0], names[-1]}, "newest": {names[-1]}, "oldest": {names[0]}}[snapshots]
+        if len(keep) < len(names):
+            notes(f"  {logical.name}: reading the snapshots {', '.join(sorted(keep))}; {len(names) - len(keep)} others are "
+                  "skipped (--snapshots all reads every one)")
+        return [entry for entry in entries if not SNAPSHOT.match(entry.name) or entry.name in keep]
+
+    def process(real: Path, logical: Path) -> None:
+        try:
+            entries = list(os.scandir(real))
+        except OSError:
+            return
+        if logical.parent.name == "Backups.backupdb":
+            entries = chosen(entries, logical)
+        device = None
+        for entry in entries:
+            if stop.is_set():
+                return
+            name, child_logical, child_real = entry.name, logical / entry.name, Path(entry.path)
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_directory:
+                results.put(Entry(child_logical, child_real, None, True))
+                if not skip(child_logical, child_real):
+                    enter(child_real, child_logical)
+            elif child_real.suffix.lower() in MEDIA_FILES:
+                if name.startswith("._"):  # an archive's resource fork, not a photo
+                    continue
+                try:
+                    if device is None:
+                        device = os.stat(real).st_dev
+                    key = (device, entry.inode())
+                except OSError:
+                    continue
+                with lock:
+                    if key in seen_files:
+                        continue
+                    seen_files.add(key)
+                try:
+                    status = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(status.st_mode):
+                    results.put(Entry(child_logical, child_real, status, False))
+            elif volume:  # on a Time Machine disk a directory may look like an empty file with a huge link count
+                try:
+                    target = directory_link_target(entry.stat(follow_symlinks=False), volume)
+                except OSError:
+                    continue
+                if target:
+                    results.put(Entry(child_logical, target, None, True))
+                    if not skip(child_logical, target):
+                        enter(target, child_logical)
+
+    def work() -> None:
+        while True:
+            task = tasks.get()
+            if task is None:
+                return
+            try:
+                process(*task)
+            except Exception as error:  # reported to the caller, who is waiting for results
+                results.put(error)
+            finally:
+                with lock:
+                    pending[0] -= 1
+                    last = pending[0] == 0
+                if last:
+                    results.put(finished)
+
+    threads = [threading.Thread(target=work, daemon=True) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    enter(start, root)
+    try:
+        while True:
+            item = results.get()
+            if item is finished:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        stop.set()
+        for _ in threads:
+            tasks.put(None)
 
 
-def media_files(root: Path, skip: Callable[[Path], bool] = lambda path: False):
-    for path, status, is_directory in walk(root, skip):
-        if not is_directory and stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES:
-            yield path, status
-
-
-# The three kinds ------------------------------------------------------------------------------------------------------
+# The kinds of place ------------------------------------------------------------------------------------------------------
 
 def messages_attachments() -> Path:
     return Path.home() / "Library" / "Messages" / "Attachments"
@@ -170,7 +268,7 @@ class Messages(Source):
                 candidates = sorted(f for f in folder.iterdir() if f.suffix.lower() in MEDIA_FILES)
                 if candidates:
                     main = ([f for f in candidates if f.name.lower() == key[2].lower()] or candidates[:1])[0]
-                    return Found("messages", with_pair(main, candidates), main.stat().st_size, str(attachments))
+                    return Found("messages", with_pair(main, main, candidates), main.stat().st_size, str(attachments))
         return None
 
 
@@ -183,8 +281,9 @@ class ByNameAndTime(Source):
         self.progress = Progress()
 
     def files(self):
-        """(name, time, path, kind, root, library) of each file that could be an original: the name it is known by, its
-        time, where it is, what kind of place it is in, the path that was searched and the library that holds it."""
+        """(name, time, real, logical, kind, root, library) of each file that could be an original: the name it is known
+        by, its time, where it can be read and where it is as the backup shows it, what kind of place it is in, the path
+        that was searched and the library that holds it."""
         raise NotImplementedError
 
     def prepare(self, progress: Progress) -> None:
@@ -195,8 +294,8 @@ class ByNameAndTime(Source):
         if self._index is None:
             self._index = {}
             count, started = 0, time.monotonic()
-            for name, modified, path, kind, root, library in self.files():
-                self._index.setdefault(name.lower(), []).append((modified, path, kind, root, library))
+            for name, modified, real, logical, kind, root, library in self.files():
+                self._index.setdefault(name.lower(), []).append((modified, real, logical, kind, root, library))
                 count += 1
                 if count % 100 == 0:
                     self.progress.update(self.status(count, started))
@@ -215,8 +314,9 @@ class ByNameAndTime(Source):
         near = [(abs(entry[0] - taken), entry) for entry in self.index().get(key[2].lower(), []) if abs(entry[0] - taken) <= TOLERANCE]
         if not near:
             return None
-        _, path, kind, root, library = min(near, key=lambda pair: pair[0])[1]
-        return Found(kind, with_pair(path, sorted(p for p in path.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)), path.stat().st_size, root, library)
+        _, real, logical, kind, root, library = min(near, key=lambda pair: pair[0])[1]
+        siblings = sorted(p for p in real.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)
+        return Found(kind, with_pair(logical, real, siblings), real.stat().st_size, root, library)
 
 
 def is_current_library_originals(path: Path) -> bool:
@@ -232,9 +332,10 @@ def has_database(path: Path) -> bool:
         return False
 
 
-def database_originals(library: Path):
-    """(name, time, path) for each photo whose original is in a Photos library: the name is the one its database gives,
-    since the file is named by an ID."""
+def database_originals(library: Path, logical: Path):
+    """(name, time, real path, logical path) for each photo whose original is in a Photos library (library is where it can
+    be read, logical where it is as the backup shows it): the name is the one its database gives, since the file is named
+    by an ID."""
     database = library / "database" / "Photos.sqlite"
     db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
     try:
@@ -248,7 +349,7 @@ def database_originals(library: Path):
         if name and taken is not None and directory is not None and stored_as:
             original = library / "originals" / str(directory) / stored_as
             if original.exists():
-                yield name, taken, original
+                yield name, taken, original, logical / "originals" / str(directory) / stored_as
 
 
 class Folders(ByNameAndTime):
@@ -257,10 +358,11 @@ class Folders(ByNameAndTime):
     read through its database, since its files are named by ID. The library being repaired is never searched."""
     name = "folders"
 
-    def __init__(self, folders: List[Path], default: Path):
+    def __init__(self, folders: List[Path], default: Path, snapshots: str = "ends"):
         super().__init__()
         self.folders = folders
         self.default = default
+        self.snapshots = snapshots
         self.unreadable: List[str] = []
         self.in_folder = 0  # files indexed so far in the folder being searched, and how many libraries were read there
         self.libraries_in_folder = 0
@@ -285,7 +387,7 @@ class Folders(ByNameAndTime):
         except OSError:
             pass
 
-        def library(path: Path, root: str):
+        def library(path: Path, logical: Path, root: str):
             try:
                 status = os.stat(path / "database" / "Photos.sqlite")
             except OSError:
@@ -294,28 +396,28 @@ class Folders(ByNameAndTime):
                 return
             seen.add((status.st_dev, status.st_ino))
             self.libraries_in_folder += 1
-            self.progress.update(f"  Indexing: reading library {path}")
+            self.progress.update(f"  Indexing: reading library {logical}")
             try:
-                for name, taken, original in database_originals(path):
-                    yield name, taken, original, "library", root, str(path)
+                for name, taken, original, original_logical in database_originals(path, logical):
+                    yield name, taken, original, original_logical, "library", root, str(logical)
             except sqlite3.Error:
-                self.unreadable.append(str(path))
+                self.unreadable.append(str(logical))
 
-        def skip(path: Path) -> bool:  # libraries with a database are read through it; the rest of the walk is for raw files
-            return path.name in IGNORED_FOLDERS or has_database(path) or is_current_library_originals(path)
+        def skip(logical: Path, real: Path) -> bool:  # libraries with a database are read through it; the rest is for raw files
+            return logical.name in IGNORED_FOLDERS or has_database(real) or is_current_library_originals(logical)
 
         def search(folder: Path):
             if has_database(folder):
-                yield from library(folder, str(folder))
+                yield from library(folder, folder, str(folder))
                 return
-            for path, status, is_directory in walk(folder, skip):
-                if is_directory:
-                    if has_database(path):
-                        yield from library(path, str(folder))
-                    elif path.name.endswith(".photoslibrary") and not (path / "Masters").exists():
-                        self.unreadable.append(str(path))  # a current-format library whose database is not there
-                elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES and not path.name.startswith("._"):
-                    yield path.name, status.st_mtime, path, "folder", str(folder), ""
+            for entry in walk(folder, skip, self.snapshots, lambda text: self.progress.line(text)):
+                if entry.is_directory:
+                    if has_database(entry.real):
+                        yield from library(entry.real, entry.logical, str(folder))
+                    elif entry.logical.name.endswith(".photoslibrary") and not (entry.real / "Masters").exists():
+                        self.unreadable.append(str(entry.logical))  # a current-format library whose database is not there
+                else:
+                    yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", str(folder), ""
 
         for folder in self.folders:
             self.in_folder = self.libraries_in_folder = 0
@@ -356,7 +458,7 @@ def parse_search(text: str) -> List[Tuple[str, List[str]]]:
     return entries
 
 
-def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path) -> List[Source]:
+def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "ends") -> List[Source]:
     """The sources for a search specification, in order. Entries of the same kind are joined."""
     joined: Dict[str, List[str]] = {}
     order: List[str] = []
@@ -370,5 +472,5 @@ def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path) -
         if kind == "messages":
             sources.append(Messages(folders))
         else:
-            sources.append(Folders(folders, default_library))
+            sources.append(Folders(folders, default_library, snapshots))
     return sources
