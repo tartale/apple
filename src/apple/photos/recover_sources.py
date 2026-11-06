@@ -1,8 +1,8 @@
 """Where `./apple photos recover` can look for the original of a photo a library does not store.
 
-A Source looks one photo up (find) and can import what it found. There are three kinds, by how a file is identified:
-Messages (by the attachment ID the Photos database holds), Folders (raw files, matched by name and time) and Libraries
-(Photos and iPhoto libraries found under a path). To add a way, write a Source and give it a keyword in KINDS.
+A Source looks one photo up (find) and can import what it found. There are two kinds, by how a file is identified:
+Messages (by the attachment ID the Photos database holds) and Folders (everything under a path: raw files matched by name
+and time, and Photos libraries read through their database). To add a way, write a Source and give it a keyword in KINDS.
 """
 import os
 import shlex
@@ -189,107 +189,88 @@ class ByNameAndTime(Source):
 
 def is_current_library_originals(path: Path) -> bool:
     """The originals folder of a current-format Photos library: its files are named by random ID, so a search by name
-    cannot match them (Libraries reads the database instead)."""
+    cannot match them (Folders reads the library's database instead)."""
     return path.name == "originals" and path.parent.name.endswith(".photoslibrary")
 
 
+def has_database(path: Path) -> bool:
+    try:
+        return (path / "database" / "Photos.sqlite").exists()
+    except OSError:
+        return False
+
+
+def database_originals(library: Path):
+    """(name, time, path) for each photo whose original is in a Photos library: the name is the one its database gives,
+    since the file is named by an ID."""
+    database = library / "database" / "Photos.sqlite"
+    db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+    try:
+        rows = db.execute(
+            "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME "
+            "from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK where a.ZTRASHEDSTATE = 0"
+        ).fetchall()
+    finally:
+        db.close()
+    for name, taken, directory, stored_as in rows:
+        if name and taken is not None and directory is not None and stored_as:
+            original = library / "originals" / str(directory) / stored_as
+            if original.exists():
+                yield name, taken, original
+
+
 class Folders(ByNameAndTime):
-    """Raw files in folders: the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup."""
+    """Everything under the paths, however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture
+    library's Masters, a Time Machine backup) are matched by file name and time; a Photos library found on the way is
+    read through its database, since its files are named by ID. The library being repaired is never searched."""
     name = "folders"
-
-    def __init__(self, folders: List[Path]):
-        super().__init__()
-        self.folders = folders
-
-    def problem(self) -> Optional[str]:
-        missing = [str(folder) for folder in self.folders if not folder.exists()]
-        return f"{', '.join(missing)} does not exist" if missing else None
-
-    def files(self):
-        for folder in self.folders:
-            for path, status in media_files(folder, is_current_library_originals):
-                yield path.name, status.st_mtime, path
-
-
-class Libraries(ByNameAndTime):
-    """Photos, iPhoto and Aperture libraries found under the paths, however they store their originals: a library with a
-    Photos database is read (names and times from the database, files by ID); one that keeps its files by name (Masters)
-    is searched by name and time. The library being repaired is never searched."""
-    name = "libraries"
 
     def __init__(self, folders: List[Path], default: Path):
         super().__init__()
         self.folders = folders
         self.default = default
         self.unreadable: List[str] = []
-        self.searched = 0
 
     def problem(self) -> Optional[str]:
         missing = [str(folder) for folder in self.folders if not folder.exists()]
         return f"{', '.join(missing)} does not exist" if missing else None
 
-    @staticmethod
-    def is_library(path: Path) -> bool:
-        try:
-            return (path / "database" / "Photos.sqlite").exists() or any((path / marker).exists() for marker in ("Masters", "AlbumData.xml", "Library.apdb"))
-        except OSError:
-            return False
-
-    def libraries(self):
-        """The folders under the paths that are libraries, each once; a library is not looked inside for others."""
-        for root in self.folders:
-            if self.is_library(root):
-                yield root
-                continue
-            for path, _, is_directory in walk(root, self.is_library):
-                if is_directory and self.is_library(path):
-                    yield path
-
     def files(self):
-        seen = set()
+        seen = set()  # databases already read: the default library, and the same file reached through another backup
         try:
             status = os.stat(self.default / "database" / "Photos.sqlite")
             seen.add((status.st_dev, status.st_ino))
         except OSError:
             pass
-        for library in self.libraries():
-            database = library / "database" / "Photos.sqlite"
-            if database.exists():
-                status = os.stat(database)
-                if (status.st_dev, status.st_ino) in seen:  # the default library, or the same file in another backup
-                    continue
-                seen.add((status.st_dev, status.st_ino))
-                try:
-                    yield from self.from_database(library, database)
-                    self.searched += 1
-                except sqlite3.Error:
-                    self.unreadable.append(str(library))
-            elif (library / "Masters").exists():
-                self.searched += 1
-                for folder in ("Masters", "Originals", "Modified"):
-                    if (library / folder).exists():
-                        for path, status in media_files(library / folder):
-                            yield path.name, status.st_mtime, path
-            else:
-                self.unreadable.append(str(library))
 
-    @staticmethod
-    def from_database(library: Path, database: Path):
-        """(name, time, path) for each photo whose original is in the library: the name is the one the database gives, since
-        the file is named by an ID."""
-        db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
-        try:
-            rows = db.execute(
-                "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME "
-                "from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK where a.ZTRASHEDSTATE = 0"
-            ).fetchall()
-        finally:
-            db.close()
-        for name, taken, directory, stored_as in rows:
-            if name and taken is not None and directory is not None and stored_as:
-                original = library / "originals" / str(directory) / stored_as
-                if original.exists():
-                    yield name, taken, original
+        def library(path: Path):
+            try:
+                status = os.stat(path / "database" / "Photos.sqlite")
+            except OSError:
+                return
+            if (status.st_dev, status.st_ino) in seen:
+                return
+            seen.add((status.st_dev, status.st_ino))
+            try:
+                yield from database_originals(path)
+            except sqlite3.Error:
+                self.unreadable.append(str(path))
+
+        def skip(path: Path) -> bool:  # libraries with a database are read through it; the rest of the walk is for raw files
+            return has_database(path) or is_current_library_originals(path)
+
+        for folder in self.folders:
+            if has_database(folder):
+                yield from library(folder)
+                continue
+            for path, status, is_directory in walk(folder, skip):
+                if is_directory:
+                    if has_database(path):
+                        yield from library(path)
+                    elif path.name.endswith(".photoslibrary") and not (path / "Masters").exists():
+                        self.unreadable.append(str(path))  # a current-format library whose database is not there
+                elif stat.S_ISREG(status.st_mode) and path.suffix.lower() in MEDIA_FILES:
+                    yield path.name, status.st_mtime, path
 
     def note(self) -> Optional[str]:
         if self.unreadable:
@@ -300,7 +281,7 @@ class Libraries(ByNameAndTime):
 
 # The search specification ---------------------------------------------------------------------------------------------
 
-KINDS = ("messages", "folders", "libraries")
+KINDS = ("messages", "folders")
 
 
 def parse_search(text: str) -> List[Tuple[str, List[str]]]:
@@ -333,8 +314,6 @@ def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path) -
         folders = [messages_attachments() if path == DEFAULT else Path(path).expanduser() for path in joined[kind]]
         if kind == "messages":
             sources.append(Messages(folders))
-        elif kind == "folders":
-            sources.append(Folders(folders))
         else:
-            sources.append(Libraries(folders, default_library))
+            sources.append(Folders(folders, default_library))
     return sources

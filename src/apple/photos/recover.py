@@ -41,12 +41,11 @@ def check_open_in_photos(target: Path) -> None:
         fail(f"Photos does not have {target} open (open: {shown}). Open it in Photos, then run this again.")
 
 
-def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]], libraries: Optional[List[Path]]) -> list:
+def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]]) -> list:
     """What to search: the options if any is given, else APPLE_PHOTOS_RECOVER_SEARCH, else nothing (there are no defaults)."""
     given = [
         ("messages", ([DEFAULT] if messages else []) + [str(path) for path in messages_folder or []]),
         ("folders", [str(path) for path in folders or []]),
-        ("libraries", [str(path) for path in libraries or []]),
     ]
     given = [(kind, paths) for kind, paths in given if paths]
     if given:
@@ -56,7 +55,7 @@ def search_entries(messages: bool, messages_folder: Optional[List[Path]], folder
     except ValueError as error:
         raise typer.BadParameter(f"{SEARCH_VARIABLE}: {error}")
     if not entries:
-        raise typer.BadParameter(f"nothing to search: pass --messages, --folders or --libraries, or set {SEARCH_VARIABLE}")
+        raise typer.BadParameter(f"nothing to search: pass --messages or --folders, or set {SEARCH_VARIABLE}")
     return entries
 
 
@@ -73,11 +72,7 @@ def recover_command(
     messages_folder: Annotated[Optional[List[Path]], typer.Option(help="Search another folder of Messages attachments, as --messages; repeat for several.")] = None,
     folders: Annotated[
         Optional[List[Path]],
-        typer.Option(help="Search the raw files under a path, matching by file name and capture time: the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup. Repeat for several. A current-format Photos library's originals are skipped here (see --libraries)."),
-    ] = None,
-    libraries: Annotated[
-        Optional[List[Path]],
-        typer.Option(help="Search the Photos, iPhoto and Aperture libraries found under a path, however they store their originals. The default library is never searched. Repeat for several."),
+        typer.Option(help="Search everything under a path, however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The default library is never searched. Repeat for several."),
     ] = None,
     apply: Annotated[
         Apply,
@@ -97,19 +92,19 @@ def recover_command(
     makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
     is deleted, and nothing is changed unless --apply says so (--dry-run, or DRY_RUN=true, always wins).
 
-    You must say where to search: --messages, --folders and --libraries (each can be repeated), or the variable
-    APPLE_PHOTOS_RECOVER_SEARCH when none of them is given, which holds space-separated entries read as a shell reads
-    words, each a key or key=paths with paths separated like PATH, for example:
-    messages folders=/Volumes/icloud/photos:/Volumes/usb/loose libraries="/Volumes/My Disk/Libraries". A bare
-    messages is Messages' default folder, and messages=default:/other adds another. Places are searched in the order
-    written; with options, in the order messages, folders, libraries; the first to find an original wins.
+    You must say where to search: --messages and --folders (each can be repeated), or the variable
+    APPLE_PHOTOS_RECOVER_SEARCH when neither is given, which holds space-separated entries read as a shell reads words,
+    each a key or key=paths with paths separated like PATH, for example:
+    messages folders=/Volumes/icloud/photos:"/Volumes/My Disk/Libraries". A bare messages is Messages' default folder,
+    and messages=default:/other adds another. Places are searched in the order written; with options, messages first,
+    then folders; the first to find an original wins.
 
     Photos are imported only into the default library (--default-library, or APPLE_PHOTOS_DEFAULT_LIBRARY), and only
     while Photos has that library open; otherwise nothing is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
-    entries = search_entries(messages, messages_folder, folders, libraries)
+    entries = search_entries(messages, messages_folder, folders)
     path = find_library(default_library)
     sources = build_sources(entries, path)
     for source in sources:
