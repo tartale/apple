@@ -276,18 +276,22 @@ def hollow(folder: Path, name: str, database=None, masters=False) -> Path:
     return library
 
 
-def test_libraries_that_cannot_be_read_are_listed_one_to_a_line_with_the_reason(mac, tmp_path):
+def test_libraries_that_cannot_be_read_are_listed_one_to_a_line_grouped_by_reason(mac, tmp_path):
     placeholders(mac)
     folder = tmp_path / "libraries"
     broken = hollow(folder, "broken", b"not a database")
     empty = hollow(folder, "empty", b"")
+    also_empty = hollow(folder, "also-empty", b"")
     none = hollow(folder, "none")
     (none / "originals").mkdir()
-    result = recover("--folders", str(folder), "--format", "csv")
-    assert "3 libraries could not be read:" in result.output
-    assert f"  {empty}: the database is empty" in result.output
-    assert f"  {none}: there is no database" in result.output
-    assert f"  {broken}: the database cannot be read (" in result.output and "file is not a database" in result.output
+    lines = recover("--folders", str(folder), "--format", "csv").output.splitlines()
+    start = lines.index("4 libraries could not be read:")
+    assert lines[start + 1:start + 9] == [
+        "  [database cannot be read: file is not a database]", f"  {broken}",
+        "  [empty database]", f"  {also_empty}", f"  {empty}",
+        "  [no database]", f"  {none}",
+        lines[start + 8],  # the last line follows
+    ]
 
 
 def test_a_library_whose_database_cannot_be_read_is_searched_by_the_names_in_its_masters(mac, tmp_path):

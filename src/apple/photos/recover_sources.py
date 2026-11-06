@@ -524,7 +524,7 @@ class Folders(ByNameAndTime):
                 originals = list(database_originals(path, logical))
             except sqlite3.Error as error:
                 originals = None
-                reason = "the database is empty" if status.st_size == 0 else f"the database cannot be read ({error})"
+                reason = "empty database" if status.st_size == 0 else f"database cannot be read: {error}"
             if originals is not None:
                 self.libraries_in_folder += 1
                 for name, taken, original, original_logical in originals:
@@ -559,7 +559,7 @@ class Folders(ByNameAndTime):
                     if has_database(entry.real):
                         yield from library(entry.real, entry.logical, str(folder))
                     elif entry.logical.name.endswith(".photoslibrary") and not (entry.real / "Masters").exists():
-                        self.unreadable.append((str(entry.logical), "there is no database"))  # a current-format library without one
+                        self.unreadable.append((str(entry.logical), "no database"))  # a current-format library without one
                 else:
                     yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", str(folder), ""
 
@@ -591,7 +591,9 @@ class Folders(ByNameAndTime):
         if self.unmatched:
             lines += [f"{len(self.unmatched)} pattern{'' if len(self.unmatched) == 1 else 's'} matched no folder:"] + [f"  {pattern}" for pattern in self.unmatched]
         if self.unreadable:
-            lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"] + [f"  {library}: {reason}" for library, reason in self.unreadable]
+            lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"]
+            for reason in sorted({reason for _, reason in self.unreadable}):  # grouped by reason; sorted, since folders are read in no fixed order
+                lines += [f"  [{reason}]"] + [f"  {library}" for library in sorted(library for library, why in self.unreadable if why == reason)]
         return "\n".join(lines) or None
 
 
