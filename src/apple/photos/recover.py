@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from collections import Counter
 from datetime import datetime
 from enum import Enum
@@ -18,6 +19,7 @@ import typer
 
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
+from apple.photos.progress import Progress, duration
 from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
 from apple.photos.recover_sources import DEFAULT, Found, build_sources, import_files, parse_search
 from apple.platform import require_macos
@@ -210,7 +212,9 @@ def recover_command(
         if reason:
             fail(f"Cannot search {source.name}: {reason}.")
 
+    progress = Progress()
     if list_file is None:
+        progress.line(f"Reading the photos of {default_library} ...")
         try:
             photos = pp.library_photos(path)
         except pp.PowerPhotosError as error:
@@ -236,7 +240,13 @@ def recover_command(
 
     mapping = parse_map(map_paths)
     rows, hits, unreachable = [], [], {}
+    looked, started = 0, time.monotonic()
+    if items:
+        for source in sources:
+            source.prepare(progress)
     for item in items:
+        looked += 1
+        progress.update(f"Looking up originals: {looked}/{len(items)} ({len(hits)} found)")
         key = item["key"]
         found = None
         if item.get("files"):  # the list says where the original is
@@ -254,6 +264,8 @@ def recover_command(
             "shared": item["shared"], "source": found.source if found else "none",
             "root": found.root if found else "", "library": found.library if found else "", "files": found.files if found else [],
         })
+    if items:
+        progress.line(f"Looked up {len(items)} photos: {len(hits)} found ({duration(time.monotonic() - started)})")
     print_recover(rows, format)
     if unreachable:
         roots = ", ".join(f"{root} ({count(n, 'photo')})" for root, n in sorted(unreachable.items()))
@@ -274,6 +286,7 @@ def recover_command(
             else:
                 go = typer.confirm(f"Import {len(hits)} photos into the library Photos has open (it should be {default_library})?", default=False)
         if go:
+            progress.line(f"Importing {len(hits)} photos into {default_library}; Photos shows no progress, so this can take a while ...")
             try:
                 with pp.one_at_a_time():
                     try:

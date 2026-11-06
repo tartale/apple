@@ -9,11 +9,13 @@ import shlex
 import sqlite3
 import stat
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from apple.photos import powerphotos as pp
+from apple.photos.progress import Progress, duration
 
 MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
 HIDDEN_DIRECTORIES = ".HFS+ Private Directory Data\r"
@@ -43,6 +45,9 @@ class Source:
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
         """Where the original of the photo (key is (date, size, file name)) can be had from, or None."""
         raise NotImplementedError
+
+    def prepare(self, progress: Progress) -> None:
+        """Gets ready to look photos up (a source that must read many files first does it here, reporting on progress)."""
 
     def note(self) -> Optional[str]:
         """Something worth saying once the search is done (libraries that could not be read), or None."""
@@ -170,17 +175,28 @@ class ByNameAndTime(Source):
 
     def __init__(self):
         self._index = None
+        self.progress = Progress()
+        self.searched = ""  # what is being read now, for the progress text
 
     def files(self):
         """(name, time, path, kind, root, library) of each file that could be an original: the name it is known by, its
         time, where it is, what kind of place it is in, the path that was searched and the library that holds it."""
         raise NotImplementedError
 
+    def prepare(self, progress: Progress) -> None:
+        self.progress = progress
+        self.index()
+
     def index(self) -> dict:
         if self._index is None:
             self._index = {}
+            count, started = 0, time.monotonic()
             for name, modified, path, kind, root, library in self.files():
                 self._index.setdefault(name.lower(), []).append((modified, path, kind, root, library))
+                count += 1
+                if count % 100 == 0:
+                    self.progress.update(f"Indexing {self.searched}: {count:,} files so far ({duration(time.monotonic() - started)})")
+            self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
         return self._index
 
     def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
@@ -256,6 +272,7 @@ class Folders(ByNameAndTime):
             if (status.st_dev, status.st_ino) in seen:
                 return
             seen.add((status.st_dev, status.st_ino))
+            self.progress.update(f"Indexing {self.searched}: reading library {path}")
             try:
                 for name, taken, original in database_originals(path):
                     yield name, taken, original, "library", root, str(path)
@@ -266,6 +283,8 @@ class Folders(ByNameAndTime):
             return has_database(path) or is_current_library_originals(path)
 
         for folder in self.folders:
+            self.searched = str(folder)
+            self.progress.line(f"Searching {folder} ...")
             if has_database(folder):
                 yield from library(folder, str(folder))
                 continue
