@@ -151,7 +151,15 @@ def recover_command(
         raise typer.BadParameter("--list cannot be used with Messages: it finds files by an ID that only the library holds")
     if default_library is None and (list_file is None or mode != Apply.no):
         raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)" + ("" if list_file is None else " to import"))
-    path = find_library(default_library) if default_library else Path("/nonexistent/default.photoslibrary")
+    # The library is looked up only when it is needed: to read the missing photos, or to import. A name is looked up in
+    # PowerPhotos, which exists only on a Mac, so a search from a --list elsewhere (a NAS) must not do it.
+    needed = list_file is None or mode != Apply.no
+    if default_library and Path(default_library).is_dir():
+        path = Path(default_library)
+    elif default_library and needed:
+        path = find_library(default_library)
+    else:
+        path = Path("/nonexistent/default.photoslibrary")
     sources = build_sources(entries, path)
     for source in sources:
         reason = source.problem()
