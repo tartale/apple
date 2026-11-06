@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -59,15 +60,53 @@ def search_entries(messages: bool, messages_folder: Optional[List[Path]], folder
     return entries
 
 
+def read_list(text: str) -> List[dict]:
+    """The photos to look for, from csv or json with a name and a date column (the output of this command, or of `apple
+    photos diff` with its date and name columns): dicts with name, date, hidden, shared, and file when the list has one
+    and it was found somewhere."""
+    stripped = text.strip()
+    try:
+        if stripped.startswith("["):
+            records = [dict(record) for record in json.loads(stripped)]
+        else:
+            records = list(csv.DictReader(stripped.splitlines()))
+    except (ValueError, TypeError, csv.Error):
+        raise typer.BadParameter("--list is not csv or json from `apple photos recover` or `apple photos diff`")
+    items = []
+    for record in records:
+        if "name" not in record or "date" not in record:
+            raise typer.BadParameter("--list needs a name and a date column")
+        items.append({
+            "name": str(record["name"]), "date": str(record["date"]), "hidden": is_true(record.get("hidden")),
+            "shared": is_true(record.get("shared")), "file": str(record.get("file") or ""), "source": str(record.get("source") or ""),
+        })
+    return items
+
+
+def is_true(value) -> bool:
+    return value is True or str(value).strip().lower() == "true"
+
+
 def recover_command(
     default_library: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
             help="The default library, the one whose missing originals are looked for and the only one photos are imported into: "
-            "a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY.",
+            "a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. "
+            "Needed unless --list says which photos to look for and nothing is imported.",
         ),
-    ],
+    ] = None,
+    list_file: Annotated[
+        Optional[str],
+        typer.Option(
+            "--list",
+            help="Look for the photos in this csv or json file (- for stdin) instead of reading the default library, so the "
+            "search can run where the library is not mounted. It needs name and date columns: the output of this command or of "
+            "`apple photos diff --format csv` will do. A row with a file that exists here counts as found there. Not with --messages, "
+            "which finds files by an ID that only the library holds.",
+        ),
+    ] = None,
     messages: Annotated[bool, typer.Option("--messages", help="Search Messages' attachments (~/Library/Messages/Attachments; Terminal needs Full Disk Access): the files of photos shared with you, found by the ID in the library.")] = False,
     messages_folder: Annotated[Optional[List[Path]], typer.Option(help="Search another folder of Messages attachments, as --messages; repeat for several.")] = None,
     folders: Annotated[
@@ -105,38 +144,62 @@ def recover_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     entries = search_entries(messages, messages_folder, folders)
-    path = find_library(default_library)
+    mode = Apply.no if is_dry_run(dry_run) else apply
+    if list_file is not None and any(kind == "messages" for kind, _ in entries):
+        raise typer.BadParameter("--list cannot be used with Messages: it finds files by an ID that only the library holds")
+    if default_library is None and (list_file is None or mode != Apply.no):
+        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)" + ("" if list_file is None else " to import"))
+    path = find_library(default_library) if default_library else Path("/nonexistent/default.photoslibrary")
     sources = build_sources(entries, path)
     for source in sources:
         reason = source.problem()
         if reason:
             fail(f"Cannot search {source.name}: {reason}.")
-    try:
-        photos = pp.library_photos(path)
-    except pp.PowerPhotosError as error:
-        fail(str(error))
 
-    wanted = {}
-    for counted in (photos.visible, photos.hidden):
-        for key in pp.of_media(within(counted, since, until), media.value):
-            wanted[key] = key in photos.hidden
+    if list_file is None:
+        try:
+            photos = pp.library_photos(path)
+        except pp.PowerPhotosError as error:
+            fail(str(error))
+        wanted = {}
+        for counted in (photos.visible, photos.hidden):
+            for key in pp.of_media(within(counted, since, until), media.value):
+                wanted[key] = key in photos.hidden
+        items = [
+            {"key": key, "hidden": wanted[key], "shared": key in photos.shared, "file": "", "source": ""}
+            for key in sorted(wanted) if photos.original_missing(key)
+        ]
+    else:
+        photos = None
+        items = []
+        for entry in read_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")):
+            key = (entry["date"], "0", entry["name"])
+            if (since and entry["date"][:10] < since.date().isoformat()) or (until and entry["date"][:10] > until.date().isoformat()):
+                continue
+            if not pp.of_media(Counter({key: 1}), media.value):
+                continue
+            items.append({"key": key, **{name: entry[name] for name in ("hidden", "shared", "file", "source")}})
+
     rows, hits = [], []
-    for key in sorted(wanted):
-        if not photos.original_missing(key):
-            continue
-        found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
+    for item in items:
+        key = item["key"]
+        found = None
+        if item["file"] and Path(item["file"]).exists():  # the list already says where it is, and it can be reached from here
+            main = Path(item["file"])
+            found = Found(item["source"] or "list", [str(main)], main.stat().st_size)
+        else:
+            found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
         if found:
             hits.append(found)
         rows.append({
-            "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": wanted[key],
-            "shared": key in photos.shared, "source": found.source if found else "none",
+            "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": item["hidden"],
+            "shared": item["shared"], "source": found.source if found else "none",
             "file": found.files[0] if found else "",
         })
     print_recover(rows, format)
     for source in sources:
         if source.note():
             typer.echo(source.note(), err=True)
-    mode = Apply.no if is_dry_run(dry_run) else apply
     imported = errors = already = 0
     if hits and mode != Apply.no:
         require_macos()
