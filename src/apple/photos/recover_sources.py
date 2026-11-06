@@ -524,7 +524,7 @@ class Folders(ByNameAndTime):
                 originals = list(database_originals(path, logical))
             except sqlite3.Error as error:
                 originals = None
-                reason = "empty database" if status.st_size == 0 else f"database cannot be read: {error}"
+                reason = "empty database" if status.st_size == 0 else f"database read error: {error}"
             if originals is not None:
                 self.libraries_in_folder += 1
                 for name, taken, original, original_logical in originals:

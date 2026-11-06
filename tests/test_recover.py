@@ -287,7 +287,7 @@ def test_libraries_that_cannot_be_read_are_listed_one_to_a_line_grouped_by_reaso
     lines = recover("--folders", str(folder), "--format", "csv").output.splitlines()
     start = lines.index("4 libraries could not be read:")
     assert lines[start + 1:start + 9] == [
-        "  [database cannot be read: file is not a database]", f"  {broken}",
+        "  [database read error: file is not a database]", f"  {broken}",
         "  [empty database]", f"  {also_empty}", f"  {empty}",
         "  [no database]", f"  {none}",
         lines[start + 8],  # the last line follows
