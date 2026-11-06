@@ -346,7 +346,8 @@ def parse_search(text: str) -> List[Tuple[str, List[str]]]:
     for word in shlex.split(text):
         kind, equals, value = word.partition("=")
         if kind not in KINDS:
-            raise ValueError(f"unknown place to search {kind!r}; use {', '.join(KINDS)}")
+            hint = "" if equals else f" (if {kind!r} is part of a path with a space in it, put quotes around that path, such as folders='/a b')"
+            raise ValueError(f"unknown place to search {kind!r}; use {', '.join(KINDS)}{hint}")
         paths = [entry for entry in value.split(os.pathsep) if entry] if equals else [DEFAULT]
         if equals and not paths:
             raise ValueError(f"{kind}= names no path")
