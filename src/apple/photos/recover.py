@@ -43,7 +43,8 @@ def check_open_in_photos(target: Path) -> None:
 
 
 def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]]) -> list:
-    """What to search: the options if any is given, else APPLE_PHOTOS_RECOVER_SEARCH, else nothing (there are no defaults)."""
+    """What to search: the options if any is given, else APPLE_PHOTOS_RECOVER_SEARCH, else nothing (there are no defaults,
+    and with nothing to search the command just lists the photos whose original is missing)."""
     given = [
         ("messages", ([DEFAULT] if messages else []) + [str(path) for path in messages_folder or []]),
         ("folders", [str(path) for path in folders or []]),
@@ -55,8 +56,6 @@ def search_entries(messages: bool, messages_folder: Optional[List[Path]], folder
         entries = parse_search(os.environ.get(SEARCH_VARIABLE, ""))
     except ValueError as error:
         raise typer.BadParameter(f"{SEARCH_VARIABLE}: {error}")
-    if not entries:
-        raise typer.BadParameter(f"nothing to search: pass --messages or --folders, or set {SEARCH_VARIABLE}")
     return entries
 
 
@@ -131,9 +130,10 @@ def recover_command(
     makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
     is deleted, and nothing is changed unless --apply says so (--dry-run, or DRY_RUN=true, always wins).
 
-    You must say where to search: --messages and --folders (each can be repeated), or the variable
-    APPLE_PHOTOS_RECOVER_SEARCH when neither is given, which holds space-separated entries read as a shell reads words,
-    each a key or key=paths with paths separated like PATH, for example:
+    Say where to search with --messages and --folders (each can be repeated), or the variable
+    APPLE_PHOTOS_RECOVER_SEARCH when neither is given; with neither, nothing is searched and the command only lists the
+    photos whose original is missing, which is what to save as a --list for a search elsewhere. The variable holds
+    space-separated entries read as a shell reads words, each a key or key=paths with paths separated like PATH, for example:
     messages folders=/Volumes/icloud/photos:"/Volumes/My Disk/Libraries". A bare messages is Messages' default folder,
     and messages=default:/other adds another. Places are searched in the order written; with options, messages first,
     then folders; the first to find an original wins.
@@ -144,6 +144,8 @@ def recover_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     entries = search_entries(messages, messages_folder, folders)
+    if not entries:
+        typer.echo(f"Not searching anywhere, so no original is looked for: pass --messages or --folders, or set {SEARCH_VARIABLE}.", err=True)
     mode = Apply.no if is_dry_run(dry_run) else apply
     if list_file is not None and any(kind == "messages" for kind, _ in entries):
         raise typer.BadParameter("--list cannot be used with Messages: it finds files by an ID that only the library holds")
