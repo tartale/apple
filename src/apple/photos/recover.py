@@ -237,7 +237,7 @@ def recover_command(
     skipped = missing - imported - errors  # no original was found, or the answer was no
     typer.echo(
         f"Imported {imported} of {missing} missing files; {count(errors, 'error')}, {skipped} skipped"
-        + (" [dry run]" if mode == Apply.no and hits else ""),
+        + (" [list-only]" if not entries else " [dry run]" if mode == Apply.no and hits else ""),
         err=True,
     )
     if errors:
