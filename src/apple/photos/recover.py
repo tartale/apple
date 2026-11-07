@@ -133,9 +133,9 @@ def recover_command(
         Optional[str],
         typer.Option(
             "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
-            help="The default library, the one whose missing originals are looked for and the only one photos are imported into: "
-            "a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. "
-            "Needed unless --list says which photos to look for and nothing is imported.",
+            help="The default library, the one whose missing originals are looked for (never searched itself): a name from "
+            "`./apple photos libraries`, or the path of a .photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. "
+            "Not needed with --list.",
         ),
     ] = None,
     list_file: Annotated[
@@ -144,9 +144,8 @@ def recover_command(
             "--list",
             help="Look for the photos in this csv or json file (- for stdin) instead of reading the default library, so the "
             "search can run where the library is not mounted. It needs name and date columns: the output of this command or of "
-            "`apple photos diff --format csv` will do. A row that says where its original is (this command's output does) is "
-            "used as it is, once --map has translated the paths, without searching; a row whose files cannot be reached here is "
-            "searched for only if you gave places to search. Not with --messages, which finds files by an ID that only the library holds.",
+            "`apple photos diff --format csv` will do; any other column is ignored. Not with --messages, which finds files by "
+            "an ID that only the library holds.",
         ),
     ] = None,
     messages: Annotated[bool, typer.Option("--messages", help="Search Messages' attachments (~/Library/Messages/Attachments; Terminal needs Full Disk Access): the files of photos shared with you, found by the ID in the library.")] = False,
@@ -157,7 +156,7 @@ def recover_command(
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
-        typer.Option("--map", help="With --list: OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
+        typer.Option("--map", help="OLD=NEW, a translation of the start of the places to search, for one set of places shared by machines that mount them differently, such as /volume1=/Volumes. Repeat for several; for each place the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A place that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words."),
     ] = None,
     snapshots: Annotated[
         str,
@@ -167,23 +166,16 @@ def recover_command(
         bool,
         typer.Option("--refresh", help="Read the places again instead of reusing what an earlier run saved: library databases are kept by their size and modification time, and Time Machine backup folders by the names of their snapshots. The new result is saved."),
     ] = False,
-    apply: Annotated[
-        Apply,
-        typer.Option(help="Import what was found into the library Photos has open: yes, no (only report), or ask once in the terminal."),
-    ] = Apply.no,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Import nothing, as --apply no. Same as DRY_RUN=true.")] = False,
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo.")] = DiffFormat.text,
 ) -> None:
-    """Find where the originals of photos a library does not store can be had from, and optionally import them.
+    """Find where the originals of photos a library does not store can be had from. Changes nothing.
 
     A photo whose original is not in the library cannot be listed or copied by PowerPhotos. This lists each one (its
-    `missing` column in `apple photos diff`) with where an original was found, or `none`. With --apply yes (or ask),
-    the files found are imported into the library that Photos has open, so open the library in Photos first. The import
-    makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
-    is deleted, and nothing is changed unless --apply says so (--dry-run, or DRY_RUN=true, always wins).
+    `missing` column in `apple photos diff`) with where an original was found, or `none`. Save the output (--format csv)
+    and give it to `apple photos import-found`, on this machine or another, to import the files found.
 
     Say where to search with --messages and --folders (each can be repeated), or the variable
     APPLE_PHOTOS_RECOVER_SEARCH when neither is given; with neither, nothing is searched and the command only lists the
@@ -192,43 +184,33 @@ def recover_command(
     messages folders=/Volumes/icloud/photos:"/Volumes/My Disk/Libraries". A bare messages is Messages' default folder,
     and messages=default:/other adds another. Places are searched in the order written; with options, messages first,
     then folders; the first to find an original wins.
-
-    Photos are imported only into the default library (--default-library, or APPLE_PHOTOS_DEFAULT_LIBRARY), and only
-    while Photos has that library open; otherwise nothing is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     entries = search_entries(messages, messages_folder, folders)
     if not entries:
         typer.echo(f"Not searching anywhere, so no original is looked for: pass --messages or --folders, or set {SEARCH_VARIABLE}.", err=True)
-    mode = Apply.no if is_dry_run(dry_run) else apply
     if list_file is not None and any(kind == "messages" for kind, _ in entries):
         raise typer.BadParameter("--list cannot be used with Messages: it finds files by an ID that only the library holds")
-    if default_library is None and (list_file is None or mode != Apply.no):
-        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)" + ("" if list_file is None else " to import"))
-    # The library is looked up only when it is needed: to read the missing photos, or to import. A name is looked up in
-    # PowerPhotos, which exists only on a Mac, so a search from a --list elsewhere (a NAS) must not do it.
-    needed = list_file is None or mode != Apply.no
+    if default_library is None and list_file is None:
+        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY) unless --list says which photos to look for")
+    # The library is looked up only when it is needed to read the missing photos. A name is looked up in PowerPhotos, which
+    # exists only on a Mac, so a search from a --list elsewhere (a NAS) must not do it.
     if default_library and Path(default_library).is_dir():
         path = Path(default_library)
-    elif default_library and needed:
+    elif default_library and list_file is None:
         path = find_library(default_library)
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if snapshots not in SNAPSHOTS:
         raise typer.BadParameter(f"--snapshots must be one of {', '.join(SNAPSHOTS)}")
-    # The translations that make a list's paths reachable make the places to search reachable too, so that one set of
-    # settings (APPLE_PHOTOS_RECOVER_SEARCH and APPLE_PHOTOS_RECOVER_MAPPINGS) fits every machine.
+    # The translations that make the places reachable on this machine, so that one set of settings
+    # (APPLE_PHOTOS_RECOVER_SEARCH and APPLE_PHOTOS_RECOVER_MAPPINGS) fits every machine.
     mapping = parse_map(map_paths)
     entries = [(kind, [translate(place, mapping) for place in places] if kind == "folders" else places) for kind, places in entries]
     sources = build_sources(entries, path, snapshots, Cache(read=not refresh))
     for source in sources:
         reason = source.problem()
-        if reason and list_file is not None:  # the list says where the files are; searching is only for what it cannot reach
-            dropped = source.drop_missing()
-            if dropped:
-                typer.echo("Not searching these, which do not exist here:\n" + "\n".join(f"  {place}" for place in dropped), err=True)
-            reason = source.problem()
         if reason:
             fail(f"Cannot search {source.name}: {reason}.")
 
@@ -252,57 +234,116 @@ def recover_command(
         items = []
         for entry in read_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")):
             key = (entry["date"], "0", entry["name"])
-            if (since and entry["date"][:10] < since.date().isoformat()) or (until and entry["date"][:10] > until.date().isoformat()):
+            if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
                 continue
-            if not pp.of_media(Counter({key: 1}), media.value):
-                continue
-            items.append({"key": key, **{name: entry[name] for name in ("hidden", "shared", "source", "root", "library", "files")}})
+            items.append({"key": key, "hidden": entry["hidden"], "shared": entry["shared"]})
 
-    rows, hits, unreachable = [], [], {}
+    rows, hits = [], []
     looked, started = 0, time.monotonic()
-    prepared = [False]
-
-    def prepare_sources() -> None:
-        """Index the places to search. With a list this waits until a row needs it: a list whose files can all be reached
-        needs no search at all."""
-        if not prepared[0]:
-            prepared[0] = True
-            for source in sources:
-                source.prepare(progress)
-
-    if items and list_file is None:
-        prepare_sources()
+    for source in sources:
+        source.prepare(progress)
     for item in items:
         looked += 1
         progress.update(f"Looking up originals: {looked}/{len(items)} ({len(hits)} found)")
         key = item["key"]
-        found = None
-        if item.get("files"):  # the list says where the original is
-            files = [translate(f, mapping) for f in item["files"]]
-            if all(Path(f).exists() for f in files):
-                found = Found(item["source"] or "list", files, Path(files[0]).stat().st_size, item.get("root", ""), item.get("library", ""))
-            else:
-                unreachable[item.get("root") or str(Path(item["files"][0]).parent)] = unreachable.get(item.get("root") or str(Path(item["files"][0]).parent), 0) + 1
-        if not found:
-            prepare_sources()
-            found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
+        found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
         if found:
             hits.append(found)
-        rows.append({
-            "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": item["hidden"],
-            "shared": item["shared"], "source": found.source if found else "none",
-            "root": found.root if found else "", "library": found.library if found else "", "files": found.files if found else [],
-        })
+        rows.append(found_row(key, item, found))
     if items:
         progress.line(f"Looked up {len(items)} photos: {len(hits)} found ({duration(time.monotonic() - started)})")
+    print_recover(rows, format)
+    for source in sources:
+        if source.note():
+            typer.echo(source.note(), err=True)
+    typer.echo(f"Found {len(hits)} of {len(rows)} missing files" + (" [list only]" if not entries else ""), err=True)
+
+
+def in_range(date: str, since: Optional[datetime], until: Optional[datetime]) -> bool:
+    return not ((since and date[:10] < since.date().isoformat()) or (until and date[:10] > until.date().isoformat()))
+
+
+def found_row(key: tuple, item: dict, found: Optional[Found]) -> dict:
+    return {
+        "date": key[0], "size": found.size if found else None, "name": key[2], "hidden": item["hidden"],
+        "shared": item["shared"], "source": found.source if found else "none",
+        "root": found.root if found else "", "library": found.library if found else "", "files": found.files if found else [],
+    }
+
+
+def import_found_command(
+    list_file: Annotated[
+        str,
+        typer.Argument(
+            metavar="LIST",
+            help="The csv or json (- for stdin) that `apple photos recover --format csv` wrote: each row says where its original "
+            "is (the source, root, library and files columns). Nothing is searched; a row with no file is skipped.",
+        ),
+    ],
+    default_library: Annotated[
+        Optional[str],
+        typer.Option(
+            "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
+            help="The library to import into, the only one: a name from `./apple photos libraries`, or the path of a "
+            ".photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. Photos must have it open.",
+        ),
+    ] = None,
+    map_paths: Annotated[
+        Optional[List[str]],
+        typer.Option("--map", help="OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
+    ] = None,
+    apply: Annotated[
+        Apply,
+        typer.Option(help="Import the files into the library Photos has open: yes, no (only report what would be), or ask once in the terminal."),
+    ] = Apply.no,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Import nothing, as --apply no. Same as DRY_RUN=true.")] = False,
+    since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
+    until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
+    media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
+    format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo.")] = DiffFormat.text,
+) -> None:
+    """Import the originals that `apple photos recover` found, without searching.
+
+    Reads the list recover wrote, translates its paths with --map (or APPLE_PHOTOS_RECOVER_MAPPINGS) to where the files
+    are on this machine, and with --apply yes (or ask) imports them into the library that Photos has open, so open the
+    library in Photos first. The import makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts
+    it once the copy is there. Nothing is deleted, and nothing is changed unless --apply says so (--dry-run, or
+    DRY_RUN=true, always wins). Photos are imported only into the default library, and only while Photos has it open.
+    """
+    if since and until and until < since:
+        raise typer.BadParameter("--until is before --since")
+    mode = Apply.no if is_dry_run(dry_run) else apply
+    if default_library is None and mode != Apply.no:
+        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY) to import")
+    if default_library and Path(default_library).is_dir():
+        path = Path(default_library)
+    elif default_library and mode != Apply.no:
+        path = find_library(default_library)
+    else:
+        path = Path("/nonexistent/default.photoslibrary")
+    mapping = parse_map(map_paths)
+    progress = Progress()
+    rows, hits, unreachable = [], [], {}
+    for entry in read_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")):
+        key = (entry["date"], "0", entry["name"])
+        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
+            continue
+        found = None
+        if entry["files"]:
+            files = [translate(f, mapping) for f in entry["files"]]
+            if all(Path(f).exists() for f in files):
+                found = Found(entry["source"] or "list", files, Path(files[0]).stat().st_size, entry["root"], entry["library"])
+            else:
+                where = entry["root"] or str(Path(entry["files"][0]).parent)
+                unreachable[where] = unreachable.get(where, 0) + 1
+        if found:
+            hits.append(found)
+        rows.append(found_row(key, entry, found))
     print_recover(rows, format)
     if unreachable:
         roots = ", ".join(f"{root} ({count(n, 'photo')})" for root, n in sorted(unreachable.items()))
         typer.echo(f"The list says where {sum(unreachable.values())} originals are, but they cannot be reached from here: {roots}.", err=True)
         typer.echo("Translate the start of those paths to where they are here, for example --map " + sorted(unreachable)[0] + "=<path here>; the first --map in the order given that matches a path is used.", err=True)
-    for source in sources:
-        if source.note():
-            typer.echo(source.note(), err=True)
     imported = errors = already = 0
     if hits and mode != Apply.no:
         require_macos()
@@ -331,7 +372,7 @@ def recover_command(
     skipped = missing - imported - errors  # no original was found, or the answer was no
     typer.echo(
         f"Imported {imported} of {missing} missing files; {count(errors, 'error')}, {skipped} skipped"
-        + (" [dry run]" if mode == Apply.no and hits else " [list only]" if not entries and not hits else ""),
+        + (" [dry run]" if mode == Apply.no and hits else ""),
         err=True,
     )
     if errors:
