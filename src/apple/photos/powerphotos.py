@@ -165,9 +165,9 @@ class Photos(NamedTuple):
     members of a burst. files says where each item's original should be, as paths below the library. shared holds the
     keys of the items that came from Messages (Shared with You): until they are saved to the library, Photos keeps a
     placeholder with no original; identifiers maps each of those keys to its Messages identifier, which names the attachment
-    folder in Messages. superseded counts the placeholders left out of visible and hidden because the library
-    also holds a real photo with the same file name taken within two days of it (an imported copy): the picture is
-    there, and the placeholder can never be saved."""
+    folder in Messages. superseded counts the stand-ins left out of visible and hidden: shared placeholders, and hidden items whose original file is gone, that
+    the library also has a real visible photo for with the same file name taken within two days (an imported copy). The
+    picture is there, and the stand-in can never be saved."""
     library: Path
     visible: Counter
     hidden: Counter
@@ -195,15 +195,20 @@ def library_photos(library: Path) -> Photos:
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
     visible, hidden, bursts, files, shared, superseded, identifiers = Counter(), Counter(), Counter(), {}, set(), Counter(), {}
-    real = {}  # lower-case file name -> capture times (seconds) of the photos that have their original
-    for _, size, name, *_, taken in rows:
-        if size and taken is not None:
+    real = {}  # lower-case file name -> capture times (seconds) of the visible photos that have their original
+    for _, size, name, is_hidden, *_, taken in rows:
+        if size and taken is not None and not is_hidden:
             real.setdefault(name.lower(), []).append(taken)
+    has_originals = (library / "originals").is_dir()
     for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared, taken in rows:
         key = (when, str(size), name)
-        if is_shared and not size and taken is not None and any(abs(taken - other) < 172800 for other in real.get(name.lower(), [])):
-            superseded[key] += 1
-            continue
+        if taken is not None and any(abs(taken - other) < 172800 for other in real.get(name.lower(), [])):
+            # a stand-in without its original (a shared placeholder, or a hidden item whose file is gone) whose picture
+            # has been imported as a real photo
+            no_file = has_originals and directory is not None and stored_as and not (library / "originals" / str(directory) / stored_as).exists()
+            if (is_shared and not size) or (is_hidden and no_file):
+                superseded[key] += 1
+                continue
         (hidden if is_hidden else visible)[key] += 1
         if is_hidden and is_burst:
             bursts[key] += 1
