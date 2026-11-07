@@ -91,6 +91,15 @@ def read_list(text: str) -> List[dict]:
     return items
 
 
+def load_list(list_file: str) -> List[dict]:
+    """The rows of the list in the file (- for stdin)."""
+    try:
+        text = sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")
+    except OSError as error:
+        fail(f"Cannot read {list_file}: {error.strerror or error}.")
+    return read_list(text)
+
+
 def parse_map(entries: Optional[List[str]]) -> List[tuple]:
     """[(old, new)] in the order given. With no --map, APPLE_PHOTOS_RECOVER_MAPPINGS: OLD=NEW entries separated by spaces and
     read as a shell reads words, so that one value can be shared by the machines (a path with a space is quoted)."""
@@ -118,10 +127,18 @@ def translate(path: str, mapping: List[tuple]) -> str:
     for old, new in mapping:
         if path == old or path.startswith(old.rstrip("/") + "/"):
             translated = new + path[len(old.rstrip("/")):]
-            if Path(translated).exists() or not Path(path).exists():
+            if exists(translated) or not exists(path):
                 return translated
             break
     return path
+
+
+def exists(path: str) -> bool:
+    """Whether the path exists; one that cannot be looked at (permission denied) is taken as not existing."""
+    try:
+        return Path(path).exists()
+    except PermissionError:
+        return False
 
 
 def is_true(value) -> bool:
@@ -256,7 +273,7 @@ def find_command(
 
     progress = Progress()
     items = []
-    for entry in read_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")):
+    for entry in load_list(list_file):
         key = (entry["date"], "0", entry["name"])
         if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
             continue
@@ -347,17 +364,23 @@ def import_found_command(
         path = Path("/nonexistent/default.photoslibrary")
     mapping = parse_map(map_paths)
     progress = Progress()
-    rows, hits, unreachable = [], [], {}
-    for entry in read_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8")):
+    rows, hits, unreachable, denied = [], [], {}, []
+    for entry in load_list(list_file):
         key = (entry["date"], "0", entry["name"])
         if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
             continue
         found = None
         if entry["files"]:
             files = [translate(f, mapping) for f in entry["files"]]
-            if all(Path(f).exists() for f in files):
-                found = Found(entry["source"] or "list", files, Path(files[0]).stat().st_size, entry["root"], entry["library"])
-            else:
+            try:
+                reachable = all(Path(f).exists() for f in files)
+                size = Path(files[0]).stat().st_size if reachable else 0
+            except PermissionError as error:
+                denied.append(str(error.filename or files[0]))
+                reachable = None
+            if reachable:
+                found = Found(entry["source"] or "list", files, size, entry["root"], entry["library"])
+            elif reachable is not None:
                 where = entry["root"] or str(Path(entry["files"][0]).parent)
                 unreachable[where] = unreachable.get(where, 0) + 1
         if found:
@@ -368,7 +391,10 @@ def import_found_command(
         roots = ", ".join(f"{root} ({count(n, 'photo')})" for root, n in sorted(unreachable.items()))
         typer.echo(f"The list says where {sum(unreachable.values())} originals are, but they cannot be reached from here: {roots}.", err=True)
         typer.echo("Translate the start of those paths to where they are here, for example --map " + sorted(unreachable)[0] + "=<path here>; the first --map in the order given that matches a path is used.", err=True)
-    imported = errors = already = 0
+    if denied:
+        typer.echo(f"{len(denied)} file{'' if len(denied) == 1 else 's'} cannot be read (permission denied), so nothing was imported for them:\n" + "\n".join(f"  {path}" for path in denied), err=True)
+    imported = already = 0
+    errors = len(denied)
     if hits and mode != Apply.no:
         require_macos()
         check_open_in_photos(path)

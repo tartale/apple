@@ -1133,3 +1133,66 @@ def test_importing_a_list_searches_nothing(mac, tmp_path, monkeypatch):
     monkeypatch.setattr(recover_module, "build_sources", lambda *a, **k: pytest.fail("nothing is searched"))
     result = import_found(listing, "--map", f"/nas={tmp_path}/mac", default=None)
     assert result.exit_code == 0 and "Imported 0 of 1 missing files" in result.output
+
+
+# Permission errors --------------------------------------------------------------------------------------------------------
+
+needs_a_user = pytest.mark.skipif(os.geteuid() == 0, reason="root can read what is locked")
+
+
+@pytest.fixture
+def locked(tmp_path):
+    """Makes paths unreadable (and restores them for the cleanup)."""
+    paths = []
+
+    def lock(path: Path) -> Path:
+        path.chmod(0)
+        paths.append(path)
+        return path
+
+    yield lock
+    for path in paths:
+        path.chmod(0o755)
+
+
+@needs_a_user
+def test_a_folder_that_cannot_be_listed_is_said_and_the_rest_is_searched(tmp_path, locked):
+    make_file(tmp_path / "search" / "ok" / "one.heic")
+    (tmp_path / "search" / "private").mkdir()
+    locked(tmp_path / "search" / "private")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,"], header="date,name,hidden,shared,identifier")
+    for _ in range(2):  # the second time the rest of the folder is cached, and the locked one is said again
+        result = runner.invoke(app, ["photos", "find", str(listing), "--folders", str(tmp_path / "search"), "--format", "csv"])
+        assert rows_of(result)[0]["source"] == "folder"
+        assert "1 folder could not be searched (permission denied):" in result.output and str(tmp_path / "search" / "private") in result.output
+
+
+@needs_a_user
+def test_messages_attachments_that_cannot_be_read_are_an_error_naming_full_disk_access(tmp_path, locked, monkeypatch):
+    folder = tmp_path / "Attachments"
+    folder.mkdir()
+    monkeypatch.setattr(rs, "messages_attachments", lambda: folder)  # Messages' own folder, which a Terminal without Full Disk Access cannot read
+    locked(folder)
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,at_1"], header="date,name,hidden,shared,identifier")
+    result = runner.invoke(app, ["photos", "find", str(listing), "--messages"])
+    words = " ".join(result.output.replace("│", " ").split())  # the error is wrapped in a box
+    assert result.exit_code != 0 and "permission denied" in words and "Full Disk Access" in words
+
+
+@needs_a_user
+def test_a_list_that_cannot_be_read_is_an_error_not_a_traceback(tmp_path, locked):
+    listing = locked(write_list(tmp_path / "l.csv", [f"{WHEN},one.heic"], header="date,name"))
+    for command in (["find", str(listing), "--folders", str(tmp_path)], ["import", str(listing)]):
+        result = runner.invoke(app, ["photos", *command])
+        assert result.exit_code == 1 and "Cannot read" in result.output and "Traceback" not in result.output
+
+
+@needs_a_user
+def test_a_file_that_cannot_be_read_is_an_error_and_the_others_are_still_looked_at(tmp_path, locked):
+    ok = make_file(tmp_path / "ok" / "one.heic")
+    secret = make_file(tmp_path / "private" / "two.heic", LATER)
+    locked(tmp_path / "private")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,{tmp_path}/ok,,{ok}", f"{LATER},two.heic,false,true,folder,{tmp_path}/private,,{secret}"])
+    result = import_found(listing, "--format", "csv", default=None)
+    assert result.exit_code == 1 and "1 file cannot be read (permission denied)" in result.output and str(secret) in result.output
+    assert [r["source"] for r in rows_of(result)] == ["folder", "none"] and "1 error" in result.output

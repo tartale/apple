@@ -248,6 +248,7 @@ def walk(
     listings: Optional[dict] = None,
     remember: Optional[dict] = None,
     counts: Optional[dict] = None,
+    denied: Callable[[str], None] = lambda path: None,
 ):
     """Every directory and photo or video file under root, as Entry values in no particular order. Several directories are
     read at once. On Linux Time Machine's linked folders are followed, each real folder once however many snapshots link to
@@ -260,7 +261,8 @@ def walk(
     listings (what an earlier walk remembered, or {}) and remember (a dict to fill, to be saved for the next walk) make a
     walk of an ordinary folder quicker: a directory whose modification time is what it was is not listed again, only its
     subdirectories are looked at. They are not used for Time Machine backups, whose directories are linked or chosen by
-    snapshot. counts, if given, is filled in with how many directories were 'reused' and how many 'read'."""
+    snapshot. counts, if given, is filled in with how many directories were 'reused' and how many 'read'. denied(path) is
+    told of each directory that exists but may not be listed (permission denied); it is skipped."""
     volume = volume_of(root)
     try:
         top = os.lstat(root)
@@ -309,6 +311,8 @@ def walk(
             dirs, files = [], []
             try:
                 entries = list(os.scandir(real))
+            except PermissionError:
+                return denied(str(logical))
             except OSError:
                 return
             for entry in entries:
@@ -343,6 +347,8 @@ def walk(
             return process_remembered(real, logical)
         try:
             entries = list(os.scandir(real))
+        except PermissionError:
+            return denied(str(logical))
         except OSError:
             return
         if logical.parent.name == "Backups.backupdb":
@@ -439,7 +445,16 @@ class Messages(Source):
 
     def problem(self) -> Optional[str]:
         missing = [str(folder) for folder in self.folders if not folder.is_dir()]
-        return f"{', '.join(missing)} is not a folder" if missing else None
+        if missing:
+            return f"{', '.join(missing)} is not a folder"
+        for folder in self.folders:
+            try:
+                os.listdir(folder)
+            except PermissionError:
+                return f"{folder} cannot be read: permission denied (Terminal needs Full Disk Access for Messages' attachments, in System Settings > Privacy & Security)"
+            except OSError:
+                pass
+        return None
 
     def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
         if not identifier:
@@ -584,6 +599,7 @@ class Folders(ByNameAndTime):
         self.default = default
         self.snapshots = snapshots
         self.unreadable: List[Tuple[str, str]] = []  # (library, why it could not be examined)
+        self.denied: List[str] = []  # folders that exist but may not be listed
         self.in_folder = 0  # files indexed so far in the folder being searched, and how many libraries were read there
         self.libraries_in_folder = 0
         self.folder_started = 0.0
@@ -634,7 +650,7 @@ class Folders(ByNameAndTime):
                 if inside is not None and inside.is_dir():
                     examined = True
                     for entry in walk(inside, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=logical / subfolder,
-                                      seen_directories=seen_directories, seen_files=seen_files):
+                                      seen_directories=seen_directories, seen_files=seen_files, denied=self.denied.append):
                         if not entry.is_directory:
                             yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", root, str(logical)
             if not examined:
@@ -658,7 +674,7 @@ class Folders(ByNameAndTime):
             listings = previous[0] if previous else {}
             remember, counts = ({}, {}) if key else (None, None)
             for entry in walk(real, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=folder, seen_directories=seen_directories, seen_files=seen_files,
-                              listings=listings, remember=remember, counts=counts):
+                              listings=listings, remember=remember, counts=counts, denied=self.denied.append):
                 if entry.is_directory:
                     if has_database(entry.real):
                         yield from library(entry.real, entry.logical, str(folder))
@@ -717,6 +733,7 @@ class Folders(ByNameAndTime):
         if hit:
             value, saved = hit
             self.unreadable.extend((path, reason) for path, reason in value["unreadable"])
+            self.denied.extend(value.get("denied", []))
             by_root: Dict[str, list] = {}
             for entry in value["items"]:
                 by_root.setdefault(entry[5], []).append(entry)
@@ -728,17 +745,19 @@ class Folders(ByNameAndTime):
                     yield name, modified, Path(real), Path(logical), kind, root, containing
                 finish(len(entries), len({entry[6] for entry in entries if entry[4] == "library"}), started, f" [cached {iso(saved)}]")
         elif backups:
-            before, items = len(self.unreadable), []
+            before, items, denied_before = len(self.unreadable), [], len(self.denied)
             for item in run(backup_searches):
                 items.append([item[0], item[1], str(item[2]), str(item[3]), *item[4:]])
                 yield item
-            self.cache.put(key, {"items": items, "unreadable": self.unreadable[before:]})
+            self.cache.put(key, {"items": items, "unreadable": self.unreadable[before:], "denied": self.denied[denied_before:]})
         yield from run([(label, roots) for label, roots in searches if (label, roots) not in backup_searches], ordinary=True)
 
     def note(self) -> Optional[str]:
         lines = []
         if self.unmatched:
             lines += [f"{len(self.unmatched)} pattern{'' if len(self.unmatched) == 1 else 's'} matched no folder:"] + [f"  {pattern}" for pattern in self.unmatched]
+        if self.denied:
+            lines += [f"{len(set(self.denied))} folder{'' if len(set(self.denied)) == 1 else 's'} could not be searched (permission denied):"] + [f"  {folder}" for folder in sorted(set(self.denied))]
         if self.unreadable:
             lines += [f"{len(self.unreadable)} librar{'y' if len(self.unreadable) == 1 else 'ies'} could not be read:"]
             for reason in sorted({reason for _, reason in self.unreadable}):  # grouped by reason; sorted, since folders are read in no fixed order
