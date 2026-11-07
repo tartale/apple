@@ -826,8 +826,8 @@ def test_backup_folders_are_read_once_and_reused(tmp_path, monkeypatch):
     second.index()
     assert walks == []
     shown = said.getvalue()
-    assert f"Searching {machine}\n" in shown and "4 files (" in shown and "[cached 20" in shown  # like a search, and where it came from
-    assert "Reusing" not in shown
+    assert shown.count("\n") == 1  # one line for the whole group
+    assert shown.startswith(f"{machine}: 4 files (") and "[cached 20" in shown and "Searching" not in shown and "Reusing" not in shown
     assert sorted(second.index()) == ["p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg"]
     found = second.index()["p0.jpg"][0]
     assert found[1].name == "p0.jpg" and isinstance(found[1], Path) and found[2].parts[-1] == "p0.jpg"  # real and logical paths are Paths again
@@ -922,13 +922,17 @@ def test_a_cached_backup_and_a_folder_with_a_photos_library_in_one_search(mac, t
     assert json.loads(second.stdout)[0]["library"] == str(library) and "[cached 20" in second.output
 
 
-def test_a_cached_search_names_each_folder_and_the_libraries_read_in_it(tmp_path):
-    machine = tmp_path / "Backups.backupdb" / "Mac"
-    other_library(machine / "2018-01-01-000000", [(WHEN, 500, "one.heic")], "inside", "Pictures")
+def test_a_cached_group_is_one_line_with_the_number_of_folders_and_the_libraries_read(tmp_path):
+    first = tmp_path / "Backups.backupdb" / "Mac" / "2018-01-01-000000"
+    second = tmp_path / "Backups.backupdb" / "Mac" / "2018-06-01-000000"
+    other_library(first, [(WHEN, 500, "one.heic")], "inside", "Pictures")
+    make_file(second / "Pictures" / "two.jpg")
     cache = cache_module.Cache(tmp_path / "c.sqlite")
-    run_folders([machine], tmp_path, cache)
+    run_folders([first / "Pictures", second / "Pictures"], tmp_path, cache)
     said = io.StringIO()
-    again = rs.Folders([machine], tmp_path / "d.photoslibrary", "all", cache)
+    again = rs.Folders([first / "Pictures", second / "Pictures"], tmp_path / "d.photoslibrary", "all", cache)
     again.progress = progress_module.Progress(said)
     again.index()
-    assert "1 file, 1 library read" in said.getvalue() or "1 files, 1 library read" in said.getvalue()
+    line, total = said.getvalue().splitlines()  # the group, then the total of everything searched
+    assert line.startswith("2 backup folders: 2 files, 1 library read (") and line.endswith("]") and "[cached 20" in line
+    assert total.startswith("Indexed 2 files in ")

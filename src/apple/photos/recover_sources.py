@@ -631,18 +631,14 @@ class Folders(ByNameAndTime):
             value, saved = hit
             self.unreadable.extend((path, reason) for path, reason in value["unreadable"])
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(saved))
-            by_root: Dict[str, list] = {}
-            for entry in value["items"]:
-                by_root.setdefault(entry[5], []).append(entry)
-            for folder in backups:  # shown like a search, with where it came from
-                started = time.monotonic()
-                self.progress.line(f"Searching {folder}")
-                entries = by_root.get(str(folder), [])
-                for name, modified, real, logical, kind, root, containing in entries:
-                    yield name, modified, Path(real), Path(logical), kind, root, containing
-                libraries = len({entry[6] for entry in entries if entry[4] == "library"})
-                libraries = f", {libraries} librar{'y' if libraries == 1 else 'ies'} read" if libraries else ""
-                self.progress.line(f"  {len(entries):,} files{libraries} ({duration(time.monotonic() - started)}) [cached {when}]")
+            started = time.monotonic()
+            entries = value["items"]
+            for name, modified, real, logical, kind, root, containing in entries:
+                yield name, modified, Path(real), Path(logical), kind, root, containing
+            libraries = len({entry[6] for entry in entries if entry[4] == "library"})
+            libraries = f", {libraries} librar{'y' if libraries == 1 else 'ies'} read" if libraries else ""
+            what = str(backups[0]) if len(backups) == 1 else f"{len(backups)} backup folders"
+            self.progress.line(f"{what}: {len(entries):,} files{libraries} ({duration(time.monotonic() - started)}) [cached {when}]")
         elif backups:
             before, items = len(self.unreadable), []
             for item in run(backups):
