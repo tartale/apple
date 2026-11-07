@@ -1,4 +1,4 @@
-"""Where `./apple photos recover` can look for the original of a photo a library does not store.
+"""Where `./apple photos find` can look for the original of a photo a library does not store.
 
 A Source looks one photo up (find) and can import what it found. There are two kinds, by how a file is identified:
 Messages (by the attachment ID the Photos database holds) and Folders (everything under a path: raw files matched by name

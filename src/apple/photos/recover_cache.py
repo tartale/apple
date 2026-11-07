@@ -1,4 +1,4 @@
-"""A cache of what `recover` has indexed, so that a second run over the same places does not read them again.
+"""A cache of what `find` has indexed, so that a second run over the same places does not read them again.
 
 What is cached is what cannot go stale without the cache noticing: a Photos library's database, which is looked up by its
 size and modification time, and a group of Time Machine backup folders, whose finished snapshots never change and whose set

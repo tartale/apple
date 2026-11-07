@@ -1,4 +1,4 @@
-"""`./apple photos recover`: find where the original of a photo that a library does not store can be had, and import it.
+"""`./apple photos find`: find where the original of a photo that a library does not store can be had, and import it.
 
 A library keeps a placeholder for a photo whose original it does not hold (a photo shared with you in Messages and never
 saved, for one). The places to look are in recover_sources.py; the caller says which to search.
@@ -75,7 +75,7 @@ def read_list(text: str) -> List[dict]:
         else:
             records = list(csv.DictReader(stripped.splitlines()))
     except (ValueError, TypeError, csv.Error):
-        raise typer.BadParameter("--list is not csv or json from `apple photos recover` or `apple photos diff`")
+        raise typer.BadParameter("--list is not csv or json from `apple photos find` or `apple photos diff`")
     items = []
     for record in records:
         if "name" not in record or "date" not in record:
@@ -175,7 +175,7 @@ def recover_command(
 
     A photo whose original is not in the library cannot be listed or copied by PowerPhotos. This lists each one (its
     `missing` column in `apple photos diff`) with where an original was found, or `none`. Save the output (--format csv)
-    and give it to `apple photos import-found`, on this machine or another, to import the files found.
+    and give it to `apple photos import`, on this machine or another, to import the files found.
 
     Say where to search with --messages and --folders (each can be repeated), or the variable
     APPLE_PHOTOS_RECOVER_SEARCH when neither is given; with neither, nothing is searched and the command only lists the
@@ -276,7 +276,7 @@ def import_found_command(
         str,
         typer.Argument(
             metavar="LIST",
-            help="The csv or json (- for stdin) that `apple photos recover --format csv` wrote: each row says where its original "
+            help="The csv or json (- for stdin) that `apple photos find --format csv` wrote: each row says where its original "
             "is (the source, root, library and files columns). Nothing is searched; a row with no file is skipped.",
         ),
     ],
@@ -302,7 +302,7 @@ def import_found_command(
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo.")] = DiffFormat.text,
 ) -> None:
-    """Import the originals that `apple photos recover` found, without searching.
+    """Import the originals that `apple photos find` found, without searching.
 
     Reads the list recover wrote, translates its paths with --map (or APPLE_PHOTOS_RECOVER_MAPPINGS) to where the files
     are on this machine, and with --apply yes (or ask) imports them into the library that Photos has open, so open the

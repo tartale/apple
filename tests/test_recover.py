@@ -1,4 +1,4 @@
-"""apple photos recover: finding the originals a library does not store, and importing them."""
+"""apple photos find and import: finding the originals a library does not store, and importing them."""
 import csv
 import io
 import json
@@ -60,15 +60,15 @@ def attachments(tmp_path, monkeypatch, **folders):
 
 
 def recover(*options, default="Source"):
-    return runner.invoke(app, ["photos", "recover", *(["--default-library", default] if default else []), *options])
+    return runner.invoke(app, ["photos", "find", *(["--default-library", default] if default else []), *options])
 
 
 def import_found(listing, *options, default="Source"):
-    return runner.invoke(app, ["photos", "import-found", str(listing), *(["--default-library", default] if default else []), *options])
+    return runner.invoke(app, ["photos", "import", str(listing), *(["--default-library", default] if default else []), *options])
 
 
 def found_list(tmp_path, *options):
-    """What `recover --format csv` finds with these options, saved as the list that import-found reads."""
+    """What `find --format csv` finds with these options, saved as the list that import reads."""
     listing = tmp_path / "found.csv"
     listing.write_text(recover(*options, "--format", "csv").stdout)
     return listing
@@ -156,7 +156,7 @@ def test_the_default_library_is_needed_unless_a_list_replaces_it(mac, monkeypatc
     result = recover("--list", str(listing), default=None)
     assert result.exit_code == 0 and "[list only]" in result.output
     monkeypatch.setenv("APPLE_PHOTOS_DEFAULT_LIBRARY", "Default Library")  # set on a NAS too, and must not be looked up
-    assert runner.invoke(app, ["photos", "recover", "--list", str(listing)]).exit_code == 0
+    assert runner.invoke(app, ["photos", "find", "--list", str(listing)]).exit_code == 0
     monkeypatch.delenv("APPLE_PHOTOS_DEFAULT_LIBRARY")
     needs = import_found(listing, "--apply", "yes", default=None)
     assert needs.exit_code == 2 and "--default-library is needed" in needs.output
@@ -545,7 +545,7 @@ def test_a_list_needs_a_name_and_a_date_and_is_csv_or_json(tmp_path):
 def test_a_list_is_searched_for_without_the_library_and_can_come_from_stdin(tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "one.heic")
-    result = runner.invoke(app, ["photos", "recover", "--list", "-", "--folders", str(folder), "--format", "csv"], input=f"date,name\n{WHEN},one.heic\n{LATER},two.heic\n")
+    result = runner.invoke(app, ["photos", "find", "--list", "-", "--folders", str(folder), "--format", "csv"], input=f"date,name\n{WHEN},one.heic\n{LATER},two.heic\n")
     assert result.exit_code == 0 and [r["source"] for r in rows_of(result)] == ["folder", "none"]
 
 
@@ -633,7 +633,7 @@ def test_apply_no_and_dry_run_never_import_even_when_asked_to(mac, tmp_path):
     placeholders(mac)
     listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
     for options, env in ((["--apply", "no"], {}), (["--apply", "yes", "--dry-run"], {}), (["--apply", "yes"], {"DRY_RUN": "true"})):
-        result = runner.invoke(app, ["photos", "import-found", str(listing), "--default-library", "Source", *options], env=env)
+        result = runner.invoke(app, ["photos", "import", str(listing), "--default-library", "Source", *options], env=env)
         assert result.exit_code == 0 and "[dry run]" in result.output
     assert mac.calls("import-photos.applescript") == []
 
@@ -670,9 +670,9 @@ def test_apply_ask_needs_a_terminal_and_an_answer(mac, monkeypatch, tmp_path):
     assert "needs a terminal" in no_terminal.output and "Imported 0 of 2 missing files; 0 errors, 2 skipped" in no_terminal.output
     assert "[dry run]" not in no_terminal.output  # skipped by the answer, not by --apply no
     monkeypatch.setattr(recover_module, "has_terminal", lambda: True)
-    declined = runner.invoke(app, ["photos", "import-found", str(listing), "--default-library", "Source", "--apply", "ask"], input="n\n")
+    declined = runner.invoke(app, ["photos", "import", str(listing), "--default-library", "Source", "--apply", "ask"], input="n\n")
     assert "Import 1 photos" in declined.output and mac.calls("import-photos.applescript") == []
-    accepted = runner.invoke(app, ["photos", "import-found", str(listing), "--default-library", "Source", "--apply", "ask"], input="y\n")
+    accepted = runner.invoke(app, ["photos", "import", str(listing), "--default-library", "Source", "--apply", "ask"], input="y\n")
     assert "Imported 1 of 2 missing files; 0 errors, 1 skipped" in accepted.output and len(mac.calls("import-photos.applescript")) == 1
 
 
