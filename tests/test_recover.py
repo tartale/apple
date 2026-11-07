@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -59,8 +60,26 @@ def attachments(tmp_path, monkeypatch, **folders):
     return root
 
 
+def missing(*options, default="Source"):
+    return runner.invoke(app, ["photos", "missing", *(["--default-library", default] if default else []), *options])
+
+
 def recover(*options, default="Source"):
-    return runner.invoke(app, ["photos", "find", *(["--default-library", default] if default else []), *options])
+    """What `missing` lists for the default library, searched with `find` and these options; with --list FILE, find reads FILE."""
+    options = list(options)
+    if "--list" in options:
+        at = options.index("--list")
+        listing = options[at + 1]
+        del options[at:at + 2]
+    else:
+        listed = missing("--format", "csv", default=default)
+        if listed.exit_code:
+            return listed
+        handle = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+        handle.write(listed.stdout)
+        handle.close()
+        listing = handle.name
+    return runner.invoke(app, ["photos", "find", listing, *options])
 
 
 def import_found(listing, *options, default="Source"):
@@ -117,12 +136,14 @@ def test_build_sources_joins_the_same_kind_and_keeps_the_first_seen_order(tmp_pa
     assert [str(folder) for folder in sources[0].patterns] == ["/a", "/b"] and sources[0].snapshots == "ends"
 
 
-def test_with_nothing_to_search_recover_only_lists_what_is_missing(mac, monkeypatch, tmp_path):
+def test_missing_lists_what_the_default_library_lacks_and_find_needs_a_place_to_search(mac, tmp_path):
     placeholders(mac)
-    result = recover()
-    assert result.exit_code == 0
-    assert "Not searching anywhere" in result.output and "[list only]" in result.output
-    assert [(r["name"], r["source"]) for r in rows_of(recover("--format", "csv"))] == [("one.heic", "none"), ("two.heic", "none")]
+    result = missing("--format", "csv")
+    assert result.exit_code == 0 and "2 missing files" in result.output
+    assert [(r["name"], r["shared"], r["identifier"]) for r in rows_of(result)] == [("one.heic", "true", "at_0_2"), ("two.heic", "true", "at_0_3")]
+    assert missing(default=None).exit_code == 2
+    nowhere = recover()
+    assert nowhere.exit_code == 2 and "nothing to search" in nowhere.output
 
 
 def test_the_search_variable_is_used_unless_an_option_names_a_place(mac, monkeypatch, tmp_path):
@@ -147,16 +168,14 @@ def test_a_folder_that_does_not_exist_is_an_error_but_a_wildcard_matching_nothin
     assert pattern.exit_code == 0 and "1 pattern matched no folder:" in pattern.output and "no*" in pattern.output
 
 
-def test_the_default_library_is_needed_unless_a_list_replaces_it(mac, monkeypatch, tmp_path):
-    placeholders(mac)
-    assert recover(default=None).exit_code == 2
+def test_find_needs_no_library_and_never_looks_one_up(mac, monkeypatch, tmp_path):
+    folder = tmp_path / "backup"
+    folder.mkdir()
     listing = tmp_path / "missing.csv"
     listing.write_text("date,name\n" + f"{WHEN},one.heic\n")
     monkeypatch.setattr("apple.photos.recover.find_library", lambda name: pytest.fail("the library must not be looked up"))
-    result = recover("--list", str(listing), default=None)
-    assert result.exit_code == 0 and "[list only]" in result.output
     monkeypatch.setenv("APPLE_PHOTOS_DEFAULT_LIBRARY", "Default Library")  # set on a NAS too, and must not be looked up
-    assert runner.invoke(app, ["photos", "find", "--list", str(listing)]).exit_code == 0
+    assert runner.invoke(app, ["photos", "find", str(listing), "--folders", str(folder)]).exit_code == 0
     monkeypatch.delenv("APPLE_PHOTOS_DEFAULT_LIBRARY")
     needs = import_found(listing, "--apply", "yes", default=None)
     assert needs.exit_code == 2 and "--default-library is needed" in needs.output
@@ -534,25 +553,26 @@ def test_a_list_needs_a_name_and_a_date_and_is_csv_or_json(tmp_path):
     for text in ("name\none.heic\n", "not,a,list\n1,2,3\n", "[1, 2]"):
         listing = tmp_path / "bad"
         listing.write_text(text)
-        result = recover("--list", str(listing), default=None)
+        result = recover("--list", str(listing), "--folders", str(tmp_path), default=None)
         assert result.exit_code == 2, text
     listing = tmp_path / "list.json"
     listing.write_text(json.dumps([{"date": WHEN, "name": "one.heic", "hidden": True, "shared": "true"}]))
-    row = rows_of(recover("--list", str(listing), "--format", "csv", default=None))[0]
+    row = rows_of(recover("--list", str(listing), "--folders", str(tmp_path), "--format", "csv", default=None))[0]
     assert (row["name"], row["hidden"], row["shared"], row["source"]) == ("one.heic", "true", "true", "none")
 
 
 def test_a_list_is_searched_for_without_the_library_and_can_come_from_stdin(tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "one.heic")
-    result = runner.invoke(app, ["photos", "find", "--list", "-", "--folders", str(folder), "--format", "csv"], input=f"date,name\n{WHEN},one.heic\n{LATER},two.heic\n")
+    result = runner.invoke(app, ["photos", "find", "-", "--folders", str(folder), "--format", "csv"], input=f"date,name\n{WHEN},one.heic\n{LATER},two.heic\n")
     assert result.exit_code == 0 and [r["source"] for r in rows_of(result)] == ["folder", "none"]
 
 
-def test_a_list_cannot_be_used_with_messages(tmp_path):
-    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,false,,,,"])
-    result = recover("--list", str(listing), "--messages", default=None)
-    assert result.exit_code == 2 and "Messages" in result.output
+def test_messages_are_found_by_the_identifier_a_list_carries(mac, monkeypatch, tmp_path):
+    root = attachments(tmp_path, monkeypatch, at_0_2=["one.heic"])
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,at_0_2", f"{LATER},two.heic,false,true,"], header="date,name,hidden,shared,identifier")
+    rows = rows_of(recover("--list", str(listing), "--messages", "--format", "csv", default=None))
+    assert [(r["source"], r["files"]) for r in rows] == [("messages", str(root / "aa" / "bb" / "at_0_2" / "one.heic")), ("none", "")]
 
 
 def test_a_list_row_that_says_where_its_files_are_is_used_as_it_is(tmp_path):
@@ -577,12 +597,12 @@ def test_paths_in_a_list_are_translated_and_those_that_cannot_be_reached_are_sai
 def test_a_list_is_limited_by_dates_and_media(tmp_path):
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,,,,,,", f"{LATER},two.mov,,,,,,", "2019-01-01 00:00:00,three.jpg,,,,,,"])
     def names(*options):
-        return [r["name"] for r in rows_of(recover("--list", str(listing), *options, "--format", "csv", default=None))]
+        return [r["name"] for r in rows_of(recover("--list", str(listing), *options, "--folders", str(tmp_path), "--format", "csv", default=None))]
     assert names() == ["one.heic", "two.mov", "three.jpg"]
     assert names("--since", "2018-03-06") == ["two.mov", "three.jpg"]
     assert names("--until", "2018-03-05") == ["one.heic"]
     assert names("--media", "videos") == ["two.mov"]
-    assert recover("--list", str(listing), "--since", "2019-01-01", "--until", "2018-01-01", default=None).exit_code == 2
+    assert recover("--list", str(listing), "--since", "2019-01-01", "--until", "2018-01-01", "--folders", str(tmp_path), default=None).exit_code == 2
 
 
 # The report ---------------------------------------------------------------------------------------------------------------
@@ -601,7 +621,7 @@ def test_the_table_has_the_kind_of_place_and_csv_and_json_have_the_rest(mac, tmp
 
 def test_the_last_line_says_what_was_done(mac, tmp_path):
     add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
-    assert "Found 0 of 0 missing files [list only]" in recover().output
+    assert "0 missing files" in missing().output
     placeholders(mac)
     folder = tmp_path / "backup"
     make_file(folder / "one.heic")
@@ -615,9 +635,9 @@ def test_the_last_line_says_what_was_done(mac, tmp_path):
 
 def test_range_and_media_limit_what_is_looked_at(mac, tmp_path):
     placeholders(mac)
-    assert "Found 0 of 1 missing files" in recover("--since", "2018-03-06").output
-    assert "Found 0 of 0 missing files" in recover("--media", "videos").output
-    assert recover("--since", "2018-03-07", "--until", "2018-03-01").exit_code == 2
+    assert "Found 0 of 1 missing files" in recover("--since", "2018-03-06", "--folders", str(tmp_path)).output
+    assert "Found 0 of 0 missing files" in recover("--media", "videos", "--folders", str(tmp_path)).output
+    assert recover("--since", "2018-03-07", "--until", "2018-03-01", "--folders", str(tmp_path)).exit_code == 2
 
 
 # Importing -----------------------------------------------------------------------------------------------------------------
@@ -1078,7 +1098,7 @@ def test_the_cache_does_not_change_what_a_search_finds(mac, tmp_path):
     assert refreshed.stdout == reports[0] and "[cached" not in refreshed.output
 
 
-def test_importing_from_a_list_with_nothing_to_search_is_not_called_list_only(mac, monkeypatch, tmp_path):
+def test_importing_from_a_list_with_nothing_to_search_is_a_plain_import(mac, monkeypatch, tmp_path):
     original = make_file(tmp_path / "mac" / "one.heic")
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,/nas,,/nas/one.heic", f"{LATER},two.heic,false,true,none,,,"])
     opened(monkeypatch, mac.libraries["Source"])
@@ -1088,7 +1108,7 @@ def test_importing_from_a_list_with_nothing_to_search_is_not_called_list_only(ma
     report = import_found(listing, "--map", f"/nas={tmp_path}/mac")
     assert "[dry run]" in report.output and "[list only]" not in report.output  # something is known, and --apply keeps it from being imported
     nothing = write_list(tmp_path / "n.csv", [f"{WHEN},one.heic,false,true,none,,,"])
-    assert "[list only]" in recover("--list", str(nothing)).output  # nothing known, nothing searched
+    assert "[dry run]" not in import_found(nothing).output  # nothing known, nothing to import
 
 
 def test_the_places_to_search_are_translated_like_the_paths_in_a_list(mac, tmp_path, monkeypatch):

@@ -55,8 +55,9 @@ class Source:
         """Why this source cannot be used (a path that does not exist, say), or None."""
         return None
 
-    def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
-        """Where the original of the photo (key is (date, size, file name)) can be had from, or None."""
+    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
+        """Where the original of the photo (key is (date, size, file name); identifier is its Messages identifier, if it has
+        one) can be had from, or None."""
         raise NotImplementedError
 
     def prepare(self, progress: Progress) -> None:
@@ -440,8 +441,7 @@ class Messages(Source):
         missing = [str(folder) for folder in self.folders if not folder.is_dir()]
         return f"{', '.join(missing)} is not a folder" if missing else None
 
-    def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
-        identifier = photos.identifiers.get(key)
+    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
         if not identifier:
             return None
         for attachments in self.folders:
@@ -490,7 +490,7 @@ class ByNameAndTime(Source):
     def finished(self, count: int, started: float) -> None:
         self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
 
-    def find(self, photos: pp.Photos, key: tuple) -> Optional[Found]:
+    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
         taken = captured(key)
         near = [(abs(entry[0] - taken), entry) for entry in self.index().get(key[2].lower(), []) if abs(entry[0] - taken) <= TOLERANCE]
         if not near:
