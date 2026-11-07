@@ -22,7 +22,7 @@ from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
 from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
-from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, import_files, parse_search
+from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
 SEARCH_VARIABLE = "APPLE_PHOTOS_RECOVER_SEARCH"
@@ -121,7 +121,8 @@ def parse_map(entries: Optional[List[str]]) -> List[tuple]:
 
 def translate(path: str, mapping: List[tuple]) -> str:
     """Where the file is here: the path with its start replaced by the first translation, in the order given, whose old
-    start it has (at a folder boundary), if a file exists there; otherwise the path as written, which is right on the
+    start it has (at a folder boundary), if a file exists there (for a place to search with wildcards in it, the folders
+    before the first wildcard); otherwise the path as written, which is right on the
     machine that made the list. That way one set of translations can be shared by every machine, and each uses the ones
     that apply to it."""
     for old, new in mapping:
@@ -134,9 +135,15 @@ def translate(path: str, mapping: List[tuple]) -> str:
 
 
 def exists(path: str) -> bool:
-    """Whether the path exists; one that cannot be looked at (permission denied) is taken as not existing."""
+    """Whether the path exists, as far as it names anything fixed: a place to search may have wildcards in it, so only the
+    folders before the first one are looked at. One that cannot be looked at (permission denied) is taken as not existing."""
+    fixed = []
+    for part in Path(path).parts:
+        if has_wildcard(part):
+            break
+        fixed.append(part)
     try:
-        return Path(path).exists()
+        return Path(*fixed).exists() if fixed else False
     except PermissionError:
         return False
 

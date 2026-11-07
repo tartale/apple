@@ -1196,3 +1196,13 @@ def test_a_file_that_cannot_be_read_is_an_error_and_the_others_are_still_looked_
     result = import_found(listing, "--format", "csv", default=None)
     assert result.exit_code == 1 and "1 file cannot be read (permission denied)" in result.output and str(secret) in result.output
     assert [r["source"] for r in rows_of(result)] == ["folder", "none"] and "1 error" in result.output
+
+
+def test_a_place_with_wildcards_that_exists_as_written_is_not_translated(tmp_path, monkeypatch):
+    """The settings are shared: on the machine the places were written for, the translations to another machine's paths must not apply."""
+    make_file(tmp_path / "usb" / "Backups.backupdb" / "mac" / "2020" / "Pictures" / "one.heic")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,"], header="date,name,hidden,shared,identifier")
+    monkeypatch.setenv("APPLE_PHOTOS_RECOVER_SEARCH", f"folders='{tmp_path}/usb/Backups.backupdb/*/*/Pictures'")
+    monkeypatch.setenv("APPLE_PHOTOS_RECOVER_MAPPINGS", f"{tmp_path}/usb=/Volumes/elsewhere")
+    result = runner.invoke(app, ["photos", "find", str(listing), "--format", "csv"])
+    assert result.exit_code == 0 and "matched no folder" not in result.output and rows_of(result)[0]["source"] == "folder"
