@@ -193,7 +193,8 @@ def test_folders_match_by_file_name_and_capture_time(mac, tmp_path):
     first, second = json.loads(recover("--folders", str(folder), "--format", "json").stdout)
     assert (first["source"], first["root"], first["library"]) == ("folder", str(folder), "")
     assert second["source"] == "folder" and second["files"] == [str(folder / "two.heic")]
-    make_file(folder / "two.heic", "2018-03-06 13:00:01")  # now more than two hours off
+    (folder / "two.heic").unlink()  # replaced by a file more than two hours off (a new file, so the folder changes)
+    make_file(folder / "two.heic", "2018-03-06 13:00:01")
     assert [r["source"] for r in rows_of(recover("--folders", str(folder), "--format", "csv"))] == ["folder", "none"]
 
 
@@ -936,3 +937,137 @@ def test_a_cached_group_is_one_line_with_the_number_of_folders_and_the_libraries
     line, total = said.getvalue().splitlines()  # the group, then the total of everything searched
     assert line.startswith("2 backup folders: 2 files, 1 library read (") and line.endswith("]") and "[cached 20" in line
     assert total.startswith("Indexed 2 files in ")
+
+
+# The cache of ordinary folders ----------------------------------------------------------------------------------------
+
+def count_listings(monkeypatch):
+    listed = []
+    real = rs.os.scandir
+    monkeypatch.setattr(rs.os, "scandir", lambda path: listed.append(Path(path)) or real(path))
+    return listed
+
+
+def folder_tree(tmp_path):
+    base = tmp_path / "pics"
+    make_file(base / "one.jpg")
+    make_file(base / "a" / "two.jpg")
+    make_file(base / "a" / "b" / "three.jpg")
+    make_file(base / "c" / "four.jpg")
+    return base
+
+
+def index_names(source) -> list:
+    return sorted(source.index())
+
+
+def test_an_unchanged_folder_is_not_listed_again(tmp_path, monkeypatch):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    listed = count_listings(monkeypatch)
+    assert index_names(run_folders([base], tmp_path, cache)) == ["four.jpg", "one.jpg", "three.jpg", "two.jpg"]
+    assert len(listed) == 4  # base, a, a/b, c
+    listed.clear()
+    again = run_folders([base], tmp_path, cache)
+    assert index_names(again) == ["four.jpg", "one.jpg", "three.jpg", "two.jpg"] and listed == []
+    found = again.index()["three.jpg"][0]
+    assert found[1] == base / "a" / "b" / "three.jpg" and found[0] == unix(WHEN)  # the same file and capture time as before
+
+
+def test_only_the_directories_that_changed_are_listed_again(tmp_path, monkeypatch):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([base], tmp_path, cache)
+    listed = count_listings(monkeypatch)
+    make_file(base / "a" / "b" / "five.jpg")  # a new file changes its directory, a/b, and nothing above it
+    (base / "c" / "four.jpg").unlink()        # a removed one changes c
+    (base / "new").mkdir()                    # a new directory changes the base
+    make_file(base / "new" / "six.jpg")
+    again = run_folders([base], tmp_path, cache)
+    assert index_names(again) == ["five.jpg", "one.jpg", "six.jpg", "three.jpg", "two.jpg"]
+    assert sorted(path.relative_to(base).as_posix() for path in listed) == [".", "a/b", "c", "new"]  # a was not listed
+
+
+def test_what_is_said_about_a_folder_that_came_from_the_cache(tmp_path, monkeypatch):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([base], tmp_path, cache)
+    make_file(base / "a" / "b" / "five.jpg")
+    said = io.StringIO()
+    again = rs.Folders([base], tmp_path / "d.photoslibrary", "all", cache)
+    again.progress = progress_module.Progress(said)
+    again.index()
+    assert f"Searching {base}" in said.getvalue()
+    assert "5 files (" in said.getvalue() and "[cached 20" in said.getvalue() and "; 1 of 4 folders read again]" in said.getvalue()
+    quiet = io.StringIO()
+    third = rs.Folders([base], tmp_path / "d.photoslibrary", "all", cache)
+    third.progress = progress_module.Progress(quiet)
+    third.index()
+    assert "folders read again" not in quiet.getvalue() and "[cached 20" in quiet.getvalue()
+
+
+def test_a_file_changed_in_place_is_not_noticed_until_a_refresh(tmp_path):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([base], tmp_path, cache)
+    make_file(base / "one.jpg", "2019-01-01 00:00:00")  # the same file, written over: its folder does not change
+    assert run_folders([base], tmp_path, cache).index()["one.jpg"][0][0] == unix(WHEN)
+    refreshed = run_folders([base], tmp_path, cache_module.Cache(tmp_path / "c.sqlite", read=False))
+    assert refreshed.index()["one.jpg"][0][0] == unix("2019-01-01 00:00:00")
+    assert run_folders([base], tmp_path, cache).index()["one.jpg"][0][0] == unix("2019-01-01 00:00:00")  # and it was saved
+
+
+def test_ordinary_folders_are_cached_separately_and_backups_are_not_listed_by_directory(tmp_path, monkeypatch):
+    first, second = folder_tree(tmp_path), tmp_path / "other"
+    make_file(second / "x.jpg")
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([first, second], tmp_path, cache)
+    listed = count_listings(monkeypatch)
+    run_folders([first, second], tmp_path, cache)
+    assert listed == []
+    machine = backupdb(tmp_path / "bk")
+    run_folders([machine], tmp_path, cache)
+    keys = [row[0] for row in cache.db().execute("select key from entries")]
+    assert len(keys) == 3  # two ordinary folders and one group of backups
+
+
+def test_a_folder_moved_aside_and_back_is_read_again_as_a_different_path(tmp_path, monkeypatch):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([base], tmp_path, cache)
+    moved = tmp_path / "moved"
+    base.rename(moved)
+    listed = count_listings(monkeypatch)
+    assert index_names(run_folders([moved], tmp_path, cache)) == ["four.jpg", "one.jpg", "three.jpg", "two.jpg"] and len(listed) == 4
+
+
+def test_the_same_files_reached_by_two_cached_folders_are_still_indexed_once(tmp_path):
+    base = folder_tree(tmp_path)
+    cache = cache_module.Cache(tmp_path / "c.sqlite")
+    run_folders([base, base / "a"], tmp_path, cache)
+    again = run_folders([base, base / "a"], tmp_path, cache)
+    assert len(again.index()["two.jpg"]) == 1
+
+
+def test_the_cache_does_not_change_what_a_search_finds(mac, tmp_path):
+    placeholders(mac)
+    folder = tmp_path / "backup"
+    make_file(folder / "one.heic")
+    make_file(folder / "deeper" / "two.heic", LATER)
+    reports = [recover("--folders", str(folder), "--format", "json").stdout for _ in range(3)]
+    assert reports[0] == reports[1] == reports[2] and [r["source"] for r in json.loads(reports[0])] == ["folder", "folder"]
+    refreshed = recover("--folders", str(folder), "--refresh", "--format", "json")
+    assert refreshed.stdout == reports[0] and "[cached" not in refreshed.output
+
+
+def test_importing_from_a_list_with_nothing_to_search_is_not_called_list_only(mac, monkeypatch, tmp_path):
+    original = make_file(tmp_path / "mac" / "one.heic")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,/nas,,/nas/one.heic", f"{LATER},two.heic,false,true,none,,,"])
+    opened(monkeypatch, mac.libraries["Source"])
+    imported = recover("--list", str(listing), "--map", f"/nas={tmp_path}/mac", "--apply", "yes")
+    assert imported.exit_code == 0 and "Imported 1 of 2 missing files; 0 errors, 1 skipped" in imported.output
+    assert "[list only]" not in imported.output and mac.calls("import-photos.applescript") == [[[str(original)]]]
+    report = recover("--list", str(listing), "--map", f"/nas={tmp_path}/mac")
+    assert "[dry run]" in report.output and "[list only]" not in report.output  # something is known, and --apply keeps it from being imported
+    nothing = write_list(tmp_path / "n.csv", [f"{WHEN},one.heic,false,true,none,,,"])
+    assert "[list only]" in recover("--list", str(nothing)).output  # nothing known, nothing searched

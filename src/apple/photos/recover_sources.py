@@ -221,6 +221,11 @@ def expand(path: Path, progress: Optional[Callable[[str], None]] = None) -> List
     return result
 
 
+class Stamp(NamedTuple):
+    """The part of a file's status that is kept in the cache: its modification time."""
+    st_mtime: float
+
+
 class Entry(NamedTuple):
     """Something found by walk. logical is where it is as the backup shows it and real where it can be read from; they differ
     inside Time Machine's linked folders on Linux. status is None for a directory."""
@@ -239,6 +244,9 @@ def walk(
     logical_root: Optional[Path] = None,
     seen_directories: Optional[set] = None,
     seen_files: Optional[set] = None,
+    listings: Optional[dict] = None,
+    remember: Optional[dict] = None,
+    counts: Optional[dict] = None,
 ):
     """Every directory and photo or video file under root, as Entry values in no particular order. Several directories are
     read at once. On Linux Time Machine's linked folders are followed, each real folder once however many snapshots link to
@@ -246,7 +254,12 @@ def walk(
     true is reported and not entered. Of the snapshots in a Backups.backupdb/<machine> folder only those that snapshots
     ('all', 'ends': the oldest and newest, 'newest' or 'oldest') names are read; notes(text) says which. root is where the
     folder can be read and logical_root, if different, where it is as the backup shows it. A directory or file already in
-    seen_directories or seen_files (sets that several walks can share) is skipped, and those sets are filled in."""
+    seen_directories or seen_files (sets that several walks can share) is skipped, and those sets are filled in.
+
+    listings (what an earlier walk remembered, or {}) and remember (a dict to fill, to be saved for the next walk) make a
+    walk of an ordinary folder quicker: a directory whose modification time is what it was is not listed again, only its
+    subdirectories are looked at. They are not used for Time Machine backups, whose directories are linked or chosen by
+    snapshot. counts, if given, is filled in with how many directories were 'reused' and how many 'read'."""
     volume = volume_of(root)
     try:
         top = os.lstat(root)
@@ -281,7 +294,52 @@ def walk(
                   "skipped (--snapshots all reads every one)")
         return [entry for entry in entries if not SNAPSHOT.match(entry.name) or entry.name in keep]
 
+    def process_remembered(real: Path, logical: Path) -> None:
+        """A directory of an ordinary folder, through the memory: its listing is the remembered one if its time is unchanged."""
+        try:
+            status = os.stat(real)
+        except OSError:
+            return
+        listing = (listings or {}).get(str(real))
+        if listing and listing["mtime"] == status.st_mtime_ns:
+            if counts is not None:
+                counts["reused"] = counts.get("reused", 0) + 1
+        else:
+            dirs, files = [], []
+            try:
+                entries = list(os.scandir(real))
+            except OSError:
+                return
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append(entry.name)
+                    elif Path(entry.name).suffix.lower() in MEDIA_FILES and not entry.name.startswith("._"):
+                        found = entry.stat(follow_symlinks=False)
+                        if stat.S_ISREG(found.st_mode):
+                            files.append([entry.name, found.st_mtime, found.st_ino])
+                except OSError:
+                    continue
+            listing = {"mtime": status.st_mtime_ns, "dirs": sorted(dirs), "files": sorted(files)}
+            if counts is not None:
+                counts["read"] = counts.get("read", 0) + 1
+        remember[str(real)] = listing
+        for name in listing["dirs"]:
+            child_logical, child_real = logical / name, real / name
+            results.put(Entry(child_logical, child_real, None, True))
+            if not skip(child_logical, child_real):
+                enter(child_real, child_logical)
+        for name, modified, inode in listing["files"]:
+            key = (status.st_dev, inode)
+            with lock:
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+            results.put(Entry(logical / name, real / name, Stamp(modified), False))
+
     def process(real: Path, logical: Path) -> None:
+        if remember is not None and volume is None and "Backups.backupdb" not in logical.parts:
+            return process_remembered(real, logical)
         try:
             entries = list(os.scandir(real))
         except OSError:
@@ -517,6 +575,7 @@ class Folders(ByNameAndTime):
         self.patterns = folders
         self.folders = [folder for folder in folders if not has_wildcard(str(folder)) or resolve(folder) is not None]  # patterns are expanded when the search starts
         self.unmatched: List[str] = []
+        self.tree_note = ""
         self.default = default
         self.snapshots = snapshots
         self.unreadable: List[Tuple[str, str]] = []  # (library, why it could not be examined)
@@ -581,12 +640,20 @@ class Folders(ByNameAndTime):
 
         seen_directories, seen_files = set(), set()  # shared by all the folders: a file in many snapshots is indexed once
 
-        def search(folder: Path):
+        def search(folder: Path, ordinary: bool = False):
             real = resolve(folder) or folder
+            self.tree_note = ""
             if has_database(real):
                 yield from library(real, folder, str(folder))
                 return
-            for entry in walk(real, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=folder, seen_directories=seen_directories, seen_files=seen_files):
+            # An ordinary folder is remembered with each directory's modification time, so that a directory that has not
+            # changed is not listed again.
+            key = fingerprint("tree", str(real)) if ordinary and self.cache else None
+            previous = self.cache.get(key) if key else None
+            listings = previous[0] if previous else {}
+            remember, counts = ({}, {}) if key else (None, None)
+            for entry in walk(real, skip, self.snapshots, lambda text: self.progress.line(text), logical_root=folder, seen_directories=seen_directories, seen_files=seen_files,
+                              listings=listings, remember=remember, counts=counts):
                 if entry.is_directory:
                     if has_database(entry.real):
                         yield from library(entry.real, entry.logical, str(folder))
@@ -594,6 +661,12 @@ class Folders(ByNameAndTime):
                         self.unreadable.append((str(entry.logical), "no database"))  # a current-format library without one
                 else:
                     yield entry.logical.name, entry.status.st_mtime, entry.real, entry.logical, "folder", str(folder), ""
+            if key and remember:
+                self.cache.put(key, remember)
+                if previous:
+                    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(previous[1]))
+                    read = counts.get("read", 0)
+                    self.tree_note = f" [cached {when}" + (f"; {read:,} of {read + counts.get('reused', 0):,} folders read again]" if read else "]")
 
         folders = []
         for pattern in self.patterns:
@@ -609,16 +682,16 @@ class Folders(ByNameAndTime):
                 folders.append(pattern)
         self.folders = folders
 
-        def run(roots: List[Path]):
+        def run(roots: List[Path], ordinary: bool = False):
             for folder in roots:
                 self.in_folder = self.libraries_in_folder = 0
                 self.folder_started = time.monotonic()
                 self.progress.line(f"Searching {folder}")
-                for item in search(folder):
+                for item in search(folder, ordinary):
                     self.in_folder += 1
                     yield item
                 libraries = f", {self.libraries_in_folder} librar{'y' if self.libraries_in_folder == 1 else 'ies'} read" if self.libraries_in_folder else ""
-                self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)})")
+                self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)}){self.tree_note}")
 
         # Time Machine backups are cached as a group: their finished snapshots do not change, and the key holds the names of
         # the snapshots, so a new or removed one makes a new entry. Everything else is read every time.
@@ -645,7 +718,7 @@ class Folders(ByNameAndTime):
                 items.append([item[0], item[1], str(item[2]), str(item[3]), *item[4:]])
                 yield item
             self.cache.put(key, {"items": items, "unreadable": self.unreadable[before:]})
-        yield from run([folder for folder in self.folders if folder not in backups])
+        yield from run([folder for folder in self.folders if folder not in backups], ordinary=True)
 
     def note(self) -> Optional[str]:
         lines = []
