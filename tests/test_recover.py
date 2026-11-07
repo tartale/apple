@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import re
 import shutil
 import time
 from collections import namedtuple
@@ -320,7 +321,7 @@ def test_the_libraries_read_count_is_for_libraries_read_through_their_database(m
     placeholders(mac)
     other_library(tmp_path, [(WHEN, 500, "one.heic")])
     hollow(tmp_path / "libraries", "broken", b"not a database")
-    assert "  1 files, 1 library read" in recover("--folders", str(tmp_path / "libraries"), "--format", "csv").output
+    assert "  1 files, 1 library (" in recover("--folders", str(tmp_path / "libraries"), "--format", "csv").output
 
 
 def test_an_old_library_that_keeps_names_is_searched_like_any_folder(mac, tmp_path):
@@ -827,8 +828,9 @@ def test_backup_folders_are_read_once_and_reused(tmp_path, monkeypatch):
     second.index()
     assert walks == []
     shown = said.getvalue()
-    assert shown.count("\n") == 1  # one line for the whole group
-    assert shown.startswith(f"{machine}: 4 files (") and "[cached 20" in shown and "Searching" not in shown and "Reusing" not in shown
+    heading, result = shown.splitlines()  # a search like any other: what was searched, then what was in it
+    assert heading == f"Searching {machine}" and result.startswith("  4 files (") and re.search(r"\) \[cached \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\]$", result)
+    assert "Reusing" not in shown
     assert sorted(second.index()) == ["p0.jpg", "p1.jpg", "p2.jpg", "p3.jpg"]
     found = second.index()["p0.jpg"][0]
     assert found[1].name == "p0.jpg" and isinstance(found[1], Path) and found[2].parts[-1] == "p0.jpg"  # real and logical paths are Paths again
@@ -923,20 +925,33 @@ def test_a_cached_backup_and_a_folder_with_a_photos_library_in_one_search(mac, t
     assert json.loads(second.stdout)[0]["library"] == str(library) and "[cached 20" in second.output
 
 
-def test_a_cached_group_is_one_line_with_the_number_of_folders_and_the_libraries_read(tmp_path):
-    first = tmp_path / "Backups.backupdb" / "Mac" / "2018-01-01-000000"
-    second = tmp_path / "Backups.backupdb" / "Mac" / "2018-06-01-000000"
-    other_library(first, [(WHEN, 500, "one.heic")], "inside", "Pictures")
-    make_file(second / "Pictures" / "two.jpg")
+def test_each_path_given_is_one_search_with_one_result_line_cached_or_not(tmp_path):
+    machine = tmp_path / "Backups.backupdb" / "Mac"
+    other_library(machine / "2018-01-01-000000", [(WHEN, 500, "one.heic")], "inside", "Pictures")
+    make_file(machine / "2018-06-01-000000" / "Pictures" / "two.jpg")
     cache = cache_module.Cache(tmp_path / "c.sqlite")
-    run_folders([first / "Pictures", second / "Pictures"], tmp_path, cache)
-    said = io.StringIO()
-    again = rs.Folders([first / "Pictures", second / "Pictures"], tmp_path / "d.photoslibrary", "all", cache)
-    again.progress = progress_module.Progress(said)
-    again.index()
-    line, total = said.getvalue().splitlines()  # the group, then the total of everything searched
-    assert line.startswith("2 backup folders: 2 files, 1 library read (") and line.endswith("]") and "[cached 20" in line
-    assert total.startswith("Indexed 2 files in ")
+    pattern = machine / "*" / "Pictures"
+    plain = tmp_path / "plain"
+    make_file(plain / "three.jpg")
+
+    def lines(roots):
+        said = io.StringIO()
+        source = rs.Folders(roots, tmp_path / "d.photoslibrary", "all", cache)
+        source.progress = progress_module.Progress(said)
+        source.index()
+        return said.getvalue().splitlines()
+
+    for run in ("read", "cached"):
+        shown = lines([pattern, plain])
+        assert [line for line in shown if line.startswith("Searching")] == [f"Searching {pattern}", f"Searching {plain}"], run  # not one for each folder the pattern names
+        result = shown[shown.index(f"Searching {pattern}") + 1]
+        assert result.startswith("  2 files, 1 library (") and ("[cached " in result) == (run == "cached"), run  # and no "read" after libraries
+        assert "read" not in result.replace("[cached", "")
+    assert shown[-1].startswith("Indexed 3 files in ")  # the total over all the searches
+
+
+def test_saved_times_are_iso_8601_without_a_zone():
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", rs.iso(1_700_000_000.4))
 
 
 # The cache of ordinary folders ----------------------------------------------------------------------------------------

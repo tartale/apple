@@ -545,6 +545,11 @@ def database_originals(library: Path, logical: Path, cache: Optional[Cache] = No
         yield name, taken, library / relative, logical / relative
 
 
+def iso(when: float) -> str:
+    """A time as ISO 8601 in local time, without the zone: 2026-11-06T20:39:41."""
+    return datetime.fromtimestamp(when).isoformat(timespec="seconds")
+
+
 def backup_snapshots(root: Path) -> Optional[list]:
     """For a root inside a Time Machine Backups.backupdb whose snapshots are finished, the names of the snapshots it can see
     (the machine folder's, or every machine's), which say when the cache for it is out of date; [] for a root inside one
@@ -575,7 +580,7 @@ class Folders(ByNameAndTime):
         self.patterns = folders
         self.folders = [folder for folder in folders if not has_wildcard(str(folder)) or resolve(folder) is not None]  # patterns are expanded when the search starts
         self.unmatched: List[str] = []
-        self.tree_note = ""
+        self.tree_info = None  # (when the folder just searched was saved, directories read again, directories) if it came from the cache
         self.default = default
         self.snapshots = snapshots
         self.unreadable: List[Tuple[str, str]] = []  # (library, why it could not be examined)
@@ -591,7 +596,7 @@ class Folders(ByNameAndTime):
         return f"  Indexing: {self.in_folder:,} files so far ({duration(time.monotonic() - self.folder_started)})"
 
     def finished(self, count: int, started: float) -> None:
-        if len(self.folders) > 1:
+        if len(self.patterns) > 1:
             self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
 
     def files(self):
@@ -642,7 +647,7 @@ class Folders(ByNameAndTime):
 
         def search(folder: Path, ordinary: bool = False):
             real = resolve(folder) or folder
-            self.tree_note = ""
+            self.tree_info = None
             if has_database(real):
                 yield from library(real, folder, str(folder))
                 return
@@ -664,11 +669,9 @@ class Folders(ByNameAndTime):
             if key and remember:
                 self.cache.put(key, remember)
                 if previous:
-                    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(previous[1]))
-                    read = counts.get("read", 0)
-                    self.tree_note = f" [cached {when}" + (f"; {read:,} of {read + counts.get('reused', 0):,} folders read again]" if read else "]")
+                    self.tree_info = (previous[1], counts.get("read", 0), counts.get("read", 0) + counts.get("reused", 0))
 
-        folders = []
+        searches: List[Tuple[Path, List[Path]]] = []  # one search for each path given: the pattern as given, and the folders it names
         for pattern in self.patterns:
             if has_wildcard(str(pattern)) and resolve(pattern) is None:
                 self.progress.line(f"Expanding {pattern}")
@@ -677,48 +680,60 @@ class Folders(ByNameAndTime):
                     self.unmatched.append(str(pattern))
                 else:
                     self.progress.line(f"  {len(matches):,} folders")
-                folders.extend(matches)
+                searches.append((pattern, matches))
             else:
-                folders.append(pattern)
-        self.folders = folders
+                searches.append((pattern, [pattern]))
+        self.folders = [folder for _, roots in searches for folder in roots]
 
-        def run(roots: List[Path], ordinary: bool = False):
-            for folder in roots:
+        def finish(count: int, libraries: int, started: float, note: str) -> None:
+            what = f", {libraries:,} librar{'y' if libraries == 1 else 'ies'}" if libraries else ""
+            self.progress.line(f"  {count:,} files{what} ({duration(time.monotonic() - started)}){note}")
+
+        def run(to_run: List[Tuple[Path, List[Path]]], ordinary: bool = False):
+            for label, roots in to_run:
                 self.in_folder = self.libraries_in_folder = 0
                 self.folder_started = time.monotonic()
-                self.progress.line(f"Searching {folder}")
-                for item in search(folder, ordinary):
-                    self.in_folder += 1
-                    yield item
-                libraries = f", {self.libraries_in_folder} librar{'y' if self.libraries_in_folder == 1 else 'ies'} read" if self.libraries_in_folder else ""
-                self.progress.line(f"  {self.in_folder:,} files{libraries} ({duration(time.monotonic() - self.folder_started)}){self.tree_note}")
+                self.progress.line(f"Searching {label}")
+                cached = []  # for each folder, what its cache said, if it had one
+                for folder in roots:
+                    for item in search(folder, ordinary):
+                        self.in_folder += 1
+                        yield item
+                    cached.append(self.tree_info)
+                note = ""
+                if ordinary and cached and all(cached):
+                    read, total = sum(info[1] for info in cached), sum(info[2] for info in cached)
+                    note = f" [cached {iso(min(info[0] for info in cached))}" + (f"; {read:,} of {total:,} folders read again]" if read else "]")
+                finish(self.in_folder, self.libraries_in_folder, self.folder_started, note)
 
         # Time Machine backups are cached as a group: their finished snapshots do not change, and the key holds the names of
         # the snapshots, so a new or removed one makes a new entry. Everything else is read every time.
         listings = {folder: backup_snapshots(folder) for folder in self.folders} if self.cache else {}
-        backups = [folder for folder in self.folders if listings.get(folder) is not None]
+        backup_searches = [(label, roots) for label, roots in searches if roots and all(listings.get(folder) is not None for folder in roots)]
+        backups = [folder for _, roots in backup_searches for folder in roots]
         key = fingerprint("backups", sorted(str(folder) for folder in backups), self.snapshots, str(self.default),
                           [listings[folder] for folder in sorted(backups)]) if backups else None
         hit = self.cache.get(key) if key else None
         if hit:
             value, saved = hit
             self.unreadable.extend((path, reason) for path, reason in value["unreadable"])
-            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(saved))
-            started = time.monotonic()
-            entries = value["items"]
-            for name, modified, real, logical, kind, root, containing in entries:
-                yield name, modified, Path(real), Path(logical), kind, root, containing
-            libraries = len({entry[6] for entry in entries if entry[4] == "library"})
-            libraries = f", {libraries} librar{'y' if libraries == 1 else 'ies'} read" if libraries else ""
-            what = str(backups[0]) if len(backups) == 1 else f"{len(backups)} backup folders"
-            self.progress.line(f"{what}: {len(entries):,} files{libraries} ({duration(time.monotonic() - started)}) [cached {when}]")
+            by_root: Dict[str, list] = {}
+            for entry in value["items"]:
+                by_root.setdefault(entry[5], []).append(entry)
+            for label, roots in backup_searches:  # shown as it was when it was read, with where it comes from
+                started = time.monotonic()
+                self.progress.line(f"Searching {label}")
+                entries = [entry for folder in roots for entry in by_root.get(str(folder), [])]
+                for name, modified, real, logical, kind, root, containing in entries:
+                    yield name, modified, Path(real), Path(logical), kind, root, containing
+                finish(len(entries), len({entry[6] for entry in entries if entry[4] == "library"}), started, f" [cached {iso(saved)}]")
         elif backups:
             before, items = len(self.unreadable), []
-            for item in run(backups):
+            for item in run(backup_searches):
                 items.append([item[0], item[1], str(item[2]), str(item[3]), *item[4:]])
                 yield item
             self.cache.put(key, {"items": items, "unreadable": self.unreadable[before:]})
-        yield from run([folder for folder in self.folders if folder not in backups], ordinary=True)
+        yield from run([(label, roots) for label, roots in searches if (label, roots) not in backup_searches], ordinary=True)
 
     def note(self) -> Optional[str]:
         lines = []
