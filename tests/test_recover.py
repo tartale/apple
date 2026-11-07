@@ -1086,3 +1086,37 @@ def test_importing_from_a_list_with_nothing_to_search_is_not_called_list_only(ma
     assert "[dry run]" in report.output and "[list only]" not in report.output  # something is known, and --apply keeps it from being imported
     nothing = write_list(tmp_path / "n.csv", [f"{WHEN},one.heic,false,true,none,,,"])
     assert "[list only]" in recover("--list", str(nothing)).output  # nothing known, nothing searched
+
+
+def test_the_places_to_search_are_translated_like_the_paths_in_a_list(mac, tmp_path, monkeypatch):
+    found = make_file(tmp_path / "mac" / "backups" / "2020" / "one.heic")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,false,none,,,"])
+    monkeypatch.setenv("APPLE_PHOTOS_RECOVER_SEARCH", "folders=/nas/backups folders=/nas/*/2020")
+    monkeypatch.setenv("APPLE_PHOTOS_RECOVER_MAPPINGS", f"/nas={tmp_path}/mac")
+    result = recover("--list", str(listing), "--format", "csv", default=None)
+    assert result.exit_code == 0 and rows_of(result)[0]["files"] == str(found)
+
+
+def test_with_a_list_a_place_to_search_that_does_not_exist_here_is_a_note_not_an_error(mac, tmp_path, monkeypatch):
+    found = make_file(tmp_path / "here" / "one.heic")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,false,none,,,"])
+    options = ("--folders", str(tmp_path / "gone"), "--folders", str(tmp_path / "here"))
+    result = recover("--list", str(listing), *options, "--format", "csv", default=None)
+    assert result.exit_code == 0 and rows_of(result)[0]["files"] == str(found)
+    assert "Not searching these, which do not exist here" in result.output and str(tmp_path / "gone") in result.output
+    without_list = recover(*options, "--format", "csv")
+    assert without_list.exit_code != 0 and "does not exist" in without_list.output
+
+
+def test_a_list_whose_files_can_all_be_reached_searches_nothing(mac, tmp_path, monkeypatch):
+    make_file(tmp_path / "mac" / "one.heic")
+    search = tmp_path / "search"
+    search.mkdir()
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,false,folder,/nas,,/nas/one.heic"])
+    prepared = []
+    original = rs.Folders.prepare
+    monkeypatch.setattr(rs.Folders, "prepare", lambda self, progress: prepared.append(self) or original(self, progress))
+    reachable = recover("--list", str(listing), "--map", f"/nas={tmp_path}/mac", "--folders", str(search), default=None)
+    assert reachable.exit_code == 0 and prepared == []
+    unreachable = recover("--list", str(listing), "--folders", str(search), default=None)
+    assert unreachable.exit_code == 0 and len(prepared) == 1

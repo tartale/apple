@@ -59,6 +59,10 @@ class Source:
         """Where the original of the photo (key is (date, size, file name)) can be had from, or None."""
         raise NotImplementedError
 
+    def drop_missing(self) -> List[str]:
+        """Stops searching the places that do not exist, and says which they were."""
+        return []
+
     def prepare(self, progress: Progress) -> None:
         """Gets ready to look photos up (a source that must read many files first does it here, reporting on progress)."""
 
@@ -591,6 +595,12 @@ class Folders(ByNameAndTime):
     def problem(self) -> Optional[str]:
         missing = [str(folder) for folder in self.patterns if not has_wildcard(str(folder)) and resolve(folder) is None]
         return f"{', '.join(missing)} does not exist" if missing else None
+
+    def drop_missing(self) -> List[str]:
+        dropped = [str(folder) for folder in self.patterns if not has_wildcard(str(folder)) and resolve(folder) is None]
+        self.patterns = [folder for folder in self.patterns if str(folder) not in dropped]
+        self.folders = [folder for folder in self.folders if str(folder) not in dropped]
+        return dropped
 
     def status(self, count: int, started: float) -> str:
         return f"  Indexing: {self.in_folder:,} files so far ({duration(time.monotonic() - self.folder_started)})"

@@ -217,9 +217,18 @@ def recover_command(
         path = Path("/nonexistent/default.photoslibrary")
     if snapshots not in SNAPSHOTS:
         raise typer.BadParameter(f"--snapshots must be one of {', '.join(SNAPSHOTS)}")
+    # The translations that make a list's paths reachable make the places to search reachable too, so that one set of
+    # settings (APPLE_PHOTOS_RECOVER_SEARCH and APPLE_PHOTOS_RECOVER_MAPPINGS) fits every machine.
+    mapping = parse_map(map_paths)
+    entries = [(kind, [translate(place, mapping) for place in places] if kind == "folders" else places) for kind, places in entries]
     sources = build_sources(entries, path, snapshots, Cache(read=not refresh))
     for source in sources:
         reason = source.problem()
+        if reason and list_file is not None:  # the list says where the files are; searching is only for what it cannot reach
+            dropped = source.drop_missing()
+            if dropped:
+                typer.echo("Not searching these, which do not exist here:\n" + "\n".join(f"  {place}" for place in dropped), err=True)
+            reason = source.problem()
         if reason:
             fail(f"Cannot search {source.name}: {reason}.")
 
@@ -249,12 +258,20 @@ def recover_command(
                 continue
             items.append({"key": key, **{name: entry[name] for name in ("hidden", "shared", "source", "root", "library", "files")}})
 
-    mapping = parse_map(map_paths)
     rows, hits, unreachable = [], [], {}
     looked, started = 0, time.monotonic()
-    if items:
-        for source in sources:
-            source.prepare(progress)
+    prepared = [False]
+
+    def prepare_sources() -> None:
+        """Index the places to search. With a list this waits until a row needs it: a list whose files can all be reached
+        needs no search at all."""
+        if not prepared[0]:
+            prepared[0] = True
+            for source in sources:
+                source.prepare(progress)
+
+    if items and list_file is None:
+        prepare_sources()
     for item in items:
         looked += 1
         progress.update(f"Looking up originals: {looked}/{len(items)} ({len(hits)} found)")
@@ -267,6 +284,7 @@ def recover_command(
             else:
                 unreachable[item.get("root") or str(Path(item["files"][0]).parent)] = unreachable.get(item.get("root") or str(Path(item["files"][0]).parent), 0) + 1
         if not found:
+            prepare_sources()
             found = next((hit for hit in (source.find(photos, key) for source in sources) if hit), None)
         if found:
             hits.append(found)
