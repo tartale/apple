@@ -1,4 +1,4 @@
-"""`./apple photos find`: find where the original of a photo that a library does not store can be had, and import it.
+"""`./apple photos missing`, `find` and `import`: list the photos whose original a library does not store, find where the original can be had, and import it.
 
 A library keeps a placeholder for a photo whose original it does not hold (a photo shared with you in Messages and never
 saved, for one). The places to look are in recover_sources.py; the caller says which to search.
@@ -75,7 +75,7 @@ def read_list(text: str) -> List[dict]:
         else:
             records = list(csv.DictReader(stripped.splitlines()))
     except (ValueError, TypeError, csv.Error):
-        raise typer.BadParameter("--list is not csv or json from `apple photos find` or `apple photos diff`")
+        raise typer.BadParameter("the list is not csv or json from `apple photos missing`, `find` or `diff`")
     items = []
     for record in records:
         if "name" not in record or "date" not in record:
