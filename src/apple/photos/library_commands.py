@@ -131,6 +131,12 @@ def parse_list(text: str) -> tuple:
             raise typer.BadParameter("the list has no name column; run diff with --fields including name")
         else:
             records = [{"name": line.strip()} for line in lines if line.strip()]
+    return split_records(records)
+
+
+def split_records(records: list) -> tuple:
+    """(names to copy, hidden items, items with no stored original) from records with a name and optionally true/false
+    hidden, burst, missing and shared values, as parse_list describes."""
     names, hidden, missing = [], {}, {}
     for record in records:
         if is_true(record.get("hidden")):
@@ -477,6 +483,19 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
+def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media) -> list:
+    """The records of `diff LEFT RIGHT --only left` for the dates and media given, read from the databases."""
+    try:
+        data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+    selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
+    hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
+    bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
+    return diff_rows(selected[0] - selected[1], Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
+                     {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
+
+
 def copy_command(
     source: SourceOption,
     destination: Annotated[str, typer.Option("--to", help="Destination library; it must already exist in PowerPhotos.")],
@@ -487,6 +506,10 @@ def copy_command(
         Optional[str],
         typer.Option("--list", help="Copy only the photos with the file names in this file (- for stdin): the output of `apple photos diff --format csv|json`, or one name per line. Not with --since, --until or --media."),
     ] = None,
+    only_missing: Annotated[
+        bool,
+        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list - with --no-duplicate-check. --since, --until and --media limit what is compared. Not with --list."),
+    ] = False,
     no_duplicate_check: NoDuplicateCheckOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
 ) -> None:
@@ -498,14 +521,27 @@ def copy_command(
     (the hidden column of `diff`), which are left out. An empty list copies nothing and succeeds.
     --no-duplicate-check copies the listed photos even when the destination has them, which avoids PowerPhotos'
     comparison against a large library; use it only with a list of what is missing, such as from `apple photos diff`.
+    --only-missing does that for you: it works out what the destination lacks and copies exactly that.
     """
     require_macos()
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
+    if only_missing and (list_file is not None or no_duplicate_check):
+        raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list or --no-duplicate-check")
     if no_duplicate_check and list_file is None:
         raise typer.BadParameter("--no-duplicate-check needs --list: without a list it would copy the whole range again")
     names, hidden, no_original = None, {}, {}
-    if list_file is not None:
+    if only_missing:
+        no_duplicate_check = True
+        names, hidden, no_original = split_records(only_in_left(source, destination, since, until, media))
+        if not names:
+            reason = f"nothing is missing from {destination}" if not (hidden or no_original) else "everything missing is hidden in Photos or has no original in " + source
+            typer.echo(f"{destination}: no files copied ({reason})")
+            if hidden:
+                report_hidden(hidden)
+            report_missing(no_original, source)
+            return
+    elif list_file is not None:
         if since or until or media != Media.all:
             raise typer.BadParameter("--list cannot be combined with --since, --until or --media")
         names, hidden, no_original = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))

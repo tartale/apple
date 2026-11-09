@@ -964,3 +964,35 @@ def test_an_older_library_without_the_newer_columns_can_still_be_read(tmp_path):
 def test_counts_say_item_once_and_items_otherwise():
     from apple.photos.library_commands import count
     assert count(1, "hidden item") == "1 hidden item" and count(0, "burst member") == "0 burst members" and count(3, "photo") == "3 photos"
+
+
+def copy_only_missing(mac, left, right, *options):
+    for name, photos in (("Source", left), ("photos-2018", right)):
+        add_photos(mac.libraries[name], photos)
+    return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", *options])
+
+
+def test_only_missing_copies_what_the_pipe_of_diff_into_copy_would(mac):
+    """diff --only left --format csv | copy --list - --no-duplicate-check, without the pipe."""
+    add_photos(mac.libraries["Source"], [A, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
+    add_photos(mac.libraries["photos-2018"], [A])
+    piped = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--only", "left", "--format", "csv"])
+    expected = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--list", "-", "--no-duplicate-check"], input=piped.stdout)
+    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"])
+    calls = mac.calls("copy-named.applescript")
+    assert result.exit_code == 0 and calls == [["Source", "photos-2018", ["b.jpg", "c.mov"], "false"]] * 2
+    assert result.output == expected.output and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
+
+
+def test_only_missing_limits_by_dates_and_says_when_nothing_is_missing(mac):
+    copy_only_missing(mac, [A, B, C], [A], "--since", "2018-03-03")
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["c.mov"], "false"]]
+    nothing = copy_only_missing(mac, [A], [A])
+    assert nothing.exit_code == 0 and "no files copied (nothing is missing from photos-2018)" in nothing.output
+    assert len(mac.calls("copy-named.applescript")) == 1
+
+
+def test_only_missing_cannot_be_combined_with_a_list_or_no_duplicate_check(mac):
+    for option in (["--list", "-"], ["--no-duplicate-check"]):
+        result = copy_only_missing(mac, [A], [], *option)
+        assert result.exit_code == 2 and "--only-missing" in result.output
