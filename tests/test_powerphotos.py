@@ -1161,3 +1161,20 @@ def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_de
     script = (pp.APPLESCRIPTS / "trash-ids.applescript").read_text()
     assert 'run script' in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '" or "' in script
     assert "delete toDelete" not in script and "delete (contents of" not in script
+
+
+def test_fix_removes_the_strays_of_every_year_in_one_delete_after_all_are_copied(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    older = ("2016-02-02 10:00:00", 50, "older.jpg")
+    unlucky = ("2015-03-03 10:00:00", 50, "unlucky.jpg")
+    for name in ("photos-2017", "photos-2016", "photos-2015"):
+        mac.make(name, 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, older, unlucky])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    add_photos(mac.libraries["photos-2016"], [older])
+    add_photos(mac.libraries["photos-2015"], [])  # this copy did not arrive
+    result = fix()
+    assert sorted(call[1] for call in mac.calls("copy-ids.applescript")) == ["photos-2015", "photos-2016", "photos-2017"]
+    trash = mac.calls("trash-ids.applescript")
+    assert len(trash) == 1 and trash[0][0] == "photos-2018" and sorted(trash[0][1]) == ["UUID2", "UUID3"]  # one delete, and not for the one that did not arrive
+    assert "NOT confirmed in photos-2015, so it stays in photos-2018" in result.output and result.exit_code == 1

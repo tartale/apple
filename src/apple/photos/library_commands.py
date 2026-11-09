@@ -652,7 +652,8 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
     """--fix: copies the items outside the year of a library into the library of their own year (PowerPhotos skips any that
     library already has), then re-reads that library's database to confirm each one is there, and only then moves the
-    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete). Photos are named by their Photos
+    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete), all in one delete after every copy has
+    been confirmed, so that PowerPhotos asks once however many years the strays come from. Photos are named by their Photos
     identifiers, so a file name another photo shares does not matter. An item is left alone, and said so, when its year
     has no library, when it cannot be told which part of a capped year it belongs to, or when the database gives it no
     identifier. Returns whether anything was removed from this library."""
@@ -672,7 +673,8 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             wanted.setdefault(target.name, []).append(key)
     for key, why in left_alone:
         typer.echo(f"    not moved: {key[0]} {key[2]} ({why})")
-    removed = False
+    confirmed_everywhere: list = []
+    names_of: dict = {}
     for target, keys in sorted(wanted.items()):
         keys = sorted(set(keys))
         identifiers = {key: own.uuids[key] for key in keys}
@@ -683,7 +685,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         if result.sent is None:
             typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
             continue
-        names_of = {uuid: key[2] for key in keys for uuid in identifiers[key]}
+        names_of.update({uuid: key[2] for key in keys for uuid in identifiers[key]})
         report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
         there = read_library(libraries, target)
         confirmed = [key for key in keys if there is not None and key in there.visible + there.hidden]
@@ -691,13 +693,16 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         for key in keys:
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
-        if confirmed:
-            deleted, missing = trash_ids(libraries, part.name, [uuid for key in confirmed for uuid in identifiers[key]])
-            typer.echo(f"      {part.name}: moved {deleted} to its Recently Deleted: " + ", ".join(key[2] for key in confirmed))
-            for uuid in missing:
-                typer.echo(f"      not moved out of {part.name} (PowerPhotos lists no photo with that identifier, as it does not list hidden items): {names_of.get(uuid, uuid)}")
-            removed = removed or deleted > 0
-    return removed
+        confirmed_everywhere += [(key, identifiers[key]) for key in confirmed]
+    if not confirmed_everywhere:
+        return False
+    # Removed once, after every copy is confirmed: PowerPhotos asks to confirm each delete, and a library with strays of
+    # several years would otherwise ask once per year.
+    deleted, missing = trash_ids(libraries, part.name, [uuid for _, uuids in confirmed_everywhere for uuid in uuids])
+    typer.echo(f"    {part.name}: moved {deleted} to its Recently Deleted: " + ", ".join(key[2] for key, _ in confirmed_everywhere))
+    for uuid in missing:
+        typer.echo(f"      not moved out of {part.name} (PowerPhotos lists no photo with that identifier, as it does not list hidden items): {names_of.get(uuid, uuid)}")
+    return deleted > 0
 
 
 def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None) -> bool:
