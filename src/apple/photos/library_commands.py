@@ -587,18 +587,18 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible
 
 
-def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination) -> bool:
+def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
-    split_command, --check). True when it is in order."""
+    split_command, --check). Returns (whether it is in order, the items outside the year, the library's photos or None)."""
     label = part.name
     if part.name not in libraries:
         typer.echo(f"{label}: library missing")
-        return False
+        return False, Counter(), None
     own = read_library(libraries, part.name)
     if own is None:
         typer.echo(f"{label}: cannot be read from its database")
-        return False
+        return False, Counter(), None
     held = own.visible + own.hidden
     outside, near_ends = split_plan.outside_year(held, year, kind)
     if source_data is None:
@@ -626,10 +626,55 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
         typer.echo(f"    outside: {key[0]} {key[2]}")
     for key in sorted(lacking.elements()):
         typer.echo(f"    missing: {key[0]} {key[2]}")
-    return not problems
+    return not problems, outside, own
 
 
-def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int]) -> bool:
+def normalized_name(name: str) -> str:
+    """A file name as PowerPhotos compares it: without regard to case, and .jpeg is .jpg."""
+    return re.sub(r"\.jpeg$", ".jpg", name.lower())
+
+
+def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> None:
+    """--fix: copies the items outside the year of a library into the library of their own year (PowerPhotos skips any that
+    library already has), then re-reads that library's database to confirm each one is there, and says which are now safe
+    to remove from this library. An item is left alone, and said so, when its year has no library or cannot be told which
+    part of a year it belongs to, or when another photo in this library has the same file name (a copy is made by name,
+    so that one would be copied too). Nothing is removed from this library: the check still fails for it until they are."""
+    held_names = Counter(normalized_name(key[2]) for key in own.visible + own.hidden)
+    wanted: dict = {}
+    left_alone = []
+    for key in sorted(outside.elements()):
+        item_date = date.fromisoformat(key[0][:10])
+        candidates = parts_of(kind, item_date.year)
+        target = candidates[0] if len(candidates) == 1 else next((c for c in candidates if c.start <= item_date < c.end), None)
+        if target is None:
+            left_alone.append((key, f"no library for {item_date.year}" if not candidates else f"cannot tell which part of {item_date.year} it belongs in"))
+        elif target.name not in libraries:
+            left_alone.append((key, f"{target.name} is not in PowerPhotos"))
+        elif held_names[normalized_name(key[2])] > 1:
+            left_alone.append((key, "another photo here has the same file name, so a copy by name would take both"))
+        else:
+            wanted.setdefault(target.name, []).append(key)
+    for key, why in left_alone:
+        typer.echo(f"    not moved: {key[0]} {key[2]} ({why})")
+    for target, keys in sorted(wanted.items()):
+        names = sorted({key[2] for key in keys})
+        if dry:
+            typer.echo(f"    would copy {count(len(keys), 'item')} into {target}: {', '.join(names)}")
+            continue
+        result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, names, check_duplicates=True)
+        if result.sent is None:
+            typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
+            continue
+        report_unlisted(result.unlisted, part.name)
+        there = read_library(libraries, target)
+        confirmed = [key for key in keys if there is not None and key in there.visible + there.hidden]
+        typer.echo(f"    {target}: asked PowerPhotos to copy {count(len(keys), 'item')}; {len(confirmed)} confirmed in its database")
+        for key in keys:
+            typer.echo(f"      {'now in ' + target + ', can be removed from ' + part.name if key in confirmed else 'NOT confirmed in ' + target + ', keep it in ' + part.name}: {key[0]} {key[2]}")
+
+
+def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None) -> bool:
     """--check: for each year and kind, the libraries photos would be split into (those the source's photos need, or without
     a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
     that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
@@ -659,7 +704,10 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                     nothing.append(part.name)  # the source has no photo for it, so it is not needed
                     continue
                 nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
-                in_order = check_part(libraries, part, kind, year, source_data, nearby, read_destination) and in_order
+                ok, outside, own = check_part(libraries, part, kind, year, source_data, nearby, read_destination)
+                in_order = ok and in_order
+                if fix is not None and outside and own is not None:
+                    fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"])
     if nothing:
         typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
     return in_order
@@ -701,6 +749,15 @@ def split_command(
             "the source has: list what is outside the year and what is missing. Exits 1 when a library is not in order.",
         ),
     ] = False,
+    fix: Annotated[
+        bool,
+        typer.Option(
+            "--fix",
+            help="With --check (implied): copy each item outside its library's year into the library of its own year, confirm it is "
+            "there from that library's database, and say which can now be removed from the wrong library. Nothing is removed. "
+            "--dry-run shows what would be copied.",
+        ),
+    ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Copy nothing; show the libraries each year goes into and what each needs. Same as DRY_RUN=true.")
     ] = False,
@@ -725,8 +782,16 @@ def split_command(
     the photos of 2005 and only those. A photo within a day of the year's ends is not a stray, since the databases keep
     UTC dates and PowerPhotos files by local date; one that close that the library lacks is reported as near the ends
     and does not fail the check. Exits 1 when any library has strays, lacks photos or is not in PowerPhotos.
+
+    --fix (it implies --check) then moves the strays to where they belong, as far as it safely can: each is copied into
+    the library of its own year (by file name, PowerPhotos skipping any that library has), and that library's database is
+    read again to confirm it arrived. Only then is it listed as safe to remove from the wrong library; removing it is left
+    to you in Photos, since nothing here deletes from a library. A stray is left alone, and said so, when its year has no
+    library, when it is not clear which part of a capped year it belongs to, or when another photo in the library shares
+    its file name (the copy is made by name, so that photo would be copied too).
     """
     require_macos()
+    check = check or fix
     if source is None and not check:
         raise typer.BadParameter("--from is needed (it is optional only with --check)")
     first, _, last = years.partition("-")
@@ -752,7 +817,8 @@ def split_command(
             if check:
                 if source and source_data is None:
                     fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
-                if not check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes):
+                if not check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
+                                   {"on_upgrade": on_upgrade, "dry": dry} if fix else None):
                     raise typer.Exit(1)
                 return
             source_photos = None if source_data is None else source_data.visible

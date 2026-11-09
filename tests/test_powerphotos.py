@@ -1057,3 +1057,55 @@ def test_split_check_with_a_source_does_not_ask_for_libraries_of_years_it_has_no
 def test_split_needs_from_unless_it_only_checks(mac):
     result = runner.invoke(app, ["photos", "split", "--media", "photos", "--years", "2018"])
     assert result.exit_code == 2 and "--from is needed" in result.output
+
+
+OLD = ("2017-06-01 10:00:00", 50, "old.jpg")
+
+
+def fix(*options):
+    return runner.invoke(app, ["photos", "split", "--fix", "--media", "photos", "--years", "2018", *options])
+
+
+def test_fix_copies_a_stray_into_the_library_of_its_year_and_says_it_can_be_removed(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])  # the copy: the fake PowerPhotos does not write, so it is there already
+    result = fix()
+    assert mac.calls("copy-named.applescript") == [["photos-2018", "photos-2017", ["old.jpg"], "true"]]
+    assert "photos-2017: asked PowerPhotos to copy 1 item; 1 confirmed in its database" in result.output
+    assert "now in photos-2017, can be removed from photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
+    assert result.exit_code == 1  # it is still in the wrong library until it is removed
+
+
+def test_fix_does_not_say_an_item_can_be_removed_unless_the_other_library_has_it(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert "0 confirmed" in result.output and "NOT confirmed in photos-2017, keep it in photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
+    assert "can be removed" not in result.output
+
+
+def test_fix_leaves_alone_what_it_cannot_place_or_cannot_copy_safely(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2016-01-01 10:00:00", 50, "x.jpg"), OLD, ("2018-05-05 10:00:00", 50, "old.jpg")])
+    result = fix()
+    assert "not moved: 2016-01-01 10:00:00 x.jpg (no library for 2016)" in result.output
+    assert "not moved: 2017-06-01 10:00:00 old.jpg (no library for 2017)" in result.output
+    mac.make("photos-2017", 19607)
+    shared_name = fix()
+    assert "not moved: 2017-06-01 10:00:00 old.jpg (another photo here has the same file name" in shared_name.output
+    assert mac.calls("copy-named.applescript") == []
+
+
+def test_fix_dry_run_copies_nothing(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    result = fix("--dry-run")
+    assert "would copy 1 item into photos-2017: old.jpg" in result.output and mac.calls("copy-named.applescript") == []
+
+
+def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
+    add_photos(mac.libraries["Source"], [A, OLD])
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    result = fix("--from", "Source")
+    assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-named.applescript") == []
