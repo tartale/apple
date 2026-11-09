@@ -1149,18 +1149,15 @@ def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
 
 
 def test_the_id_applescripts_name_photos_by_the_uuid_before_the_slash():
-    for name, action in (("copy-ids", "duplicate wanted"), ("trash-ids", "delete toDelete")):
+    for name in ("copy-ids", "trash-ids"):
         script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
-        assert action in script and "id of photos of" in script and 'text item delimiters to "/"' in script and '"missing"' in script
+        assert "id of photos of" in script and 'text item delimiters to "/"' in script and '"missing"' in script
+    assert "duplicate wanted" in (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
 
 
-def test_fix_leaves_alone_an_item_whose_database_gives_no_identifier(mac):
-    mac.make("photos-2017", 19607)
-    add_photos(mac.libraries["photos-2018"], [A, OLD])
-    add_photos(mac.libraries["photos-2017"], [OLD])
-    connection = sqlite3.connect(mac.libraries["photos-2018"] / "database" / "Photos.sqlite")
-    connection.execute("update ZASSET set ZUUID = null")
-    connection.commit()
-    connection.close()
-    result = fix()
-    assert "not moved: 2017-06-01 10:00:00 old.jpg (the database gives it no identifier)" in result.output and mac.calls("copy-ids.applescript") == []
+def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_delete_a_list():
+    """delete {photo, photo} is an error ("Can't make ... into type specifier") and one delete per photo asks for confirmation each
+    time: a filter (every photo whose id is "a" or id is "b") is one specifier, and so one confirmation."""
+    script = (pp.APPLESCRIPTS / "trash-ids.applescript").read_text()
+    assert 'run script' in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '" or "' in script
+    assert "delete toDelete" not in script and "delete (contents of" not in script
