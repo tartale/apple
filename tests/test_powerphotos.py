@@ -996,3 +996,64 @@ def test_only_missing_cannot_be_combined_with_a_list_or_no_duplicate_check(mac):
     for option in (["--list", "-"], ["--no-duplicate-check"]):
         result = copy_only_missing(mac, [A], [], *option)
         assert result.exit_code == 2 and "--only-missing" in result.output
+
+
+def test_split_check_passes_a_library_that_holds_its_year_and_copies_nothing(mac):
+    year_libraries(mac, [A, B], photos_2018=[A, B])
+    result = split("--check")
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output
+    assert mac.calls("copy-photos.applescript") == [] and mac.calls("copy-named.applescript") == []
+
+
+def test_split_check_lists_what_is_outside_the_year_and_what_is_missing(mac):
+    year_libraries(mac, [A, B], photos_2018=[A, ("2017-06-01 10:00:00", 50, "old.jpg"), ("2019-02-01 10:00:00", 50, "new.jpg")])
+    result = split("--check")
+    assert result.exit_code == 1 and "photos-2018: 2 outside 2018 (2017 1, 2019 1); 1 missing" in result.output
+    assert "    outside: 2017-06-01 10:00:00 old.jpg" in result.output and "    missing: 2018-03-02 11:00:00 b.jpg" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_check_does_not_call_an_item_within_a_day_of_the_year_a_stray(mac):
+    year_libraries(mac, [A], photos_2018=[A, ("2017-12-31 23:00:00", 50, "edge.jpg")])
+    result = split("--check")
+    assert result.exit_code == 0 and "in order (1 within a day of the year's ends)" in result.output
+
+
+def test_split_check_fails_for_a_library_that_is_not_in_powerphotos(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    result = split("--check", "--to", "nothing-{year}", "--on-missing", "skip")
+    assert result.exit_code == 1 and "nothing-2018: library missing" in result.output
+
+
+def test_split_check_cannot_be_combined_with_what_it_does_not_do(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    for option in ("--no-duplicate-check", "--no-skip-complete"):
+        assert split("--check", option).exit_code == 2
+
+
+def split_check_without_a_source(*options):
+    return runner.invoke(app, ["photos", "split", "--check", "--media", "photos", "--years", "2017-2018", *options])
+
+
+def test_split_check_without_a_source_checks_the_libraries_that_exist_for_the_years(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 50, "old.jpg")])
+    result = split_check_without_a_source()
+    assert result.exit_code == 1 and "photos-2018: 1 outside 2018 (2017 1)" in result.output
+    assert "No library, and none needed: photos-2017" in result.output
+    add_photos(mac.libraries["photos-2018"], [A])
+    assert split_check_without_a_source().exit_code == 0
+    add_photos(mac.libraries["photos-2018"], [])
+    empty = split_check_without_a_source()
+    assert empty.exit_code == 1 and "photos-2018: holds no photos from 2018" in empty.output
+
+
+def test_split_check_with_a_source_does_not_ask_for_libraries_of_years_it_has_no_photos_in(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A, B])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output and "No library, and none needed: photos-2017" in result.output
+
+
+def test_split_needs_from_unless_it_only_checks(mac):
+    result = runner.invoke(app, ["photos", "split", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 2 and "--from is needed" in result.output

@@ -1,6 +1,7 @@
 """`./apple photos libraries|diff|copy|split`: compare and move photos between Photos libraries with PowerPhotos (macOS only)."""
 import csv
 import json
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -586,10 +587,88 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible
 
 
+def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination) -> bool:
+    """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
+    dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
+    split_command, --check). True when it is in order."""
+    label = part.name
+    if part.name not in libraries:
+        typer.echo(f"{label}: library missing")
+        return False
+    own = read_library(libraries, part.name)
+    if own is None:
+        typer.echo(f"{label}: cannot be read from its database")
+        return False
+    held = own.visible + own.hidden
+    outside, near_ends = split_plan.outside_year(held, year, kind)
+    if source_data is None:
+        lacking = uncertain = Counter()
+    else:
+        found = split_plan.missing_in_range(source_data.visible, part.start, part.end, kind, read_destination(part.name), [read_destination(name) for name in nearby])
+        lacking, uncertain = found if found is not None else (Counter(), Counter())
+    problems = []
+    if source_data is None and not split_plan.count_in_range(held, date(year, 1, 1), date(year + 1, 1, 1), kind):
+        problems.append(f"holds no {kind} from {year}")
+    if outside:
+        by_year = Counter()
+        for key, number in outside.items():
+            by_year[key[0][:4]] += number
+        problems.append(f"{sum(outside.values())} outside {year} ({', '.join(f'{when} {number}' for when, number in sorted(by_year.items()))})")
+    if lacking:
+        problems.append(f"{sum(lacking.values())} missing")
+    notes = []
+    if near_ends:
+        notes.append(f"{near_ends} within a day of the year's ends")
+    if uncertain:
+        notes.append(f"{sum(uncertain.values())} of the source's within a day of its dates' ends are in no library")
+    typer.echo(f"{label}: " + ("; ".join(problems) if problems else "in order") + (f" ({'; '.join(notes)})" if notes else ""))
+    for key in sorted(outside.elements()):
+        typer.echo(f"    outside: {key[0]} {key[2]}")
+    for key in sorted(lacking.elements()):
+        typer.echo(f"    missing: {key[0]} {key[2]}")
+    return not problems
+
+
+def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int]) -> bool:
+    """--check: for each year and kind, the libraries photos would be split into (those the source's photos need, or without
+    a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
+    that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
+    library is in order."""
+    cache: dict = {}
+
+    def read_destination(name: str):
+        if name not in cache:
+            cache[name] = read_photos(libraries, name)
+        return cache[name]
+
+    def parts_of(kind: str, year: int) -> list:
+        name = destination_name.format(media=kind, year=year)
+        if source_data is not None:
+            return split_plan.plan_year(source_data.visible, year, kind, name, max_bytes)
+        found = [existing for existing in sorted(libraries) if existing == name or re.fullmatch(re.escape(name) + r"-\d+", existing)]
+        return [split_plan.Part(existing, date(year, 1, 1), date(year + 1, 1, 1), 0) for existing in found]
+
+    in_order, nothing = True, []
+    for kind in kinds:
+        for year in range(first_year, last_year + 1):
+            parts = parts_of(kind, year)
+            if not parts:
+                nothing.append(destination_name.format(media=kind, year=year))
+            for part in parts:
+                if part.name not in libraries and source_data is not None and not split_plan.count_in_range(source_data.visible, part.start, part.end, kind):
+                    nothing.append(part.name)  # the source has no photo for it, so it is not needed
+                    continue
+                nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
+                in_order = check_part(libraries, part, kind, year, source_data, nearby, read_destination) and in_order
+    if nothing:
+        typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
+    return in_order
+
+
 def split_command(
-    source: SourceOption,
     media: Annotated[Media, typer.Option(help="Split photos, videos or both. With all, photos and videos go to their own libraries (photos-2018 and videos-2018), in the same run.")],
     years: Annotated[str, typer.Option(help="One year or a range, such as 2018 or 2018-2020.")],
+    source: Annotated[Optional[str], typer.Option("--from", help="Source library, as named by `./apple photos libraries`. Needed unless --check is given without one.")] = None,
     destination_name: Annotated[
         str, typer.Option("--to", help="Destination library name for each year; {media} and {year} are filled in.")
     ] = "{media}-{year}",
@@ -614,6 +693,14 @@ def split_command(
         typer.Option(help="When a destination library is not in PowerPhotos: stop before copying anything, or skip it and go on."),
     ] = OnMissing.stop,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Copy nothing; check that each library holds only the photos of its year and every photo of its dates that "
+            "the source has: list what is outside the year and what is missing. Exits 1 when a library is not in order.",
+        ),
+    ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Copy nothing; show the libraries each year goes into and what each needs. Same as DRY_RUN=true.")
     ] = False,
@@ -632,8 +719,16 @@ def split_command(
     file name another photo in the source shares copies that one too. A photo within a day of the start or end of a
     library's dates, whose library the databases cannot settle, is copied into every library it could belong to that
     lacks it, so it can end up in two.
+
+    --check copies nothing: it reads the databases and, for each library, lists the photos dated outside its year
+    (strays) and the source's photos of its dates that it lacks, so it can be run to see that photos-2005 really holds
+    the photos of 2005 and only those. A photo within a day of the year's ends is not a stray, since the databases keep
+    UTC dates and PowerPhotos files by local date; one that close that the library lacks is reported as near the ends
+    and does not fail the check. Exits 1 when any library has strays, lacks photos or is not in PowerPhotos.
     """
     require_macos()
+    if source is None and not check:
+        raise typer.BadParameter("--from is needed (it is optional only with --check)")
     first, _, last = years.partition("-")
     if not (first.isdigit() and (last.isdigit() or not last)):
         raise typer.BadParameter("--years must be a year or a range such as 2018-2020")
@@ -642,6 +737,8 @@ def split_command(
         raise typer.BadParameter("--years ends before it starts")
     if no_duplicate_check and not skip_complete:
         raise typer.BadParameter("--no-duplicate-check works out what is missing, so it cannot be used with --no-skip-complete")
+    if check and (no_duplicate_check or not skip_complete):
+        raise typer.BadParameter("--check works out what is missing and copies nothing, so it cannot be used with --no-duplicate-check or --no-skip-complete")
     try:
         max_bytes = split_plan.parse_size(max_size) if max_size is not None else None
     except ValueError as error:
@@ -651,7 +748,13 @@ def split_command(
     try:
         with pp.one_at_a_time():
             libraries = known_libraries()
-            source_data = read_library(libraries, source) if skip_complete or max_bytes else None
+            source_data = read_library(libraries, source) if source and (skip_complete or max_bytes or check) else None
+            if check:
+                if source and source_data is None:
+                    fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
+                if not check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes):
+                    raise typer.Exit(1)
+                return
             source_photos = None if source_data is None else source_data.visible
             if source_data is not None and sum(source_data.superseded.values()):
                 typer.echo(
