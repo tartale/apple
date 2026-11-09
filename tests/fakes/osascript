@@ -3,9 +3,9 @@
 logged as the list of names it holds) and answers from the environment: FAKE_LIBRARIES (name<TAB>path lines),
 FAKE_COPY_ERROR (stderr text; exits 1), FAKE_COPY_FOUND (the count), FAKE_NAMED_MISSING (comma-separated names that
 copy-named.applescript reports as not in the source), FAKE_IMPORT_COUNT (how many import-photos.applescript says it
-imported; the default is every file listed) and FAKE_IMPORT_ERROR (stderr text; exits 1), FAKE_TRASH_DELETED (the count trash-named.applescript says it deleted; the default is every
-name listed), FAKE_TRASH_AMBIGUOUS (comma-separated names it reports as matching more than one photo) and FAKE_TRASH_ERROR (stderr text; exits 1).
-For trash-named.applescript the names file is logged as the list it holds. For copy-named.applescript and
+imported; the default is every file listed) and FAKE_IMPORT_ERROR (stderr text; exits 1), FAKE_TRASH_DELETED (the count trash-ids.applescript says it deleted; the default is every
+identifier listed), FAKE_TRASH_MISSING (comma-separated identifiers it reports as not in the library) and FAKE_TRASH_ERROR (stderr text;
+exits 1). For trash-ids.applescript and copy-ids.applescript the identifiers file is logged as the list it holds. For copy-named.applescript and
 import-photos.applescript the file listing the names or paths is logged as the list it holds."""
 import json
 import os
@@ -16,7 +16,9 @@ script, *args = sys.argv[1:]
 name = Path(script).name
 if name == "copy-named.applescript":
     args[2] = Path(args[2]).read_text().splitlines()
-if name == "trash-named.applescript":
+if name == "copy-ids.applescript":
+    args[2] = Path(args[2]).read_text().splitlines()
+if name == "trash-ids.applescript":
     args[1] = Path(args[1]).read_text().splitlines()
 if name == "import-photos.applescript":
     args[0] = Path(args[0]).read_text().splitlines()
@@ -29,14 +31,14 @@ elif name == "import-photos.applescript":
         print(os.environ["FAKE_IMPORT_ERROR"], file=sys.stderr)
         sys.exit(1)
     print("imported " + os.environ.get("FAKE_IMPORT_COUNT", str(len(args[0]))))
-elif name == "trash-named.applescript":
+elif name == "trash-ids.applescript":
     if os.environ.get("FAKE_TRASH_ERROR"):
         print(os.environ["FAKE_TRASH_ERROR"], file=sys.stderr)
         sys.exit(1)
-    for ambiguous in filter(None, os.environ.get("FAKE_TRASH_AMBIGUOUS", "").split(",")):
-        print("ambiguous\t" + ambiguous)
+    for missing in filter(None, os.environ.get("FAKE_TRASH_MISSING", "").split(",")):
+        print("missing\t" + missing)
     print("deleted " + os.environ.get("FAKE_TRASH_DELETED", str(len(args[1]))))
-elif name in ("copy-photos.applescript", "copy-named.applescript"):
+elif name in ("copy-photos.applescript", "copy-named.applescript", "copy-ids.applescript"):
     if os.environ.get("FAKE_COPY_ERROR"):
         print(os.environ["FAKE_COPY_ERROR"], file=sys.stderr)
         sys.exit(1)

@@ -209,9 +209,9 @@ def report_unlisted(unlisted: list, source: str) -> None:
 
 def copy_one(
     libraries: dict, source: str, destination: str, since: Optional[date], before: Optional[date],
-    media: str, mode: OnUpgrade, names: Optional[list] = None, check_duplicates: bool = True,
+    media: str, mode: OnUpgrade, names: Optional[list] = None, check_duplicates: bool = True, ids: Optional[list] = None,
 ) -> CopyResult:
-    """Copies one date range, or the photos with the given file names."""
+    """Copies one date range, or the photos with the given file names, or the photos with the given Photos identifiers."""
     source_path = need(libraries, source)
     destination_path = need(libraries, destination)
     source_version = pp.model_version(source_path)
@@ -222,7 +222,12 @@ def copy_one(
             return CopyResult(None, [])
     pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
-        if names is None:
+        if ids is not None:
+            script = "copy-ids.applescript"
+            listing = Path(scratch) / "ids.txt"
+            listing.write_text("\n".join(ids) + "\n", encoding="utf-8")
+            args = [source, destination, str(listing), "true" if check_duplicates else "false"]
+        elif names is None:
             script = "copy-photos.applescript"
             args = [source, destination, since.isoformat() if since else "-", before.isoformat() if before else "-", media]
         else:
@@ -242,31 +247,19 @@ def copy_one(
                     return CopyResult(None, [])
 
 
-class TrashResult(NamedTuple):
-    """deleted: how many photos PowerPhotos moved to Recently Deleted; missing and ambiguous: the file names no photo, or
-    more than one photo, has in the library, which are left alone."""
-    deleted: int
-    missing: list
-    ambiguous: list
-
-
-def trash_named(libraries: dict, library: str, names: list) -> TrashResult:
-    """Moves the photos with these file names (each of which must be one photo's) to the library's Recently Deleted."""
+def trash_ids(libraries: dict, library: str, ids: list) -> tuple:
+    """Moves the photos with these Photos identifiers to the library's Recently Deleted. Returns (how many were moved, the
+    identifiers no photo of the library has: PowerPhotos does not list hidden items)."""
     need(libraries, library)
     pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
-        listing = Path(scratch) / "names.txt"
-        listing.write_text("\n".join(names) + "\n", encoding="utf-8")
+        listing = Path(scratch) / "ids.txt"
+        listing.write_text("\n".join(ids) + "\n", encoding="utf-8")
         try:
-            output = pp.run_applescript("trash-named.applescript", library, str(listing))
+            output = pp.run_applescript("trash-ids.applescript", library, str(listing))
         except pp.PowerPhotosError as error:
             fail(f"PowerPhotos failed: {error}")
-    lines = output.splitlines()
-    return TrashResult(
-        int(output.rsplit(" ", 1)[-1]),
-        [line.partition("\t")[2] for line in lines if line.startswith("missing\t")],
-        [line.partition("\t")[2] for line in lines if line.startswith("ambiguous\t")],
-    )
+    return int(output.rsplit(" ", 1)[-1]), [line.partition("\t")[2] for line in output.splitlines() if line.startswith("missing\t")]
 
 
 def libraries_command(
@@ -656,18 +649,13 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     return not problems, outside, own
 
 
-def normalized_name(name: str) -> str:
-    """A file name as PowerPhotos compares it: without regard to case, and .jpeg is .jpg."""
-    return re.sub(r"\.jpeg$", ".jpg", name.lower())
-
-
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
     """--fix: copies the items outside the year of a library into the library of their own year (PowerPhotos skips any that
     library already has), then re-reads that library's database to confirm each one is there, and only then moves the
-    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete). An item is left alone, and said so, when its year has no library or cannot be told which
-    part of a year it belongs to, or when another photo in this library has the same file name (a copy is made by name,
-    so that one would be copied too). Returns whether anything was removed from this library."""
-    held_names = Counter(normalized_name(key[2]) for key in own.visible + own.hidden)
+    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete). Photos are named by their Photos
+    identifiers, so a file name another photo shares does not matter. An item is left alone, and said so, when its year
+    has no library, when it cannot be told which part of a capped year it belongs to, or when the database gives it no
+    identifier. Returns whether anything was removed from this library."""
     wanted: dict = {}
     left_alone = []
     for key in sorted(outside.elements()):
@@ -678,23 +666,25 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             left_alone.append((key, f"no library for {item_date.year}" if not candidates else f"cannot tell which part of {item_date.year} it belongs in"))
         elif target.name not in libraries:
             left_alone.append((key, f"{target.name} is not in PowerPhotos"))
-        elif held_names[normalized_name(key[2])] > 1:
-            left_alone.append((key, "another photo here has the same file name, so a copy by name would take both"))
+        elif not own.uuids.get(key):
+            left_alone.append((key, "the database gives it no identifier"))
         else:
             wanted.setdefault(target.name, []).append(key)
     for key, why in left_alone:
         typer.echo(f"    not moved: {key[0]} {key[2]} ({why})")
     removed = False
     for target, keys in sorted(wanted.items()):
-        names = sorted({key[2] for key in keys})
+        keys = sorted(set(keys))
+        identifiers = {key: own.uuids[key] for key in keys}
         if dry:
-            typer.echo(f"    would copy {count(len(keys), 'item')} into {target}, then move them out of {part.name}: {', '.join(names)}")
+            typer.echo(f"    would copy {count(len(keys), 'item')} into {target}, then move them out of {part.name}: {', '.join(key[2] for key in keys)}")
             continue
-        result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, names, check_duplicates=True)
+        result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=True, ids=[uuid for key in keys for uuid in identifiers[key]])
         if result.sent is None:
             typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
             continue
-        report_unlisted(result.unlisted, part.name)
+        names_of = {uuid: key[2] for key in keys for uuid in identifiers[key]}
+        report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
         there = read_library(libraries, target)
         confirmed = [key for key in keys if there is not None and key in there.visible + there.hidden]
         typer.echo(f"    {target}: asked PowerPhotos to copy {count(len(keys), 'item')}; {len(confirmed)} confirmed in its database")
@@ -702,13 +692,11 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
         if confirmed:
-            trashed = trash_named(libraries, part.name, sorted({key[2] for key in confirmed}))
-            typer.echo(f"      {part.name}: moved {trashed.deleted} to its Recently Deleted: " + ", ".join(sorted({key[2] for key in confirmed})))
-            for name in trashed.missing:
-                typer.echo(f"      not in {part.name} for PowerPhotos (it lists no photo of that name, as hidden items are not listed): {name}")
-            for name in trashed.ambiguous:
-                typer.echo(f"      not moved out of {part.name}: more than one photo is called {name}")
-            removed = removed or trashed.deleted > 0
+            deleted, missing = trash_ids(libraries, part.name, [uuid for key in confirmed for uuid in identifiers[key]])
+            typer.echo(f"      {part.name}: moved {deleted} to its Recently Deleted: " + ", ".join(key[2] for key in confirmed))
+            for uuid in missing:
+                typer.echo(f"      not moved out of {part.name} (PowerPhotos lists no photo with that identifier, as it does not list hidden items): {names_of.get(uuid, uuid)}")
+            removed = removed or deleted > 0
     return removed
 
 
