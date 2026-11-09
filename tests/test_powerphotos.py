@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from apple import platform as apple_platform
 from apple.cli import app
+from apple.photos import library_commands as lc
 from apple.photos import powerphotos as pp
 
 FAKES = Path(__file__).resolve().parent / "fakes"
@@ -1066,24 +1067,51 @@ def fix(*options):
     return runner.invoke(app, ["photos", "split", "--fix", "--media", "photos", "--years", "2018", *options])
 
 
-def test_fix_copies_a_stray_into_the_library_of_its_year_and_says_it_can_be_removed(mac):
+def trashing_updates_the_database(monkeypatch, mac):
+    """PowerPhotos' delete moves photos to Recently Deleted, which the database shows as trashed: the fake does not write, so do it."""
+    real = lc.trash_named
+
+    def trash(libraries, library, names):
+        result = real(libraries, library, names)
+        connection = sqlite3.connect(mac.libraries[library] / "database" / "Photos.sqlite")
+        connection.execute("update ZASSET set ZTRASHEDSTATE = 1 where Z_PK in (select ZASSET from ZADDITIONALASSETATTRIBUTES where ZORIGINALFILENAME in (%s))" % ",".join("?" * len(names)), names)
+        connection.commit()
+        connection.close()
+        return result
+
+    monkeypatch.setattr(lc, "trash_named", trash)
+
+
+def test_fix_copies_a_stray_into_the_library_of_its_year_then_moves_it_out_of_the_wrong_one(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
     mac.make("photos-2017", 19607)
     add_photos(mac.libraries["photos-2018"], [A, OLD])
     add_photos(mac.libraries["photos-2017"], [OLD])  # the copy: the fake PowerPhotos does not write, so it is there already
     result = fix()
     assert mac.calls("copy-named.applescript") == [["photos-2018", "photos-2017", ["old.jpg"], "true"]]
     assert "photos-2017: asked PowerPhotos to copy 1 item; 1 confirmed in its database" in result.output
-    assert "now in photos-2017, can be removed from photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
-    assert result.exit_code == 1  # it is still in the wrong library until it is removed
+    assert mac.calls("trash-named.applescript") == [["photos-2018", ["old.jpg"]]]
+    assert "photos-2018: moved 1 to its Recently Deleted: old.jpg" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
 
 
-def test_fix_does_not_say_an_item_can_be_removed_unless_the_other_library_has_it(mac):
+def test_fix_does_not_move_an_item_out_unless_the_other_library_has_it(mac):
     mac.make("photos-2017", 19607)
     add_photos(mac.libraries["photos-2018"], [A, OLD])
     add_photos(mac.libraries["photos-2017"], [])
     result = fix()
-    assert "0 confirmed" in result.output and "NOT confirmed in photos-2017, keep it in photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
-    assert "can be removed" not in result.output
+    assert "0 confirmed" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
+    assert mac.calls("trash-named.applescript") == [] and result.exit_code == 1
+
+
+def test_fix_says_what_powerphotos_would_not_move_out(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    monkeypatch.setenv("FAKE_TRASH_AMBIGUOUS", "old.jpg")
+    monkeypatch.setenv("FAKE_TRASH_DELETED", "0")
+    result = fix()
+    assert "not moved out of photos-2018: more than one photo is called old.jpg" in result.output and result.exit_code == 1
 
 
 def test_fix_leaves_alone_what_it_cannot_place_or_cannot_copy_safely(mac):
@@ -1101,7 +1129,7 @@ def test_fix_dry_run_copies_nothing(mac):
     mac.make("photos-2017", 19607)
     add_photos(mac.libraries["photos-2018"], [A, OLD])
     result = fix("--dry-run")
-    assert "would copy 1 item into photos-2017: old.jpg" in result.output and mac.calls("copy-named.applescript") == []
+    assert "would copy 1 item into photos-2017, then move them out of photos-2018: old.jpg" in result.output and mac.calls("copy-named.applescript") == [] and mac.calls("trash-named.applescript") == []
 
 
 def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
@@ -1109,3 +1137,8 @@ def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
     add_photos(mac.libraries["photos-2018"], [A, OLD])
     result = fix("--from", "Source")
     assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-named.applescript") == []
+
+
+def test_trash_named_applescript_deletes_only_names_that_match_exactly_one_photo():
+    script = (pp.APPLESCRIPTS / "trash-named.applescript").read_text()
+    assert "delete toDelete" in script and '"ambiguous"' in script and '"missing"' in script and "if matches is 0" in script

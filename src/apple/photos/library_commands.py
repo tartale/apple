@@ -242,6 +242,33 @@ def copy_one(
                     return CopyResult(None, [])
 
 
+class TrashResult(NamedTuple):
+    """deleted: how many photos PowerPhotos moved to Recently Deleted; missing and ambiguous: the file names no photo, or
+    more than one photo, has in the library, which are left alone."""
+    deleted: int
+    missing: list
+    ambiguous: list
+
+
+def trash_named(libraries: dict, library: str, names: list) -> TrashResult:
+    """Moves the photos with these file names (each of which must be one photo's) to the library's Recently Deleted."""
+    need(libraries, library)
+    pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
+        listing = Path(scratch) / "names.txt"
+        listing.write_text("\n".join(names) + "\n", encoding="utf-8")
+        try:
+            output = pp.run_applescript("trash-named.applescript", library, str(listing))
+        except pp.PowerPhotosError as error:
+            fail(f"PowerPhotos failed: {error}")
+    lines = output.splitlines()
+    return TrashResult(
+        int(output.rsplit(" ", 1)[-1]),
+        [line.partition("\t")[2] for line in lines if line.startswith("missing\t")],
+        [line.partition("\t")[2] for line in lines if line.startswith("ambiguous\t")],
+    )
+
+
 def libraries_command(
     outdated: Annotated[
         bool,
@@ -587,11 +614,11 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible
 
 
-def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination) -> tuple:
+def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
     split_command, --check). Returns (whether it is in order, the items outside the year, the library's photos or None)."""
-    label = part.name
+    label = label or part.name
     if part.name not in libraries:
         typer.echo(f"{label}: library missing")
         return False, Counter(), None
@@ -634,12 +661,12 @@ def normalized_name(name: str) -> str:
     return re.sub(r"\.jpeg$", ".jpg", name.lower())
 
 
-def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> None:
+def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
     """--fix: copies the items outside the year of a library into the library of their own year (PowerPhotos skips any that
-    library already has), then re-reads that library's database to confirm each one is there, and says which are now safe
-    to remove from this library. An item is left alone, and said so, when its year has no library or cannot be told which
+    library already has), then re-reads that library's database to confirm each one is there, and only then moves the
+    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete). An item is left alone, and said so, when its year has no library or cannot be told which
     part of a year it belongs to, or when another photo in this library has the same file name (a copy is made by name,
-    so that one would be copied too). Nothing is removed from this library: the check still fails for it until they are."""
+    so that one would be copied too). Returns whether anything was removed from this library."""
     held_names = Counter(normalized_name(key[2]) for key in own.visible + own.hidden)
     wanted: dict = {}
     left_alone = []
@@ -657,10 +684,11 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             wanted.setdefault(target.name, []).append(key)
     for key, why in left_alone:
         typer.echo(f"    not moved: {key[0]} {key[2]} ({why})")
+    removed = False
     for target, keys in sorted(wanted.items()):
         names = sorted({key[2] for key in keys})
         if dry:
-            typer.echo(f"    would copy {count(len(keys), 'item')} into {target}: {', '.join(names)}")
+            typer.echo(f"    would copy {count(len(keys), 'item')} into {target}, then move them out of {part.name}: {', '.join(names)}")
             continue
         result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, names, check_duplicates=True)
         if result.sent is None:
@@ -671,7 +699,17 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         confirmed = [key for key in keys if there is not None and key in there.visible + there.hidden]
         typer.echo(f"    {target}: asked PowerPhotos to copy {count(len(keys), 'item')}; {len(confirmed)} confirmed in its database")
         for key in keys:
-            typer.echo(f"      {'now in ' + target + ', can be removed from ' + part.name if key in confirmed else 'NOT confirmed in ' + target + ', keep it in ' + part.name}: {key[0]} {key[2]}")
+            if key not in confirmed:
+                typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
+        if confirmed:
+            trashed = trash_named(libraries, part.name, sorted({key[2] for key in confirmed}))
+            typer.echo(f"      {part.name}: moved {trashed.deleted} to its Recently Deleted: " + ", ".join(sorted({key[2] for key in confirmed})))
+            for name in trashed.missing:
+                typer.echo(f"      not in {part.name} for PowerPhotos (it lists no photo of that name, as hidden items are not listed): {name}")
+            for name in trashed.ambiguous:
+                typer.echo(f"      not moved out of {part.name}: more than one photo is called {name}")
+            removed = removed or trashed.deleted > 0
+    return removed
 
 
 def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None) -> bool:
@@ -705,9 +743,10 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                     continue
                 nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
                 ok, outside, own = check_part(libraries, part, kind, year, source_data, nearby, read_destination)
+                if fix is not None and outside and own is not None and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"]):
+                    cache.pop(part.name, None)  # it has changed
+                    ok, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)")
                 in_order = ok and in_order
-                if fix is not None and outside and own is not None:
-                    fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"])
     if nothing:
         typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
     return in_order
@@ -754,8 +793,8 @@ def split_command(
         typer.Option(
             "--fix",
             help="With --check (implied): copy each item outside its library's year into the library of its own year, confirm it is "
-            "there from that library's database, and say which can now be removed from the wrong library. Nothing is removed. "
-            "--dry-run shows what would be copied.",
+            "there from that library's database, then move it out of the wrong library to that library's Recently Deleted. "
+            "--dry-run shows what would be moved.",
         ),
     ] = False,
     dry_run: Annotated[
@@ -785,8 +824,9 @@ def split_command(
 
     --fix (it implies --check) then moves the strays to where they belong, as far as it safely can: each is copied into
     the library of its own year (by file name, PowerPhotos skipping any that library has), and that library's database is
-    read again to confirm it arrived. Only then is it listed as safe to remove from the wrong library; removing it is left
-    to you in Photos, since nothing here deletes from a library. A stray is left alone, and said so, when its year has no
+    read again to confirm it arrived. Only then is it moved out of the wrong library, to that library's Recently Deleted
+    (PowerPhotos' delete; it can be put back for 30 days, and nothing is removed from disk). The check is then run again
+    on that library. A stray is left alone, and said so, when its year has no
     library, when it is not clear which part of a capped year it belongs to, or when another photo in the library shares
     its file name (the copy is made by name, so that photo would be copied too).
     """
