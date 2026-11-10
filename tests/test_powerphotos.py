@@ -1325,3 +1325,28 @@ def test_fix_says_why_powerphotos_could_not_copy_an_item(mac, monkeypatch):
     assert "2017-06-02 10:00:00 hidden.jpg (hidden in Photos)" in result.output
     assert "2017-06-03 10:00:00 gone.jpg (its original is not stored in the library)" in result.output
     assert "2017-06-01 10:00:00 old.jpg (no reason found in the database; if Photos lists it under Recovered, restore it there)" in result.output
+
+
+def test_fix_with_a_source_also_copies_what_the_library_lacks(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2"], "false"]]  # b.jpg, by its Photos identifier, with no duplicate check
+    assert "photos-2018: asked PowerPhotos to copy 1 item from Source" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_dry_run_says_what_it_would_copy_from_the_source(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source", "--dry-run")
+    assert "would copy 1 item that photos-2018 lacks from Source" in result.output and mac.calls("copy-ids.applescript") == []
+
+
+def test_fix_says_why_a_missing_item_could_not_be_copied_from_the_source(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 0, "b.jpg")])  # a placeholder: no stored original
+    add_photos(mac.libraries["photos-2018"], [A])
+    monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2")
+    result = fix("--from", "Source")
+    assert "2018-03-02 11:00:00 b.jpg (its original is not stored in the library)" in result.output and result.exit_code == 1
