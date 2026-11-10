@@ -3,6 +3,7 @@ import json
 import plistlib
 import re
 import sqlite3
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1305,3 +1306,8 @@ def test_fix_leaves_a_file_of_neither_kind_where_it_is(mac):
     result = fix()
     assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
     assert "unknown type: 2018-04-04 10:00:00 note.webp" in result.output and result.exit_code == 1
+
+
+def test_a_3g2_file_is_a_video():
+    kept = pp.of_media(Counter({("2018-03-01 10:00:00", "5", "clip.3G2"): 1, ("2018-03-01 10:00:00", "5", "a.jpg"): 1}), "videos")
+    assert list(kept) == [("2018-03-01 10:00:00", "5", "clip.3G2")]

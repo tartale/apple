@@ -22,7 +22,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.recover_cache import Cache, fingerprint
 from apple.photos.progress import Progress, duration
 
-MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp")
+MEDIA_FILES = (".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".dng", ".mov", ".mp4", ".m4v", ".3gp", ".3g2")
 HIDDEN_DIRECTORIES = ".HFS+ Private Directory Data\r"
 DEFAULT = "default"
 # Folders a disk keeps for itself, that never hold an original: Synology's thumbnails, macOS's search index, change log and

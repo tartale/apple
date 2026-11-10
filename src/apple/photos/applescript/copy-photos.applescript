@@ -5,7 +5,7 @@
 -- Prints "found <n>". Failures (such as a destination that needs a Photos upgrade, error 5) are left to osascript to report.
 
 property photoExtensions : {".jpg", ".jpeg", ".png", ".heic", ".gif", ".tif", ".tiff", ".dng", ".cr2", ".nef", ".arw"}
-property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"}
+property videoExtensions : {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".3g2", ".mpg", ".mpeg"}
 property timeoutSeconds : 86400 -- how long to wait for one PowerPhotos command: a day
 
 on run argv

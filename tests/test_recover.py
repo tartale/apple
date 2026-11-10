@@ -1206,3 +1206,10 @@ def test_a_place_with_wildcards_that_exists_as_written_is_not_translated(tmp_pat
     monkeypatch.setenv("APPLE_PHOTOS_RECOVER_MAPPINGS", f"{tmp_path}/usb=/Volumes/elsewhere")
     result = runner.invoke(app, ["photos", "find", str(listing), "--format", "csv"])
     assert result.exit_code == 0 and "matched no folder" not in result.output and rows_of(result)[0]["source"] == "folder"
+
+
+def test_a_3g2_video_is_searched_for_by_name_and_time(tmp_path):
+    make_file(tmp_path / "backup" / "clip.3g2")
+    listing = write_list(tmp_path / "l.csv", [f"{WHEN},clip.3g2,false,false,"], header="date,name,hidden,shared,identifier")
+    result = runner.invoke(app, ["photos", "find", str(listing), "--folders", str(tmp_path / "backup"), "--format", "csv"])
+    assert rows_of(result)[0]["source"] == "folder"

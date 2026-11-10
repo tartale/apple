@@ -23,7 +23,7 @@ LOCK_FILE = Path(tempfile.gettempdir()) / "apple-powerphotos.lock"
 # The file name endings that count as photos and as videos. The same lists are in copy-photos.applescript.
 EXTENSIONS = {
     "photos": (".jpg", ".jpeg", ".png", ".heic", ".gif", ".tif", ".tiff", ".dng", ".cr2", ".nef", ".arw"),
-    "videos": (".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mpg", ".mpeg"),
+    "videos": (".mov", ".mp4", ".m4v", ".avi", ".3gp", ".3g2", ".mpg", ".mpeg"),
 }
 
 UPGRADE_NEEDED = 5  # PowerPhotos' error number for "Library needs upgrade"
