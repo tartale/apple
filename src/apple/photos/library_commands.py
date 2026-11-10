@@ -691,6 +691,24 @@ def wait_for_library(libraries: dict, library: str, done, what: str) -> Counter:
         time.sleep(POLL_SECONDS)
 
 
+def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str) -> None:
+    """Says which photos PowerPhotos listed no photo for in a library, and why that is: it does not list hidden items or ones
+    whose original is not stored in the library, so it cannot copy them."""
+    if not uuids:
+        return
+    typer.echo(f"    {len(uuids)} not copied: the database of {library} has them, but PowerPhotos lists no photo with their identifiers, so it cannot copy them:")
+    for uuid in uuids:
+        key = key_of.get(uuid)
+        if key is None:
+            typer.echo(f"      {uuid}")
+            continue
+        reason = (
+            "hidden in Photos" + (", a burst member" if key in photos.bursts else "") if key in photos.hidden
+            else "its original is not stored in the library" if photos.original_missing(key) else "no reason found in the database"
+        )
+        typer.echo(f"      {key[0]} {key[2]} ({reason})")
+
+
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
     """--fix: copies the items outside the year of a library into the library of their own year (only those that library lacks,
     judged from its database, so PowerPhotos' duplicate check is not needed), then re-reads that library's database to confirm each one is there, and only then moves the
@@ -736,7 +754,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             if result.sent is None:
                 typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
                 continue
-            report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
+            report_not_listed(own, result.unlisted, {uuid: key for key in keys for uuid in identifiers[key]}, part.name)
         now = wait_for_library(libraries, target, lambda held: all(held[key] >= outside[key] for key in keys), f"copying into {target}")
         confirmed = [key for key in keys if now[key] >= outside[key]]
         typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")

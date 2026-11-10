@@ -1311,3 +1311,17 @@ def test_fix_leaves_a_file_of_neither_kind_where_it_is(mac):
 def test_a_3g2_file_is_a_video():
     kept = pp.of_media(Counter({("2018-03-01 10:00:00", "5", "clip.3G2"): 1, ("2018-03-01 10:00:00", "5", "a.jpg"): 1}), "videos")
     assert list(kept) == [("2018-03-01 10:00:00", "5", "clip.3G2")]
+
+
+def test_fix_says_why_powerphotos_could_not_copy_an_item(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    hidden = ("2017-06-02 10:00:00", 50, "hidden.jpg", "hidden")
+    gone = ("2017-06-03 10:00:00", 0, "gone.jpg")  # no stored original
+    add_photos(mac.libraries["photos-2018"], [A, OLD, hidden, gone])
+    add_photos(mac.libraries["photos-2017"], [])
+    monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2,UUID3,UUID4")
+    result = fix()
+    assert "3 not copied: the database of photos-2018 has them, but PowerPhotos lists no photo" in result.output
+    assert "2017-06-02 10:00:00 hidden.jpg (hidden in Photos)" in result.output
+    assert "2017-06-03 10:00:00 gone.jpg (its original is not stored in the library)" in result.output
+    assert "2017-06-01 10:00:00 old.jpg (no reason found in the database)" in result.output
