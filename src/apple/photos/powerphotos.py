@@ -87,9 +87,10 @@ def photos_query(db: sqlite3.Connection) -> str:
     hidden = "a.ZVISIBILITYSTATE != 0" if "ZVISIBILITYSTATE" in asset else "0"
     burst = "a.ZAVALANCHEKIND != 0" if "ZAVALANCHEKIND" in asset else "a.ZAVALANCHEUUID is not null" if "ZAVALANCHEUUID" in asset else "0"
     shared = "x.ZSYNDICATIONIDENTIFIER" if "ZSYNDICATIONIDENTIFIER" in attributes else "null"
+    uuid = "a.ZUUID" if "ZUUID" in asset else "null"
     return f"""
         select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
-               {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED
+               {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED, {uuid}
         from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
         where a.ZTRASHEDSTATE = 0
     """
@@ -152,6 +153,12 @@ def model_version(library: Path, exact: bool = True) -> Optional[int]:
         return None
 
 
+def media_of(name: str) -> Optional[str]:
+    """photos or videos by the ending of a file name, None for a type that is neither."""
+    lowered = name.lower()
+    return next((kind for kind, endings in EXTENSIONS.items() if lowered.endswith(endings)), None)
+
+
 def of_media(photos: Counter, media: str) -> Counter:
     """The photos (see photos()) whose file name ends like a photo or video, as `media` says; all keeps everything."""
     if media == "all":
@@ -167,7 +174,8 @@ class Photos(NamedTuple):
     placeholder with no original; identifiers maps each of those keys to its Messages identifier, which names the attachment
     folder in Messages. superseded counts the stand-ins left out of visible and hidden: shared placeholders, and hidden items whose original file is gone, that
     the library also has a real visible photo for with the same file name taken within two days (an imported copy). The
-    picture is there, and the stand-in can never be saved."""
+    picture is there, and the stand-in can never be saved. uuids maps each key to the Photos identifiers of its items (the
+    start of the id PowerPhotos gives a photo, `<uuid>/L0/001`), the one exact way to name a photo."""
     library: Path
     visible: Counter
     hidden: Counter
@@ -176,6 +184,7 @@ class Photos(NamedTuple):
     shared: set
     superseded: Counter
     identifiers: dict
+    uuids: dict
 
     def original_missing(self, key: tuple) -> bool:
         """True when the item's original file is not stored in the library (Photos keeps a placeholder for photos whose
@@ -196,11 +205,12 @@ def library_photos(library: Path) -> Photos:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
     visible, hidden, bursts, files, shared, superseded, identifiers = Counter(), Counter(), Counter(), {}, set(), Counter(), {}
     real = {}  # lower-case file name -> capture times (seconds) of the visible photos that have their original
-    for _, size, name, is_hidden, *_, taken in rows:
+    for _, size, name, is_hidden, *_, taken, _uuid in rows:
         if size and taken is not None and not is_hidden:
             real.setdefault(name.lower(), []).append(taken)
     has_originals = (library / "originals").is_dir()
-    for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared, taken in rows:
+    uuids: dict = {}
+    for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared, taken, uuid in rows:
         key = (when, str(size), name)
         if taken is not None and any(abs(taken - other) < 172800 for other in real.get(name.lower(), [])):
             # a stand-in without its original (a shared placeholder, or a hidden item whose file is gone) whose picture
@@ -210,6 +220,8 @@ def library_photos(library: Path) -> Photos:
                 superseded[key] += 1
                 continue
         (hidden if is_hidden else visible)[key] += 1
+        if uuid:
+            uuids.setdefault(key, []).append(uuid)
         if is_hidden and is_burst:
             bursts[key] += 1
         if is_shared:
@@ -217,7 +229,7 @@ def library_photos(library: Path) -> Photos:
             identifiers[key] = is_shared
         if directory is not None and stored_as:
             files.setdefault(key, []).append(f"originals/{directory}/{stored_as}")
-    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers)
+    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers, uuids)
 
 
 def photos(library: Path) -> Counter:

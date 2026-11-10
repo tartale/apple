@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from apple import platform as apple_platform
 from apple.cli import app
+from apple.photos import library_commands as lc
 from apple.photos import powerphotos as pp
 
 FAKES = Path(__file__).resolve().parent / "fakes"
@@ -304,15 +305,15 @@ def add_photos(library: Path, photos) -> Path:
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
     connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text)")
     (library / "originals" / "A").mkdir(parents=True, exist_ok=True)
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
         stored_as = f"UUID{number}.jpg"
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, 'A', ?, ?, ?)",
-            (number, seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
+            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?)",
+            (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
         )
         connection.execute(
             "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?)",
@@ -996,3 +997,311 @@ def test_only_missing_cannot_be_combined_with_a_list_or_no_duplicate_check(mac):
     for option in (["--list", "-"], ["--no-duplicate-check"]):
         result = copy_only_missing(mac, [A], [], *option)
         assert result.exit_code == 2 and "--only-missing" in result.output
+
+
+def test_split_check_passes_a_library_that_holds_its_year_and_copies_nothing(mac):
+    year_libraries(mac, [A, B], photos_2018=[A, B])
+    result = split("--check")
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output
+    assert mac.calls("copy-photos.applescript") == [] and mac.calls("copy-ids.applescript") == []
+
+
+def test_split_check_lists_what_is_outside_the_year_and_what_is_missing(mac):
+    year_libraries(mac, [A, B], photos_2018=[A, ("2017-06-01 10:00:00", 50, "old.jpg"), ("2019-02-01 10:00:00", 50, "new.jpg")])
+    result = split("--check")
+    assert result.exit_code == 1 and "photos-2018: 2 outside 2018 (2017 1, 2019 1); 1 missing" in result.output
+    assert "    outside: 2017-06-01 10:00:00 old.jpg" in result.output and "    missing: 2018-03-02 11:00:00 b.jpg" in result.output
+    assert mac.calls("copy-photos.applescript") == []
+
+
+def test_split_check_does_not_call_an_item_within_a_day_of_the_year_a_stray(mac):
+    year_libraries(mac, [A], photos_2018=[A, ("2017-12-31 23:00:00", 50, "edge.jpg")])
+    result = split("--check")
+    assert result.exit_code == 0 and "in order (1 within a day of the year's ends)" in result.output
+
+
+def test_split_check_fails_for_a_library_that_is_not_in_powerphotos(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    result = split("--check", "--to", "nothing-{year}", "--on-missing", "skip")
+    assert result.exit_code == 1 and "nothing-2018: library missing" in result.output
+
+
+def test_split_check_cannot_be_combined_with_what_it_does_not_do(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    for option in ("--no-duplicate-check", "--no-skip-complete"):
+        assert split("--check", option).exit_code == 2
+
+
+def split_check_without_a_source(*options):
+    return runner.invoke(app, ["photos", "split", "--check", "--media", "photos", "--years", "2017-2018", *options])
+
+
+def test_split_check_without_a_source_checks_the_libraries_that_exist_for_the_years(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 50, "old.jpg")])
+    result = split_check_without_a_source()
+    assert result.exit_code == 1 and "photos-2018: 1 outside 2018 (2017 1)" in result.output
+    assert "No library, and none needed: photos-2017" in result.output
+    add_photos(mac.libraries["photos-2018"], [A])
+    assert split_check_without_a_source().exit_code == 0
+    add_photos(mac.libraries["photos-2018"], [])
+    empty = split_check_without_a_source()
+    assert empty.exit_code == 1 and "photos-2018: holds no photos from 2018" in empty.output
+
+
+def test_split_check_with_a_source_does_not_ask_for_libraries_of_years_it_has_no_photos_in(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A, B])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output and "No library, and none needed: photos-2017" in result.output
+
+
+def test_split_needs_from_unless_it_only_checks(mac):
+    result = runner.invoke(app, ["photos", "split", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 2 and "--from is needed" in result.output
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """--fix looks at a library being copied into every few seconds: do not really wait."""
+    monkeypatch.setattr(lc, "POLL_SECONDS", 0)
+
+
+OLD = ("2017-06-01 10:00:00", 50, "old.jpg")
+
+
+def fix(*options):
+    return runner.invoke(app, ["photos", "split", "--fix", "--media", "photos", "--years", "2018", *options])
+
+
+def trashing_updates_the_database(monkeypatch, mac):
+    """PowerPhotos' delete moves photos to Recently Deleted, which the database shows as trashed: the fake does not write, so do it."""
+    real = lc.trash_ids
+
+    def trash(libraries, library, ids):
+        result = real(libraries, library, ids)
+        connection = sqlite3.connect(mac.libraries[library] / "database" / "Photos.sqlite")
+        connection.execute("update ZASSET set ZTRASHEDSTATE = 1 where ZUUID in (%s)" % ",".join("?" * len(ids)), ids)
+        connection.commit()
+        connection.close()
+        return result
+
+    monkeypatch.setattr(lc, "trash_ids", trash)
+
+
+def copying_updates_the_database(monkeypatch, mac, arrives=None):
+    """The fake PowerPhotos copies nothing, so put the copied photos into the destination's database. arrives: the names that arrive (default: all)."""
+    real = lc.copy_one
+
+    def copy(libraries, source, destination, since, before, media, mode, names=None, check_duplicates=True, ids=None):
+        result = real(libraries, source, destination, since, before, media, mode, names, check_duplicates, ids)
+        held = pp.library_photos(mac.libraries[destination])
+        have = list((key[0], key[1] and int(key[1]), key[2]) for key in held.visible.elements())
+        photos = pp.library_photos(mac.libraries[source])
+        for key in photos.visible.elements():
+            if any(uuid in (ids or []) for uuid in photos.uuids.get(key, [])) and (arrives is None or key[2] in arrives):
+                have.append((key[0], int(key[1]), key[2]))
+        add_photos(mac.libraries[destination], have)
+        return result
+
+    monkeypatch.setattr(lc, "copy_one", copy)
+
+
+def test_fix_copies_a_stray_the_year_library_lacks_without_the_duplicate_check_then_moves_it_out(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "photos-2017", ["UUID2"], "false"]]  # the stray's Photos identifier; PowerPhotos' duplicate check off
+    assert "photos-2017: 0 items already there, copied 1 item; 1 of 1 confirmed in its database" in result.output
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert "photos-2018: moved 1 to its Recently Deleted: old.jpg" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_does_not_copy_a_stray_the_year_library_already_has_and_only_removes_it(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and "photos-2017: 1 item already there, copied 0 items; 1 of 1 confirmed" in result.output
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]] and result.exit_code == 0
+
+
+def test_fix_moves_a_stray_that_shares_its_file_name_with_another_photo_by_identifier(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    in_year = ("2018-05-05 10:00:00", 50, "old.jpg")  # the same name as the stray, and where it belongs
+    add_photos(mac.libraries["photos-2018"], [A, OLD, in_year])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript")[0][2] == ["UUID2"] and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert result.exit_code == 0 and "photos-2018 (after the fix): in order" in result.output
+
+
+def test_fix_does_not_move_an_item_out_unless_the_other_library_has_it(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])  # the fake PowerPhotos copies nothing, so it does not arrive
+    result = fix()
+    assert "0 of 1 confirmed" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018: 2017-06-01 10:00:00 old.jpg" in result.output
+    assert mac.calls("trash-ids.applescript") == [] and result.exit_code == 1
+
+
+def test_fix_says_what_powerphotos_would_not_move_out(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    monkeypatch.setenv("FAKE_TRASH_MISSING", "UUID2")
+    monkeypatch.setenv("FAKE_TRASH_DELETED", "0")
+    result = fix()
+    assert "not moved out of photos-2018 (PowerPhotos lists no photo with that identifier" in result.output and "old.jpg" in result.output and result.exit_code == 1
+
+
+def test_fix_leaves_alone_what_it_cannot_place(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2016-01-01 10:00:00", 50, "x.jpg"), OLD])
+    result = fix()
+    assert "not moved: 2016-01-01 10:00:00 x.jpg (no library for 2016)" in result.output
+    assert "not moved: 2017-06-01 10:00:00 old.jpg (no library for 2017)" in result.output
+    assert mac.calls("copy-ids.applescript") == [] and result.exit_code == 1
+
+
+def test_fix_dry_run_copies_nothing(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    result = fix("--dry-run")
+    assert "would copy 1 item into photos-2017, then move them out of photos-2018: old.jpg" in result.output
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
+
+
+def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
+    add_photos(mac.libraries["Source"], [A, OLD])
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    result = fix("--from", "Source")
+    assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-ids.applescript") == []
+
+
+def test_the_id_applescripts_name_photos_by_the_uuid_before_the_slash():
+    for name in ("copy-ids", "trash-ids"):
+        script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
+        assert "id of photos of" in script and 'text item delimiters to "/"' in script and '"missing"' in script
+    assert "duplicate wanted" in (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
+
+
+def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_delete_a_list():
+    """delete {photo, photo} is an error ("Can't make ... into type specifier") and one delete per photo asks for confirmation each
+    time: a filter (every photo whose id is "a" or id is "b") is one specifier, and so one confirmation."""
+    script = (pp.APPLESCRIPTS / "trash-ids.applescript").read_text()
+    assert 'run script' in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '" or "' in script
+    assert "delete toDelete" not in script and "delete (contents of" not in script
+
+
+def test_fix_removes_the_strays_of_every_year_in_one_delete_after_all_are_copied(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    older = ("2016-02-02 10:00:00", 50, "older.jpg")
+    unlucky = ("2015-03-03 10:00:00", 50, "unlucky.jpg")
+    for name in ("photos-2017", "photos-2016", "photos-2015"):
+        mac.make(name, 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, older, unlucky])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    add_photos(mac.libraries["photos-2016"], [older])
+    add_photos(mac.libraries["photos-2015"], [])  # this copy did not arrive
+    result = fix()
+    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2015"]  # the other two libraries already hold theirs
+    trash = mac.calls("trash-ids.applescript")
+    assert len(trash) == 1 and trash[0][0] == "photos-2018" and sorted(trash[0][1]) == ["UUID2", "UUID3"]  # one delete, and not for the one that did not arrive
+    assert "NOT confirmed in photos-2015, so it stays in photos-2018" in result.output and result.exit_code == 1
+
+
+def test_fix_waits_for_powerphotos_to_finish_copying_before_it_confirms_and_deletes(mac, monkeypatch):
+    """PowerPhotos can hand back control while it is still writing: the library is looked at until the copy has arrived."""
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 3:  # the copy lands after the third look
+            add_photos(mac.libraries["photos-2017"], [OLD])
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    result = fix()
+    assert len(waits) == 3 and "waiting for PowerPhotos to finish copying into photos-2017" in result.output
+    assert "1 of 1 confirmed" in result.output and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]] and result.exit_code == 0
+
+
+def test_fix_keeps_waiting_while_the_library_is_still_changing_and_gives_up_when_it_is_not(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    monkeypatch.setattr(lc, "IDLE_POLLS", 2)
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) <= 5:  # other photos keep arriving first: it is busy, so it is not given up on
+            add_photos(mac.libraries["photos-2017"], [("2017-01-0%d 10:00:00" % len(waits), 50, "other%d.jpg" % len(waits))])
+        elif len(waits) == 6:
+            add_photos(mac.libraries["photos-2017"], [OLD])
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    busy = fix()
+    assert len(waits) == 6 and "1 of 1 confirmed" in busy.output
+    waits.clear()
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: waits.append(seconds))
+    add_photos(mac.libraries["photos-2018"], [A, OLD])  # the first run moved it out
+    add_photos(mac.libraries["photos-2017"], [])
+    still = fix()
+    assert len(waits) == 2 and "0 of 1 confirmed" in still.output  # gives up after IDLE_POLLS (2) unchanged looks
+
+
+def test_fix_waits_for_the_delete_to_land_before_it_checks_the_library_again(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 2:  # the delete lands after the second look
+            connection = sqlite3.connect(mac.libraries["photos-2018"] / "database" / "Photos.sqlite")
+            connection.execute("update ZASSET set ZTRASHEDSTATE = 1 where ZUUID = 'UUID2'")
+            connection.commit()
+            connection.close()
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    result = fix()
+    assert len(waits) == 2 and "waiting for PowerPhotos to finish deleting from photos-2018" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_check_lists_a_video_in_a_photos_library_and_a_file_of_neither_kind(mac):
+    add_photos(mac.libraries["photos-2018"], [A, C, ("2018-04-04 10:00:00", 50, "note.webp")])
+    result = runner.invoke(app, ["photos", "split", "--check", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 1 and "1 video in a photos library; 1 of a type that is neither photo nor video" in result.output
+    assert "    wrong kind: 2018-03-03 12:00:00 c.mov" in result.output and "    unknown type: 2018-04-04 10:00:00 note.webp" in result.output
+
+
+def test_fix_moves_a_video_out_of_a_photos_library_into_the_videos_library_of_its_year(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("videos-2018", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, C])
+    add_photos(mac.libraries["videos-2018"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "videos-2018", ["UUID2"], "false"]]
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_leaves_a_file_of_neither_kind_where_it_is(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2018-04-04 10:00:00", 50, "note.webp")])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
+    assert "unknown type: 2018-04-04 10:00:00 note.webp" in result.output and result.exit_code == 1

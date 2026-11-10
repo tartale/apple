@@ -102,3 +102,19 @@ def complete(source_photos: Counter, start: date, end: date, media: str, own: Op
     """True when the library holds every photo of the range in the source (see missing_in_range)."""
     found = missing_in_range(source_photos, start, end, media, own, nearby)
     return found is not None and not found[0] and not found[1]
+
+
+def outside_year(held: Counter, year: int, media: str) -> Tuple[Counter, int]:
+    """(the items of the media dated outside the year, how many are within a day of its ends). Those within a day are not
+    counted as outside: the databases keep UTC dates and PowerPhotos files by local date, so they may belong here."""
+    start, end, one_day = date(year, 1, 1), date(year + 1, 1, 1), timedelta(days=1)
+    outside, near_ends = Counter(), 0
+    for key, number in pp.of_media(held, media).items():
+        when = date.fromisoformat(key[0][:10])
+        if start <= when < end:
+            continue
+        if start - one_day <= when < end + one_day:
+            near_ends += number
+        else:
+            outside[key] = number
+    return outside, near_ends
