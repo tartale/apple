@@ -1352,3 +1352,22 @@ def test_fix_says_why_a_missing_item_could_not_be_copied_from_the_source(mac, mo
     monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2")
     result = fix("--from", "Source")
     assert "2018-03-02 11:00:00 b.jpg (its original is not stored in the library)" in result.output and result.exit_code == 1
+
+
+def test_a_photo_the_source_holds_twice_is_not_missing_from_a_library_that_has_it_once(mac):
+    add_photos(mac.libraries["Source"], [A, A, B])
+    add_photos(mac.libraries["photos-2018"], [A, B])
+    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert check.exit_code == 0 and "photos-2018: in order" in check.output
+    assert "up to date" in split().output and mac.calls("copy-named.applescript") == []
+
+
+def test_a_photo_the_source_holds_twice_is_missing_twice_from_a_library_that_lacks_it(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, A, B])
+    add_photos(mac.libraries["photos-2018"], [B])
+    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert check.exit_code == 1 and "photos-2018: 2 missing" in check.output
+    fixed = fix("--from", "Source")
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1", "UUID2"], "false"]]  # both copies, once
+    assert "photos-2018 (after the fix): in order" in fixed.output and fixed.exit_code == 0
