@@ -1371,3 +1371,12 @@ def test_a_photo_the_source_holds_twice_is_missing_twice_from_a_library_that_lac
     fixed = fix("--from", "Source")
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1", "UUID2"], "false"]]  # both copies, once
     assert "photos-2018 (after the fix): in order" in fixed.output and fixed.exit_code == 0
+
+
+def test_diff_counts_copies_of_a_photo_unless_told_to_ignore_duplicates(mac):
+    counted = diff(mac, [A, A, B], [A, B])
+    assert counted.exit_code == 1 and shown(counted) == ["<  2018-03-01 10:00:00  100  a.jpg"] and "Only in Source: 1. Only in photos-2018: 0. In both: 2." in counted.output
+    ignored = diff(mac, [A, A, B], [A, B], "--ignore-duplicates")
+    assert ignored.exit_code == 0 and shown(ignored) == [] and "Only in Source: 0. Only in photos-2018: 0. In both: 2." in ignored.output
+    still = diff(mac, [A, B], [B], "--ignore-duplicates")
+    assert still.exit_code == 1 and shown(still) == ["<  2018-03-01 10:00:00  100  a.jpg"]  # a photo the other library lacks altogether is still a difference

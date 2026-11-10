@@ -448,6 +448,10 @@ def diff_command(
         bool,
         typer.Option("--ignore-date", help="Treat photos with the same size and file name as the same photo, whatever their dates (finds a clip imported twice with a shifted time). Repeated names from different cameras can match wrongly."),
     ] = False,
+    ignore_duplicates: Annotated[
+        bool,
+        typer.Option("--ignore-duplicates", help="Count a photo once however many copies of it (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is not a difference."),
+    ] = False,
     exclude_hidden: Annotated[
         bool,
         typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members), which PowerPhotos does not list and so cannot copy: compare only what it can see. How many were left out is reported on stderr."),
@@ -460,7 +464,8 @@ def diff_command(
     keeps out of view (hidden: mostly burst members) are compared too and marked in the hidden and burst columns, though
     PowerPhotos does not list them and cannot copy them; --exclude-hidden leaves them out and reports how many on stderr. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
-    so the counts are for that selection too. --ignore-date matches photos on size and file name alone. Text output
+    so the counts are for that selection too. --ignore-duplicates counts a photo once however many copies of it a library
+    holds. --ignore-date matches photos on size and file name alone. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
@@ -481,6 +486,8 @@ def diff_command(
     hidden = [selected(d.hidden) for d in data]
     bursts = [selected(d.bursts) for d in data]
     first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
+    if ignore_duplicates:
+        first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
     if ignore_date:
         only_left, only_right, both = ignoring_date(first, second)
     else:
