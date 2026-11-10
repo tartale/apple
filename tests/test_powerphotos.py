@@ -1324,4 +1324,4 @@ def test_fix_says_why_powerphotos_could_not_copy_an_item(mac, monkeypatch):
     assert "3 not copied: the database of photos-2018 has them, but PowerPhotos lists no photo" in result.output
     assert "2017-06-02 10:00:00 hidden.jpg (hidden in Photos)" in result.output
     assert "2017-06-03 10:00:00 gone.jpg (its original is not stored in the library)" in result.output
-    assert "2017-06-01 10:00:00 old.jpg (no reason found in the database)" in result.output
+    assert "2017-06-01 10:00:00 old.jpg (no reason found in the database; if Photos lists it under Recovered, restore it there)" in result.output

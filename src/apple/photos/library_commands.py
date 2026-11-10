@@ -693,7 +693,8 @@ def wait_for_library(libraries: dict, library: str, done, what: str) -> Counter:
 
 def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str) -> None:
     """Says which photos PowerPhotos listed no photo for in a library, and why that is: it does not list hidden items or ones
-    whose original is not stored in the library, so it cannot copy them."""
+    whose original is not stored in the library, so it cannot copy them. Items Photos salvaged from a damaged database (its
+    Recovered album) are not listed either, and the database does not mark them, so they get the unknown reason, which says so."""
     if not uuids:
         return
     typer.echo(f"    {len(uuids)} not copied: the database of {library} has them, but PowerPhotos lists no photo with their identifiers, so it cannot copy them:")
@@ -704,7 +705,7 @@ def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str
             continue
         reason = (
             "hidden in Photos" + (", a burst member" if key in photos.bursts else "") if key in photos.hidden
-            else "its original is not stored in the library" if photos.original_missing(key) else "no reason found in the database"
+            else "its original is not stored in the library" if photos.original_missing(key) else "no reason found in the database; if Photos lists it under Recovered, restore it there"
         )
         typer.echo(f"      {key[0]} {key[2]} ({reason})")
 
