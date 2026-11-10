@@ -365,8 +365,8 @@ def test_diff_of_matching_libraries_prints_nothing_and_exits_0(mac):
     assert result.stdout == ""
 
 
-def test_diff_counts_repeated_photos(mac):
-    assert shown(diff(mac, [A, A], [A])) == ["<  2018-03-01 10:00:00  100  a.jpg"]
+def test_diff_counts_repeated_photos_only_with_include_duplicates(mac):
+    assert shown(diff(mac, [A, A], [A], "--include-duplicates")) == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_ignores_the_trash(mac):
@@ -408,7 +408,7 @@ def test_diff_text_has_a_header_and_aligned_columns_with_sizes_on_the_right(mac)
         "<  2018-03-03 12:00:00  25000  longer-name.mov",
     ]
     assert diff(mac, [A], [D], "--format", "csv").stdout.startswith("side,date,size,name\n")
-    assert diff(mac, [A, A], [A]).stdout.count("a.jpg") == 1  # the header is printed once, and only when there is something to show
+    assert diff(mac, [A, A], [], "--only", "left").stdout.count("date") == 1  # the header is printed once, and only when there is something to show
     assert diff(mac, [A], [A]).stdout == ""
 
 
@@ -976,24 +976,20 @@ def copy_only_missing(mac, left, right, *options):
     return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", *options])
 
 
-def test_only_missing_copies_what_the_pipe_of_diff_into_copy_would(mac):
-    """diff --only left --format csv | copy --list -, without the pipe."""
-    add_photos(mac.libraries["Source"], [A, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
+def test_only_missing_copies_one_copy_of_each_missing_photo_by_its_identifier(mac):
+    add_photos(mac.libraries["Source"], [A, B, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
     add_photos(mac.libraries["photos-2018"], [A])
-    piped = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--only", "left", "--format", "csv"])
-    expected = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--list", "-"], input=piped.stdout)
     result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"])
-    calls = mac.calls("copy-named.applescript")
-    assert result.exit_code == 0 and calls == [["Source", "photos-2018", ["b.jpg", "c.mov"], "false"]] * 2
-    assert result.output == expected.output and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
+    assert result.exit_code == 0 and mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2", "UUID4"], "false"]]  # b.jpg once (not twice) and c.mov
+    assert mac.calls("copy-named.applescript") == [] and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
 
 
 def test_only_missing_limits_by_dates_and_says_when_nothing_is_missing(mac):
     copy_only_missing(mac, [A, B, C], [A], "--since", "2018-03-03")
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["c.mov"], "false"]]
-    nothing = copy_only_missing(mac, [A], [A])
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3"], "false"]]
+    nothing = copy_only_missing(mac, [A, A], [A])  # a lack of duplicates is not a lack
     assert nothing.exit_code == 0 and "no files copied (nothing is missing from photos-2018)" in nothing.output
-    assert len(mac.calls("copy-named.applescript")) == 1
+    assert len(mac.calls("copy-ids.applescript")) == 1
 
 
 def test_only_missing_cannot_be_combined_with_a_list(mac):
@@ -1362,21 +1358,42 @@ def test_a_photo_the_source_holds_twice_is_not_missing_from_a_library_that_has_i
     assert "up to date" in split().output and mac.calls("copy-named.applescript") == []
 
 
-def test_a_photo_the_source_holds_twice_is_missing_twice_from_a_library_that_lacks_it(mac, monkeypatch):
+def test_a_photo_the_source_holds_twice_is_missing_once_from_a_library_that_lacks_it(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac)
     add_photos(mac.libraries["Source"], [A, A, B])
     add_photos(mac.libraries["photos-2018"], [B])
     check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
-    assert check.exit_code == 1 and "photos-2018: 2 missing" in check.output
+    assert check.exit_code == 1 and "photos-2018: 1 missing" in check.output
     fixed = fix("--from", "Source")
-    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1", "UUID2"], "false"]]  # both copies, once
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]  # one copy: duplicates are not carried over
     assert "photos-2018 (after the fix): in order" in fixed.output and fixed.exit_code == 0
 
 
-def test_diff_counts_copies_of_a_photo_unless_told_to_ignore_duplicates(mac):
-    counted = diff(mac, [A, A, B], [A, B])
-    assert counted.exit_code == 1 and shown(counted) == ["<  2018-03-01 10:00:00  100  a.jpg"] and "Only in Source: 1. Only in photos-2018: 0. In both: 2." in counted.output
-    ignored = diff(mac, [A, A, B], [A, B], "--ignore-duplicates")
+def test_diff_counts_a_photo_once_unless_told_to_include_duplicates(mac):
+    ignored = diff(mac, [A, A, B], [A, B])
     assert ignored.exit_code == 0 and shown(ignored) == [] and "Only in Source: 0. Only in photos-2018: 0. In both: 2." in ignored.output
-    still = diff(mac, [A, B], [B], "--ignore-duplicates")
+    counted = diff(mac, [A, A, B], [A, B], "--include-duplicates")
+    assert counted.exit_code == 1 and shown(counted) == ["<  2018-03-01 10:00:00  100  a.jpg"] and "Only in Source: 1. Only in photos-2018: 0. In both: 2." in counted.output
+    still = diff(mac, [A, B], [B])
     assert still.exit_code == 1 and shown(still) == ["<  2018-03-01 10:00:00  100  a.jpg"]  # a photo the other library lacks altogether is still a difference
+
+def test_fix_moves_one_copy_of_a_stray_held_several_times_and_removes_every_copy(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, OLD, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "photos-2017", ["UUID2"], "false"]]  # one copy goes across
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2", "UUID3", "UUID4"]]]  # and all three leave
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_copies_nothing_for_a_stray_the_right_library_has_but_still_removes_every_copy(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2", "UUID3"]]]
+    assert result.exit_code == 0

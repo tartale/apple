@@ -448,9 +448,9 @@ def diff_command(
         bool,
         typer.Option("--ignore-date", help="Treat photos with the same size and file name as the same photo, whatever their dates (finds a clip imported twice with a shifted time). Repeated names from different cameras can match wrongly."),
     ] = False,
-    ignore_duplicates: Annotated[
+    include_duplicates: Annotated[
         bool,
-        typer.Option("--ignore-duplicates", help="Count a photo once however many copies of it (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is not a difference."),
+        typer.Option("--include-duplicates", help="Count every copy of a photo (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is a difference. By default a photo is counted once."),
     ] = False,
     exclude_hidden: Annotated[
         bool,
@@ -464,8 +464,8 @@ def diff_command(
     keeps out of view (hidden: mostly burst members) are compared too and marked in the hidden and burst columns, though
     PowerPhotos does not list them and cannot copy them; --exclude-hidden leaves them out and reports how many on stderr. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
-    so the counts are for that selection too. --ignore-duplicates counts a photo once however many copies of it a library
-    holds. --ignore-date matches photos on size and file name alone. Text output
+    so the counts are for that selection too. A photo is counted once however many copies of it (the same date, size and file name) a library
+    holds; --include-duplicates counts every copy. --ignore-date matches photos on size and file name alone. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
@@ -486,7 +486,7 @@ def diff_command(
     hidden = [selected(d.hidden) for d in data]
     bursts = [selected(d.bursts) for d in data]
     first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
-    if ignore_duplicates:
+    if not include_duplicates:
         first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
     if ignore_date:
         only_left, only_right, both = ignoring_date(first, second)
@@ -521,8 +521,13 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
-    return diff_rows(selected[0] - selected[1], Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
+    missing = split_plan.absent(selected[0], selected[1])
+    rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
+    ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
+    for row in rows:
+        row["id"] = ids.get((row["date"], row["name"], row["size"]))  # the Photos identifier of one copy of it
+    return rows
 
 
 def copy_command(
@@ -561,8 +566,18 @@ def copy_command(
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
+    ids = None
     if only_missing:
-        names, hidden, no_original = split_records(only_in_left(source, destination, since, until, media))
+        rows = only_in_left(source, destination, since, until, media)
+        names, hidden, no_original = split_records(rows)
+        # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
+        # second copy of the photo, is not carried over too
+        listable = [row for row in rows if not is_true(row["hidden"]) and not is_true(row["missing"])]
+        ids = [row["id"] for row in listable if row["id"]]
+        for row in listable:
+            if not row["id"]:
+                typer.echo(f"  not copied: {row['date']} {row['name']} (the database of {source} gives it no identifier)", err=True)
+        names = names if ids else []
         if not names:
             reason = f"nothing is missing from {destination}" if not (hidden or no_original) else "everything missing is hidden in Photos or has no original in " + source
             typer.echo(f"{destination}: no files copied ({reason})")
@@ -587,7 +602,7 @@ def copy_command(
                 known_libraries(), source, destination,
                 since.date() if since else None,
                 until.date() + timedelta(days=1) if until else None,
-                media.value, on_upgrade, names, check_duplicates or names is None,
+                media.value, on_upgrade, names, check_duplicates or names is None, ids=ids,
             )
     except pp.Busy as error:
         fail(str(error))
@@ -596,7 +611,11 @@ def copy_command(
         report_hidden(hidden)
     if names is not None:
         report_missing(no_original, source)
-    report_unlisted(result.unlisted, source)
+    if ids is not None:
+        names_of = {row["id"]: row["name"] for row in rows if row["id"]}
+        report_unlisted([names_of.get(listed, listed) for listed in result.unlisted], source)
+    else:
+        report_unlisted(result.unlisted, source)
 
 
 def read_library(libraries: dict, name: str) -> Optional[pp.Photos]:
@@ -724,10 +743,9 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
     was copied."""
     key_of = {}
     for key in sorted(lacking):
-        for uuid in source_data.uuids.get(key, [])[:lacking[key]]:
-            key_of[uuid] = key
-    for key in sorted(lacking):
-        if not source_data.uuids.get(key):
+        if source_data.uuids.get(key):
+            key_of[source_data.uuids[key][0]] = key  # one copy of each: copies of a photo are not carried over
+        else:
             typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
     if not key_of:
         return False
@@ -739,20 +757,19 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
         typer.echo(f"    {part.name}: skipped (needs a Photos upgrade)")
         return False
     report_not_listed(source_data, result.unlisted, key_of, source)
-    wanted = Counter({key: source_data.visible[key] for key in set(key_of.values())})
-    wait_for_library(libraries, part.name, lambda held: all(held[key] >= number for key, number in wanted.items()), f"copying into {part.name}")
+    wait_for_library(libraries, part.name, lambda held: all(held[key] for key in key_of.values()), f"copying into {part.name}")
     typer.echo(f"    {part.name}: asked PowerPhotos to copy {count(len(key_of), 'item')} from {source}")
     return True
 
 
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
-    """--fix: copies the items outside the year of a library into the library of their own year (only those that library lacks,
-    judged from its database, so PowerPhotos' duplicate check is not needed), then re-reads that library's database to confirm each one is there, and only then moves the
-    confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete), all in one delete after every copy has
-    been confirmed, so that PowerPhotos asks once however many years the strays come from. Photos are named by their Photos
-    identifiers, so a file name another photo shares does not matter. An item is left alone, and said so, when its year
-    has no library, when it cannot be told which part of a capped year it belongs to, or when the database gives it no
-    identifier. Returns whether anything was removed from this library."""
+    """--fix: moves the items outside the year of a library into the library of their own year. The right library ends with
+    one copy of each (a photo it lacks is copied once, from its Photos identifier, without PowerPhotos' duplicate check; copies
+    of a photo are not carried over), and this library with none: once the right library's database shows the photo is there,
+    every copy of it is moved out of this one, all in one delete after every copy has been confirmed, to its Recently
+    Deleted (PowerPhotos' delete), so that PowerPhotos asks once however many years the strays come from. An item is left
+    alone, and said so, when its year has no library, when it cannot be told which part of a capped year it belongs to,
+    or when the database gives it no identifier. Returns whether anything was removed from this library."""
     wanted: dict = {}
     left_alone = []
     for key in sorted(outside.elements()):
@@ -783,16 +800,16 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         # large library) is not needed: only the items it lacks are copied.
         before = read_library(libraries, target)
         held = Counter() if before is None else before.visible + before.hidden
-        lacking = [key for key in keys if held[key] < outside[key]]
-        to_copy = [uuid for key in lacking for uuid in identifiers[key][:outside[key] - held[key]]]
+        lacking = [key for key in keys if not held[key]]
+        to_copy = [identifiers[key][0] for key in lacking]  # one copy: duplicates are not carried over
         if to_copy:
             result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=False, ids=to_copy)
             if result.sent is None:
                 typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
                 continue
             report_not_listed(own, result.unlisted, {uuid: key for key in keys for uuid in identifiers[key]}, part.name)
-        now = wait_for_library(libraries, target, lambda held: all(held[key] >= outside[key] for key in keys), f"copying into {target}")
-        confirmed = [key for key in keys if now[key] >= outside[key]]
+        now = wait_for_library(libraries, target, lambda held: all(held[key] for key in keys), f"copying into {target}")
+        confirmed = [key for key in keys if now[key]]
         typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
         for key in keys:
             if key not in confirmed:
