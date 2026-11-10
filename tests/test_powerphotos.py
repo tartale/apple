@@ -1191,7 +1191,8 @@ def test_the_id_applescripts_look_photos_up_by_filter_and_do_not_read_the_whole_
         assert "run script" in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '"/L0/001"' in script
         assert '"missing"' in script and 'text item delimiters to "/"' in script
         assert "id of photos of" not in script and "count of allIds" not in script and "photos of theLibrary" not in script and "photos of sourceLibrary" not in script
-    assert "duplicate wanted" in (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
+    copy = (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
+    assert "duplicate " in copy and "id of wanted" not in copy and "duplicate wanted" not in copy  # id of a list of references is an error; the filter itself is the specifier
 
 
 def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_delete_a_list():
