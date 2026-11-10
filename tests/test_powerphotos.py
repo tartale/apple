@@ -561,7 +561,7 @@ def test_split_by_default_copies_only_the_missing_names_without_the_check(mac):
     year_libraries(mac, [A, B, new_year], photos_2018=[A])
     result = split()
     assert "photos-2018: copied 3 (no duplicate check)" in result.output
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["b.jpg", "ny.jpg"], "false"]]  # near New Year too
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3", "UUID2"], "false"]]  # b.jpg and ny.jpg (near New Year too), by Photos identifier
     assert mac.calls("copy-photos.applescript") == []
 
 
@@ -765,8 +765,8 @@ def test_split_by_default_copies_what_a_part_lacks_and_photos_near_its_edges(mac
     add_photos(mac.libraries["photos-2018-2"], [])
     capped_split()
     # b and c are within a day of the boundary between the parts, so either library might be theirs (a, in part 1, is not)
-    assert mac.calls("copy-named.applescript") == [
-        ["Source", "photos-2018-1", ["b.jpg", "c.jpg"], "false"], ["Source", "photos-2018-2", ["b.jpg", "c.jpg"], "false"],
+    assert mac.calls("copy-ids.applescript") == [
+        ["Source", "photos-2018-1", ["UUID2", "UUID3"], "false"], ["Source", "photos-2018-2", ["UUID2", "UUID3"], "false"],
     ]
 
 
@@ -1397,3 +1397,10 @@ def test_fix_copies_nothing_for_a_stray_the_right_library_has_but_still_removes_
     result = fix()
     assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2", "UUID3"]]]
     assert result.exit_code == 0
+
+
+def test_split_by_default_copies_one_copy_of_the_photo_and_not_another_that_shares_its_name(mac):
+    other_year = ("2019-05-05 10:00:00", 100, "b.jpg")  # the same file name, in the next year's range
+    year_libraries(mac, [B, B, other_year], photos_2018=[])
+    split()
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]] and mac.calls("copy-named.applescript") == []

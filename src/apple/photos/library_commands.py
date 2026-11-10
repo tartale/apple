@@ -929,11 +929,11 @@ def split_command(
     photos-2018-1, photos-2018-2 ... A rerun after new photos arrive can move a boundary, and a photo near one may be
     filed in either part.
 
-    Each library gets the photos it lacks: they are worked out from the databases and copied by file name without
-    PowerPhotos' duplicate check. A missing photo whose file name another photo in the source shares copies that one
-    too. A photo within a day of the start or end of a library's dates, whose library the databases cannot settle, is
-    copied into every library it could belong to that lacks it, so it can end up in two. --check-duplicates copies the
-    whole date range instead and lets PowerPhotos skip what the library has.
+    Each library gets the photos it lacks: they are worked out from the databases and copied, one copy of each, named by
+    their Photos identifiers and without PowerPhotos' duplicate check, so a file name another photo shares or a second
+    copy of the photo is not carried over. A photo within a day of the start or end of a library's dates, whose library
+    the databases cannot settle, is copied into every library it could belong to that lacks it, so it can end up in
+    two. --check-duplicates copies the whole date range instead and lets PowerPhotos skip what the library has.
 
     --check copies nothing: it reads the databases and, for each library, lists the photos dated outside its year
     (strays) and the source's photos of its dates that it lacks, so it can be run to see that photos-2005 really holds
@@ -1055,21 +1055,25 @@ def split_command(
                         if not check_duplicates:
                             if found is None:
                                 fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
-                            keys_by_name = {}
-                            for key in list(found[0] + found[1]):  # near the ends too: any library will do
-                                keys_by_name.setdefault(key[2], []).append(key)
-                            no_original = {
-                                name: any(key in source_data.shared for key in keys) for name, keys in sorted(keys_by_name.items())
-                                if source_data is not None and all(source_data.original_missing(key) for key in keys)
-                            }
-                            names = sorted(set(keys_by_name) - set(no_original))
-                            if not names:
+                            # One copy of each photo the library lacks, named by its Photos identifier (so a file name another photo
+                            # shares, or a second copy of the photo, is not carried over); near the ends too: any library will do.
+                            ids, names_of = [], {}
+                            for key in sorted(found[0] + found[1]):
+                                if source_data is not None and source_data.original_missing(key):
+                                    no_original[key[2]] = no_original.get(key[2], False) or key in source_data.shared
+                                elif source_data is not None and source_data.uuids.get(key):
+                                    ids.append(source_data.uuids[key][0])
+                                    names_of[ids[-1]] = key[2]
+                                else:
+                                    typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
+                            if not ids:
                                 typer.echo(f"{label}: nothing to copy{note}")
                                 report_missing(no_original, source)
                                 continue
                             result = copy_one(
-                                libraries, source, part.name, None, None, kind, on_upgrade, names, check_duplicates=False
+                                libraries, source, part.name, None, None, kind, on_upgrade, check_duplicates=False, ids=ids
                             )
+                            result = CopyResult(result.sent, [names_of.get(listed, listed) for listed in result.unlisted])
                         else:
                             result = copy_one(libraries, source, part.name, part.start, part.end, kind, on_upgrade)
                         typer.echo(f"{label}: {describe_copy(result, check_duplicates)}{note}")
