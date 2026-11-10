@@ -1183,10 +1183,14 @@ def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
     assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-ids.applescript") == []
 
 
-def test_the_id_applescripts_name_photos_by_the_uuid_before_the_slash():
+def test_the_id_applescripts_look_photos_up_by_filter_and_do_not_read_the_whole_library():
+    """Reading the id of every photo of a large library into AppleScript, and looping over them, takes so long that the copy
+    looks hung: PowerPhotos finds the photos itself with a filter (every photo whose id is "a" or id is "b")."""
     for name in ("copy-ids", "trash-ids"):
         script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
-        assert "id of photos of" in script and 'text item delimiters to "/"' in script and '"missing"' in script
+        assert "run script" in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '"/L0/001"' in script
+        assert '"missing"' in script and 'text item delimiters to "/"' in script
+        assert "id of photos of" not in script and "count of allIds" not in script and "photos of theLibrary" not in script and "photos of sourceLibrary" not in script
     assert "duplicate wanted" in (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
 
 
@@ -1194,8 +1198,7 @@ def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_de
     """delete {photo, photo} is an error ("Can't make ... into type specifier") and one delete per photo asks for confirmation each
     time: a filter (every photo whose id is "a" or id is "b") is one specifier, and so one confirmation."""
     script = (pp.APPLESCRIPTS / "trash-ids.applescript").read_text()
-    assert 'run script' in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '" or "' in script
-    assert "delete toDelete" not in script and "delete (contents of" not in script
+    assert "delete toDelete" not in script and "delete (contents of" not in script and "then delete " in script and '" or "' in script
 
 
 def test_fix_removes_the_strays_of_every_year_in_one_delete_after_all_are_copied(mac, monkeypatch):
