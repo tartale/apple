@@ -611,7 +611,9 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
 def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
-    split_command, --check). Returns (whether it is in order, the items outside the year, the library's photos or None)."""
+    split_command, --check). Also lists what is of the other kind (a video in a photos library) and what is of neither.
+    Returns (whether it is in order, the items to move to another library, the library's photos or None): those outside the
+    year, and those of the other kind, which belong in the other kind's library."""
     label = label or part.name
     if part.name not in libraries:
         typer.echo(f"{label}: library missing")
@@ -622,6 +624,8 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
         return False, Counter(), None
     held = own.visible + own.hidden
     outside, near_ends = split_plan.outside_year(held, year, kind)
+    other_kind = Counter({key: number for key, number in held.items() if pp.media_of(key[2]) not in (None, kind)})
+    unknown = Counter({key: number for key, number in held.items() if pp.media_of(key[2]) is None})
     if source_data is None:
         lacking = uncertain = Counter()
     else:
@@ -635,6 +639,10 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
         for key, number in outside.items():
             by_year[key[0][:4]] += number
         problems.append(f"{sum(outside.values())} outside {year} ({', '.join(f'{when} {number}' for when, number in sorted(by_year.items()))})")
+    if other_kind:
+        problems.append(f"{sum(other_kind.values())} {'video' if kind == 'photos' else 'photo'}{'' if sum(other_kind.values()) == 1 else 's'} in a {kind} library")
+    if unknown:
+        problems.append(f"{sum(unknown.values())} of a type that is neither photo nor video")
     if lacking:
         problems.append(f"{sum(lacking.values())} missing")
     notes = []
@@ -645,9 +653,13 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     typer.echo(f"{label}: " + ("; ".join(problems) if problems else "in order") + (f" ({'; '.join(notes)})" if notes else ""))
     for key in sorted(outside.elements()):
         typer.echo(f"    outside: {key[0]} {key[2]}")
+    for key in sorted(other_kind.elements()):
+        typer.echo(f"    wrong kind: {key[0]} {key[2]}")
+    for key in sorted(unknown.elements()):
+        typer.echo(f"    unknown type: {key[0]} {key[2]}")
     for key in sorted(lacking.elements()):
         typer.echo(f"    missing: {key[0]} {key[2]}")
-    return not problems, outside, own
+    return not problems, outside + other_kind, own
 
 
 POLL_SECONDS = 5  # how often a library being copied into is looked at
@@ -691,7 +703,8 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     left_alone = []
     for key in sorted(outside.elements()):
         item_date = date.fromisoformat(key[0][:10])
-        candidates = parts_of(kind, item_date.year)
+        target_kind = pp.media_of(key[2]) or kind  # a video in a photos library belongs in the videos library of its year
+        candidates = parts_of(target_kind, item_date.year)
         target = candidates[0] if len(candidates) == 1 else next((c for c in candidates if c.start <= item_date < c.end), None)
         if target is None:
             left_alone.append((key, f"no library for {item_date.year}" if not candidates else f"cannot tell which part of {item_date.year} it belongs in"))
@@ -854,7 +867,8 @@ def split_command(
     UTC dates and PowerPhotos files by local date; one that close that the library lacks is reported as near the ends
     and does not fail the check. Exits 1 when any library has strays, lacks photos or is not in PowerPhotos.
 
-    --fix (it implies --check) then moves the strays to where they belong, as far as it safely can: each is copied into
+    A photo of the other kind (a video in photos-2005) or of neither kind (a type not in the photo or video lists) is listed
+    too, and fails the check. --fix (it implies --check) then moves the strays, and the items of the other kind, to where they belong, as far as it safely can: each is copied into
     the library of its own year (by file name, PowerPhotos skipping any that library has), and that library's database is
     read again to confirm it arrived. Only then is it moved out of the wrong library, to that library's Recently Deleted
     (PowerPhotos' delete; it can be put back for 30 days, and nothing is removed from disk). The check is then run again

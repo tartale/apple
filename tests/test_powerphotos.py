@@ -1279,3 +1279,29 @@ def test_fix_waits_for_the_delete_to_land_before_it_checks_the_library_again(mac
     result = fix()
     assert len(waits) == 2 and "waiting for PowerPhotos to finish deleting from photos-2018" in result.output
     assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_check_lists_a_video_in_a_photos_library_and_a_file_of_neither_kind(mac):
+    add_photos(mac.libraries["photos-2018"], [A, C, ("2018-04-04 10:00:00", 50, "note.webp")])
+    result = runner.invoke(app, ["photos", "split", "--check", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 1 and "1 video in a photos library; 1 of a type that is neither photo nor video" in result.output
+    assert "    wrong kind: 2018-03-03 12:00:00 c.mov" in result.output and "    unknown type: 2018-04-04 10:00:00 note.webp" in result.output
+
+
+def test_fix_moves_a_video_out_of_a_photos_library_into_the_videos_library_of_its_year(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("videos-2018", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, C])
+    add_photos(mac.libraries["videos-2018"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "videos-2018", ["UUID2"], "false"]]
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_leaves_a_file_of_neither_kind_where_it_is(mac):
+    add_photos(mac.libraries["photos-2018"], [A, ("2018-04-04 10:00:00", 50, "note.webp")])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
+    assert "unknown type: 2018-04-04 10:00:00 note.webp" in result.output and result.exit_code == 1

@@ -153,6 +153,12 @@ def model_version(library: Path, exact: bool = True) -> Optional[int]:
         return None
 
 
+def media_of(name: str) -> Optional[str]:
+    """photos or videos by the ending of a file name, None for a type that is neither."""
+    lowered = name.lower()
+    return next((kind for kind, endings in EXTENSIONS.items() if lowered.endswith(endings)), None)
+
+
 def of_media(photos: Counter, media: str) -> Counter:
     """The photos (see photos()) whose file name ends like a photo or video, as `media` says; all keeps everything."""
     if media == "all":
