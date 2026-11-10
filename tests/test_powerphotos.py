@@ -1416,8 +1416,27 @@ def test_a_photo_that_is_hidden_in_the_library_is_not_missing_from_it(mac):
 
 def test_check_says_what_a_library_holds_under_the_name_of_a_photo_it_lacks(mac):
     add_photos(mac.libraries["Source"], [A, B, C])
-    add_photos(mac.libraries["photos-2018"], [A, ("2018-03-02 14:00:00", 100, "B.JPG"), ("2018-03-03 12:00:00", 99, "c.mov")])
+    add_photos(mac.libraries["photos-2018"], [A, ("2018-03-02 14:00:00", 100, "B.JPG"), ("2018-03-03 12:00:00", 90, "c.mov")])
     result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "all", "--years", "2018", "--to", "photos-{year}"])
     assert "    missing: 2018-03-02 11:00:00 b.jpg (the library has this name: dated 2018-03-02 14:00:00)" in result.output
-    assert "    missing: 2018-03-03 12:00:00 c.mov (the library has this name: 99 bytes)" in result.output
+    assert "    missing: 2018-03-03 12:00:00 c.mov (the library has this name: 90 bytes)" in result.output
     assert "    missing: 2018-03-05" not in result.output
+
+
+def test_a_copy_that_differs_by_an_hour_or_a_little_in_size_is_the_same_photo(mac):
+    source = [("2011-04-10 10:57:49", 1967270, "IMG_4254.JPG"), ("2011-04-10 11:57:49", 1967270, "IMG_4254.JPG"), ("2011-05-30 00:53:30", 1864453, "IMAG0020.jpg")]
+    dest = [("2011-04-10 10:57:49", 1968640, "IMG_4254.JPG"), ("2011-05-29 23:53:30", 1865823, "imag0020.JPG")]  # 1370 bytes more, an hour earlier
+    add_photos(mac.libraries["Source"], source)
+    add_photos(mac.libraries["photos-2018"], dest)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"])
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output  # both source copies of IMG_4254, and the lower-cased name
+
+
+def test_a_copy_further_off_in_time_or_size_is_not_the_same_photo(mac):
+    source = [("2011-04-10 10:00:00", 1000000, "a.jpg"), ("2011-04-10 10:00:00", 1000000, "b.jpg"), ("2011-04-10 10:00:00", 1000000, "c.jpg")]
+    dest = [("2011-04-10 13:00:00", 1000000, "a.jpg"), ("2011-04-10 10:00:00", 1100000, "b.jpg"), ("2011-04-10 11:59:00", 1005000, "c.jpg")]
+    add_photos(mac.libraries["Source"], source)
+    add_photos(mac.libraries["photos-2018"], dest)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"])
+    assert "photos-2018: 2 missing" in result.output and "missing: 2011-04-10 10:00:00 a.jpg" in result.output and "missing: 2011-04-10 10:00:00 b.jpg" in result.output
+    assert "missing: 2011-04-10 10:00:00 c.jpg" not in result.output  # under two hours and half a percent

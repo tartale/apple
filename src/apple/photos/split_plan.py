@@ -5,7 +5,7 @@ in UTC as 'yyyy-mm-dd hh:mm:ss'); nothing talks to PowerPhotos.
 """
 import re
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 from apple.photos import powerphotos as pp
@@ -70,11 +70,35 @@ def count_in_range(counted: Counter, start: date, end: date, media: str) -> int:
     )
 
 
+TIME_TOLERANCE = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
+SIZE_TOLERANCE = 0.01  # and by a little in size, when the file's metadata was rewritten (a fraction of the size)
+
+
+def same_size(first: str, second: str) -> bool:
+    """Whether two sizes (as the databases give them) are the same file to within SIZE_TOLERANCE; a size that is not known
+    (not a number, or 0, as for a placeholder) does not tell them apart."""
+    if not (first.isdigit() and second.isdigit() and int(first) and int(second)):
+        return True
+    return abs(int(first) - int(second)) <= SIZE_TOLERANCE * max(int(first), int(second))
+
+
 def absent(wanted: Counter, held: Counter) -> Counter:
-    """The photos of wanted that held has none of, one for each: a photo is missing when its date, size and file name are
-    nowhere in the library, not when the library has fewer copies than the source, and copies are not carried over (the
-    same photo imported twice is one picture)."""
-    return Counter({key: 1 for key in wanted if not held[key]})
+    """The photos of wanted that held has none of, one for each. A photo is there when held has a photo with its file name
+    (without regard to case, and .jpeg is .jpg), a date within TIME_TOLERANCE of its own and a size within SIZE_TOLERANCE of
+    its own: a copy that was imported again, or whose metadata was rewritten, or that is filed under a shifted time, is
+    the same picture. A photo is missing when nothing like it is in the library, not when the library has fewer copies than
+    the source, and copies are not carried over."""
+    by_name: dict = {}
+    for key in held:
+        by_name.setdefault(pp.normalized_name(key[2]), []).append((datetime.fromisoformat(key[0]), key[1]))
+    missing = Counter()
+    for key in wanted:
+        if held[key]:
+            continue
+        when = datetime.fromisoformat(key[0])
+        if not any(abs(when - other) <= TIME_TOLERANCE and same_size(key[1], size) for other, size in by_name.get(pp.normalized_name(key[2]), [])):
+            missing[key] = 1
+    return missing
 
 
 def missing_in_range(
