@@ -650,8 +650,8 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
 
 
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
-    """--fix: copies the items outside the year of a library into the library of their own year (PowerPhotos skips any that
-    library already has), then re-reads that library's database to confirm each one is there, and only then moves the
+    """--fix: copies the items outside the year of a library into the library of their own year (only those that library lacks,
+    judged from its database, so PowerPhotos' duplicate check is not needed), then re-reads that library's database to confirm each one is there, and only then moves the
     confirmed ones out of this library to its Recently Deleted (PowerPhotos' delete), all in one delete after every copy has
     been confirmed, so that PowerPhotos asks once however many years the strays come from. Photos are named by their Photos
     identifiers, so a file name another photo shares does not matter. An item is left alone, and said so, when its year
@@ -681,15 +681,23 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         if dry:
             typer.echo(f"    would copy {count(len(keys), 'item')} into {target}, then move them out of {part.name}: {', '.join(key[2] for key in keys)}")
             continue
-        result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=True, ids=[uuid for key in keys for uuid in identifiers[key]])
-        if result.sent is None:
-            typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
-            continue
         names_of.update({uuid: key[2] for key in keys for uuid in identifiers[key]})
-        report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
+        # What the target library already holds is read from its database, so PowerPhotos' own duplicate check (slow in a
+        # large library) is not needed: only the items it lacks are copied.
+        before = read_library(libraries, target)
+        held = Counter() if before is None else before.visible + before.hidden
+        lacking = [key for key in keys if held[key] < outside[key]]
+        to_copy = [uuid for key in lacking for uuid in identifiers[key][:outside[key] - held[key]]]
+        if to_copy:
+            result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=False, ids=to_copy)
+            if result.sent is None:
+                typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
+                continue
+            report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
         there = read_library(libraries, target)
-        confirmed = [key for key in keys if there is not None and key in there.visible + there.hidden]
-        typer.echo(f"    {target}: asked PowerPhotos to copy {count(len(keys), 'item')}; {len(confirmed)} confirmed in its database")
+        now = Counter() if there is None else there.visible + there.hidden
+        confirmed = [key for key in keys if now[key] >= outside[key]]
+        typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
         for key in keys:
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
