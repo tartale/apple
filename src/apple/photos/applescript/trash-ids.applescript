@@ -46,14 +46,14 @@ on deleteBatch(libraryName, uuids)
 		if tests is not "" then set tests to tests & " or "
 		set tests to tests & "id is " & my asLiteral((contents of anId) & "/L0/001")
 	end repeat
-	set photos to "(every photo of library " & my asLiteral(libraryName) & " whose " & tests & ")"
-	set foundIds to run script "with timeout of " & timeoutSeconds & " seconds" & linefeed & "tell application \"PowerPhotos\"" & linefeed & "set foundIds to id of " & photos & linefeed & "if (count of foundIds) > 0 then delete " & photos & linefeed & "return foundIds" & linefeed & "end tell" & linefeed & "end timeout"
-	set lines to ""
+	set filterText to "(every photo of library " & my asLiteral(libraryName) & " whose " & tests & ")"
+	set foundIds to run script "with timeout of " & timeoutSeconds & " seconds" & linefeed & "tell application \"PowerPhotos\"" & linefeed & "set foundIds to id of " & filterText & linefeed & "if (count of foundIds) > 0 then delete " & filterText & linefeed & "return foundIds" & linefeed & "end tell" & linefeed & "end timeout"
+	set foundLines to ""
 	repeat with aFoundId in foundIds
-		set lines to lines & my uuidOf(contents of aFoundId) & linefeed
+		set foundLines to foundLines & my uuidOf(contents of aFoundId) & linefeed
 		set deletedTotal to deletedTotal + 1
 	end repeat
-	return lines
+	return foundLines
 end deleteBatch
 
 on asLiteral(theText)

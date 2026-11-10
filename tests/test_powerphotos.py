@@ -1497,3 +1497,12 @@ def test_only_missing_strict_copies_a_photo_whose_near_copy_the_destination_has(
     strict = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", "--strict"])
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
     assert runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--strict", "--since", "2011-01-01"]).exit_code == 2
+
+
+def test_the_id_applescripts_do_not_use_applescript_words_as_variable_names():
+    """`set lines to ""` fails ("Can't set every line to"): lines, selection and the like are terms, not variables."""
+    import re
+    for name in ("copy-ids", "trash-ids"):
+        script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
+        assigned = set(re.findall(r"^\s*set (\w+) to", script, re.M))
+        assert not assigned & {"lines", "line", "selection", "words", "characters", "paragraphs", "photos", "text", "item", "items", "result", "properties"}

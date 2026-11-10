@@ -53,14 +53,14 @@ on copyBatch(sourceName, destinationName, checkDuplicates, uuids)
 	else
 		set skipping to "without skip duplicates"
 	end if
-	set photos to "(every photo of library " & my asLiteral(sourceName) & " whose " & tests & ")"
-	set foundIds to run script "with timeout of " & timeoutSeconds & " seconds" & linefeed & "tell application \"PowerPhotos\"" & linefeed & "set foundIds to id of " & photos & linefeed & "if (count of foundIds) > 0 then duplicate " & photos & " to library " & my asLiteral(destinationName) & " " & skipping & linefeed & "return foundIds" & linefeed & "end tell" & linefeed & "end timeout"
-	set lines to ""
+	set filterText to "(every photo of library " & my asLiteral(sourceName) & " whose " & tests & ")"
+	set foundIds to run script "with timeout of " & timeoutSeconds & " seconds" & linefeed & "tell application \"PowerPhotos\"" & linefeed & "set foundIds to id of " & filterText & linefeed & "if (count of foundIds) > 0 then duplicate " & filterText & " to library " & my asLiteral(destinationName) & " " & skipping & linefeed & "return foundIds" & linefeed & "end tell" & linefeed & "end timeout"
+	set foundLines to ""
 	repeat with aFoundId in foundIds
-		set lines to lines & my uuidOf(contents of aFoundId) & linefeed
+		set foundLines to foundLines & my uuidOf(contents of aFoundId) & linefeed
 		set foundTotal to foundTotal + 1
 	end repeat
-	return lines
+	return foundLines
 end copyBatch
 
 on asLiteral(theText)
