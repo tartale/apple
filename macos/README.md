@@ -10,7 +10,7 @@ The actions and filters named here come from the [PowerPhotos Shortcuts docs](ht
 ./apple photos split --from "Default Library" --media photos --years 2018-2020
 ```
 
-Copies one media type of a library into one library per year (`photos-2018`, `photos-2019`, ...), using PowerPhotos' `duplicate` command with `skip duplicates`, so reruns add only what is new and nothing is removed from the source. `./apple photos copy` does one date range into any destination:
+Copies one media type of a library into one library per year (`photos-2018`, `photos-2019`, ...), using PowerPhotos' `duplicate` command. It works out from the Photos databases which photos each library lacks and copies only those, without PowerPhotos' `skip duplicates` comparison (`--check-duplicates` copies the whole date range and uses it), so reruns add only what is new and nothing is removed from the source. `./apple photos copy` does one date range into any destination:
 
 ```
 ./apple photos copy --from "Default Library" --to photos-2018 --since 2018-01-01 --until 2018-12-31 --media videos
@@ -30,7 +30,7 @@ Before the first run, in PowerPhotos settings keep both edit versions, keep Live
 
 ## Find duplicates
 
-The AppleScript `duplicate` and `merge` commands skip photos already in the destination (`skip duplicates`), which handles duplicates between libraries when copying. PowerPhotos' duplicate search has no Shortcuts or AppleScript action, so it cannot be started from a script. **Find Duplicates** is a reminder: **Show Notification** ("Run Find Duplicates in PowerPhotos") then **Open Library in PowerPhotos** on the library to search. The search itself is then run by hand.
+The AppleScript `duplicate` and `merge` commands can skip photos already in the destination (`skip duplicates`), which `copy` uses for a date range and `--check-duplicates` turns on elsewhere. PowerPhotos' duplicate search has no Shortcuts or AppleScript action, so it cannot be started from a script. **Find Duplicates** is a reminder: **Show Notification** ("Run Find Duplicates in PowerPhotos") then **Open Library in PowerPhotos** on the library to search. The search itself is then run by hand.
 
 ## Schedule
 

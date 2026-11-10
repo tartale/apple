@@ -38,12 +38,12 @@ class OnUpgrade(str, Enum):
 
 
 SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`.")]
-NoDuplicateCheckOption = Annotated[
+CheckDuplicatesOption = Annotated[
     bool,
     typer.Option(
-        "--no-duplicate-check",
-        help="Copy even photos the destination already has, instead of letting PowerPhotos compare against it first "
-        "(faster into a large library). Needs a list of what to copy, so it does not duplicate what is there.",
+        "--check-duplicates",
+        help="Let PowerPhotos compare what it copies against the destination and skip the photos it already has. Off by "
+        "default: what is missing is worked out from the databases and only that is copied, which is faster into a large library.",
     ),
 ]
 OnUpgradeOption = Annotated[
@@ -530,9 +530,9 @@ def copy_command(
     ] = None,
     only_missing: Annotated[
         bool,
-        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list - with --no-duplicate-check. --since, --until and --media limit what is compared. Not with --list."),
+        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list -. --since, --until and --media limit what is compared. Not with --list."),
     ] = False,
-    no_duplicate_check: NoDuplicateCheckOption = False,
+    check_duplicates: CheckDuplicatesOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
 ) -> None:
     """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
@@ -541,20 +541,20 @@ def copy_command(
     With --list, every photo in the source with a listed file name is copied, so a name that more than one photo has
     copies all of them. Names PowerPhotos does not list in the source are reported on stderr, and so are hidden items in the list
     (the hidden column of `diff`), which are left out. An empty list copies nothing and succeeds.
-    --no-duplicate-check copies the listed photos even when the destination has them, which avoids PowerPhotos'
-    comparison against a large library; use it only with a list of what is missing, such as from `apple photos diff`.
-    --only-missing does that for you: it works out what the destination lacks and copies exactly that.
+    A list is copied without PowerPhotos' comparison against the destination (--check-duplicates turns it on), so give it
+    a list of what is missing, such as from `apple photos diff --only left`; a listed photo the destination has is copied
+    again. --only-missing does that for you: it works out what the destination lacks and copies exactly that. A date range
+    is always compared against the destination, since otherwise a rerun would copy it all again.
     """
     require_macos()
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
-    if only_missing and (list_file is not None or no_duplicate_check):
-        raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list or --no-duplicate-check")
-    if no_duplicate_check and list_file is None:
-        raise typer.BadParameter("--no-duplicate-check needs --list: without a list it would copy the whole range again")
+    if only_missing and list_file is not None:
+        raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
+    if check_duplicates and list_file is None and not only_missing:
+        raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
     if only_missing:
-        no_duplicate_check = True
         names, hidden, no_original = split_records(only_in_left(source, destination, since, until, media))
         if not names:
             reason = f"nothing is missing from {destination}" if not (hidden or no_original) else "everything missing is hidden in Photos or has no original in " + source
@@ -580,11 +580,11 @@ def copy_command(
                 known_libraries(), source, destination,
                 since.date() if since else None,
                 until.date() + timedelta(days=1) if until else None,
-                media.value, on_upgrade, names, not no_duplicate_check,
+                media.value, on_upgrade, names, check_duplicates or names is None,
             )
     except pp.Busy as error:
         fail(str(error))
-    typer.echo(f"{destination}: {describe_copy(result, not no_duplicate_check)}")
+    typer.echo(f"{destination}: {describe_copy(result, check_duplicates or names is None)}")
     if names is not None and hidden:
         report_hidden(hidden)
     if names is not None:
@@ -869,7 +869,7 @@ def split_command(
             "(a few seconds, where each PowerPhotos copy into a large library makes it reindex).",
         ),
     ] = True,
-    no_duplicate_check: NoDuplicateCheckOption = False,
+    check_duplicates: CheckDuplicatesOption = False,
     on_missing: Annotated[
         OnMissing,
         typer.Option(help="When a destination library is not in PowerPhotos: stop before copying anything, or skip it and go on."),
@@ -905,11 +905,11 @@ def split_command(
     photos-2018-1, photos-2018-2 ... A rerun after new photos arrive can move a boundary, and a photo near one may be
     filed in either part.
 
-    --no-duplicate-check catches stragglers: it works out from the databases which photos of each library's dates it
-    lacks and copies just those, matched by file name and without PowerPhotos' duplicate check. A missing photo whose
-    file name another photo in the source shares copies that one too. A photo within a day of the start or end of a
-    library's dates, whose library the databases cannot settle, is copied into every library it could belong to that
-    lacks it, so it can end up in two.
+    Each library gets the photos it lacks: they are worked out from the databases and copied by file name without
+    PowerPhotos' duplicate check. A missing photo whose file name another photo in the source shares copies that one
+    too. A photo within a day of the start or end of a library's dates, whose library the databases cannot settle, is
+    copied into every library it could belong to that lacks it, so it can end up in two. --check-duplicates copies the
+    whole date range instead and lets PowerPhotos skip what the library has.
 
     --check copies nothing: it reads the databases and, for each library, lists the photos dated outside its year
     (strays) and the source's photos of its dates that it lacks, so it can be run to see that photos-2005 really holds
@@ -941,10 +941,10 @@ def split_command(
     first_year, last_year = int(first), int(last or first)
     if last_year < first_year:
         raise typer.BadParameter("--years ends before it starts")
-    if no_duplicate_check and not skip_complete:
-        raise typer.BadParameter("--no-duplicate-check works out what is missing, so it cannot be used with --no-skip-complete")
-    if check and (no_duplicate_check or not skip_complete):
-        raise typer.BadParameter("--check works out what is missing and copies nothing, so it cannot be used with --no-duplicate-check or --no-skip-complete")
+    if not check_duplicates and not skip_complete:
+        raise typer.BadParameter("--no-skip-complete copies every year whole and lets PowerPhotos skip what is there, so it needs --check-duplicates")
+    if check and (check_duplicates or not skip_complete):
+        raise typer.BadParameter("--check works out what is missing and copies nothing, so it cannot be used with --check-duplicates or --no-skip-complete")
     try:
         max_bytes = split_plan.parse_size(max_size) if max_size is not None else None
     except ValueError as error:
@@ -968,9 +968,9 @@ def split_command(
                     f"{source}: {count(sum(source_data.superseded.values()), 'shared placeholder')} with an imported copy in the same "
                     "library not counted.", err=True,
                 )
-            if (no_duplicate_check or max_bytes) and source_photos is None:
+            if (not check_duplicates or max_bytes) and source_photos is None:
                 fail(f"The photos of {source} cannot be read from its database, so " + (
-                    "what is missing cannot be worked out." if no_duplicate_check else "its size cannot be worked out."))
+                    "what is missing cannot be worked out." if not check_duplicates else "its size cannot be worked out."))
             plans = {}
 
             def plan(kind: str, year: int) -> list:
@@ -1028,7 +1028,7 @@ def split_command(
                             typer.echo(f"{label}: would copy{note}")
                             continue
                         no_original = {}
-                        if no_duplicate_check:
+                        if not check_duplicates:
                             if found is None:
                                 fail(f"The photos of {part.name} cannot be read from its database, so what is missing cannot be worked out.")
                             keys_by_name = {}
@@ -1048,7 +1048,7 @@ def split_command(
                             )
                         else:
                             result = copy_one(libraries, source, part.name, part.start, part.end, kind, on_upgrade)
-                        typer.echo(f"{label}: {describe_copy(result, not no_duplicate_check)}{note}")
+                        typer.echo(f"{label}: {describe_copy(result, check_duplicates)}{note}")
                         report_missing(no_original, source)
                         report_unlisted(result.unlisted, source)
     except pp.Busy as error:
