@@ -629,9 +629,10 @@ def read_library(libraries: dict, name: str) -> Optional[pp.Photos]:
 
 
 def read_photos(libraries: dict, name: str) -> Optional[Counter]:
-    """The visible photos of a library (see read_library), or None."""
+    """The photos a library holds (see read_library), visible or hidden: a photo that is hidden in a library is there, or
+    None."""
     found = read_library(libraries, name)
-    return None if found is None else found.visible
+    return None if found is None else found.visible + found.hidden
 
 
 def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None) -> tuple:
@@ -684,8 +685,22 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     for key in sorted(unknown.elements()):
         typer.echo(f"    unknown type: {key[0]} {key[2]}")
     for key in sorted(lacking.elements()):
-        typer.echo(f"    missing: {key[0]} {key[2]}")
+        typer.echo(f"    missing: {key[0]} {key[2]}" + lookalikes(key, own))
     return not problems, outside + other_kind, own, lacking
+
+
+def lookalikes(key: tuple, photos: pp.Photos) -> str:
+    """For a photo a library is said to lack, what it holds under the same file name, so that a copy that differs in date or
+    size shows: ' (it has this name: dated ..., N bytes)' or '' when nothing has the name."""
+    name = pp.normalized_name(key[2])
+    found = sorted((other for other in photos.visible + photos.hidden if pp.normalized_name(other[2]) == name), key=lambda other: other[0])
+    if not found:
+        return ""
+    shown = [
+        " ".join(part for part in (f"dated {other[0]}" if other[0] != key[0] else "", f"{other[1]} bytes" if other[1] != key[1] else "") if part) or "the same date and size"
+        for other in found[:3]
+    ]
+    return f" (the library has this name: {'; '.join(shown)}{f'; and {len(found) - 3} more' if len(found) > 3 else ''})"
 
 
 POLL_SECONDS = 5  # how often a library being copied into is looked at

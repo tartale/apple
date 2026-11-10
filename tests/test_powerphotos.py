@@ -1404,3 +1404,20 @@ def test_split_by_default_copies_one_copy_of_the_photo_and_not_another_that_shar
     year_libraries(mac, [B, B, other_year], photos_2018=[])
     split()
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]] and mac.calls("copy-named.applescript") == []
+
+
+def test_a_photo_that_is_hidden_in_the_library_is_not_missing_from_it(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A, (*B, "hidden")])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 0 and "photos-2018: in order" in result.output
+    assert "up to date" in split().output and mac.calls("copy-ids.applescript") == []
+
+
+def test_check_says_what_a_library_holds_under_the_name_of_a_photo_it_lacks(mac):
+    add_photos(mac.libraries["Source"], [A, B, C])
+    add_photos(mac.libraries["photos-2018"], [A, ("2018-03-02 14:00:00", 100, "B.JPG"), ("2018-03-03 12:00:00", 99, "c.mov")])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "all", "--years", "2018", "--to", "photos-{year}"])
+    assert "    missing: 2018-03-02 11:00:00 b.jpg (the library has this name: dated 2018-03-02 14:00:00)" in result.output
+    assert "    missing: 2018-03-03 12:00:00 c.mov (the library has this name: 99 bytes)" in result.output
+    assert "    missing: 2018-03-05" not in result.output
