@@ -70,6 +70,13 @@ def count_in_range(counted: Counter, start: date, end: date, media: str) -> int:
     )
 
 
+def absent(wanted: Counter, held: Counter) -> Counter:
+    """The photos of wanted that held has none of, one for each: a photo is missing when its date, size and file name are
+    nowhere in the library, not when the library has fewer copies than the source, and copies are not carried over (the
+    same photo imported twice is one picture)."""
+    return Counter({key: 1 for key in wanted if not held[key]})
+
+
 def missing_in_range(
     source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]]
 ) -> Optional[Tuple[Counter, Counter]]:
@@ -78,7 +85,8 @@ def missing_in_range(
     Returns (missing, uncertain), or None when the library (own) is missing or cannot be read. The databases keep UTC
     dates and PowerPhotos files by local date, so a photo within a day of start or end may belong to the range next
     door: missing holds the photos inside the range proper that own lacks, and uncertain the ones near its ends that
-    are in neither own nor any of the nearby libraries.
+    are in neither own nor any of the nearby libraries. A photo is lacking only if own has none with its date, size and
+    file name, and then once, however many copies of it the source has (see absent).
     """
     if own is None:
         return None
@@ -95,7 +103,7 @@ def missing_in_range(
     around = own
     for other in nearby:
         around = around + (other or Counter())
-    return core - own, edge - around
+    return absent(core, own), absent(edge, around)
 
 
 def complete(source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]]) -> bool:

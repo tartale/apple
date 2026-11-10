@@ -3,6 +3,7 @@ import json
 import plistlib
 import re
 import sqlite3
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -166,7 +167,7 @@ def test_only_one_run_at_a_time(mac, tmp_path):
 
 
 def test_split_copies_each_year_into_its_own_library(mac):
-    result = runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
+    result = runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018-2019", "--check-duplicates"])
     assert result.exit_code == 0
     assert mac.calls("copy-photos.applescript") == [
         ["Source", "photos-2018", "2018-01-01", "2019-01-01", "photos"],
@@ -364,8 +365,8 @@ def test_diff_of_matching_libraries_prints_nothing_and_exits_0(mac):
     assert result.stdout == ""
 
 
-def test_diff_counts_repeated_photos(mac):
-    assert shown(diff(mac, [A, A], [A])) == ["<  2018-03-01 10:00:00  100  a.jpg"]
+def test_diff_counts_repeated_photos_only_with_include_duplicates(mac):
+    assert shown(diff(mac, [A, A], [A], "--include-duplicates")) == ["<  2018-03-01 10:00:00  100  a.jpg"]
 
 
 def test_diff_ignores_the_trash(mac):
@@ -407,7 +408,7 @@ def test_diff_text_has_a_header_and_aligned_columns_with_sizes_on_the_right(mac)
         "<  2018-03-03 12:00:00  25000  longer-name.mov",
     ]
     assert diff(mac, [A], [D], "--format", "csv").stdout.startswith("side,date,size,name\n")
-    assert diff(mac, [A, A], [A]).stdout.count("a.jpg") == 1  # the header is printed once, and only when there is something to show
+    assert diff(mac, [A, A], [], "--only", "left").stdout.count("date") == 1  # the header is printed once, and only when there is something to show
     assert diff(mac, [A], [A]).stdout == ""
 
 
@@ -446,8 +447,8 @@ def copy_list(args, text, **options):
 
 def test_copy_list_copies_the_names_in_diff_csv_output(mac):
     result = copy_list(["--list", "-"], "side,date,size,name\nleft,2018-03-01 10:00:00,100,\"a, b.jpg\"\nleft,x,1,c.mov\n")
-    assert result.exit_code == 0 and "photos-2018: asked PowerPhotos to copy 3" in result.output
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a, b.jpg", "c.mov"], "true"]]
+    assert result.exit_code == 0 and "photos-2018: copied 3 (no duplicate check)" in result.output
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a, b.jpg", "c.mov"], "false"]]
     assert mac.calls("copy-photos.applescript") == []
 
 
@@ -485,11 +486,13 @@ def test_names_the_source_lacks_are_reported(mac, monkeypatch):
     assert "    gone.jpg" in result.output and "    gone2.jpg" in result.output
 
 
-def test_no_duplicate_check_needs_a_list_and_is_passed_through_with_one(mac):
-    assert copy_list(["--no-duplicate-check"], "").exit_code == 2
-    assert mac.calls("copy-photos.applescript") == []
-    copy_list(["--list", "-", "--no-duplicate-check"], "a.jpg\n")
+def test_a_list_is_copied_without_the_duplicate_check_unless_it_is_asked_for(mac):
+    copy_list(["--list", "-"], "a.jpg\n")
     assert mac.calls("copy-named.applescript")[0][3] == "false"
+    copy_list(["--list", "-", "--check-duplicates"], "a.jpg\n")
+    assert mac.calls("copy-named.applescript")[1][3] == "true"
+    assert copy_list(["--check-duplicates"], "").exit_code == 2  # a date range is always compared against the destination
+    assert len(mac.calls("copy-photos.applescript")) == 0
 
 
 def test_the_extension_lists_match_the_applescript():
@@ -523,7 +526,7 @@ def test_split_skips_a_year_whose_library_already_has_everything(mac):
 
 def test_split_copies_a_year_that_is_missing_something(mac):
     year_libraries(mac, [A, B], photos_2018=[A])
-    assert "photos-2018: asked PowerPhotos to copy" in split().output
+    assert "photos-2018: asked PowerPhotos to copy" in split("--check-duplicates").output
     assert len(mac.calls("copy-photos.applescript")) == 1
 
 
@@ -534,13 +537,13 @@ def test_split_ignores_photos_of_the_other_media_and_the_trash_when_judging_a_ye
 
 def test_split_no_skip_complete_copies_even_a_complete_year(mac):
     year_libraries(mac, [A], photos_2018=[A])
-    split("--no-skip-complete")
+    split("--no-skip-complete", "--check-duplicates")
     assert len(mac.calls("copy-photos.applescript")) == 1
 
 
 def test_split_copies_when_a_year_library_cannot_be_read(mac):
     year_libraries(mac, [A])  # photos-2018 has no photo tables
-    split()
+    split("--check-duplicates")
     assert len(mac.calls("copy-photos.applescript")) == 1
 
 
@@ -548,31 +551,31 @@ def test_a_photo_near_new_year_may_be_in_the_neighbouring_years_library(mac):
     new_year = ("2018-01-01 05:00:00", 100, "ny.jpg")
     mac.make("photos-2017", 19607)
     year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[new_year])
-    assert "up to date" in split().output
+    assert "up to date" in split("--check-duplicates").output
     year_libraries(mac, [A, new_year], photos_2018=[A], photos_2017=[])
-    assert "photos-2018: asked PowerPhotos to copy" in split().output
+    assert "photos-2018: asked PowerPhotos to copy" in split("--check-duplicates").output
 
 
-def test_split_no_duplicate_check_copies_only_the_missing_names_without_the_check(mac):
+def test_split_by_default_copies_only_the_missing_names_without_the_check(mac):
     new_year = ("2018-01-01 05:00:00", 100, "ny.jpg")
     year_libraries(mac, [A, B, new_year], photos_2018=[A])
-    result = split("--no-duplicate-check")
+    result = split()
     assert "photos-2018: copied 3 (no duplicate check)" in result.output
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["b.jpg", "ny.jpg"], "false"]]  # near New Year too
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3", "UUID2"], "false"]]  # b.jpg and ny.jpg (near New Year too), by Photos identifier
     assert mac.calls("copy-photos.applescript") == []
 
 
-def test_split_no_duplicate_check_leaves_a_complete_year_alone(mac):
+def test_split_by_default_leaves_a_complete_year_alone(mac):
     year_libraries(mac, [A], photos_2018=[A])
-    assert "up to date" in split("--no-duplicate-check").output
+    assert "up to date" in split().output
     assert mac.calls("copy-named.applescript") == []
 
 
-def test_split_no_duplicate_check_needs_the_databases_and_the_skip_check(mac):
+def test_split_by_default_needs_the_databases_and_the_skip_check(mac):
     year_libraries(mac, [A])  # photos-2018 cannot be read
-    result = split("--no-duplicate-check")
+    result = split()
     assert result.exit_code == 1 and "cannot be read" in result.output
-    assert split("--no-duplicate-check", "--no-skip-complete").exit_code == 2
+    assert split("--no-skip-complete").exit_code == 2
     assert mac.calls("copy-named.applescript") == []
 
 
@@ -691,7 +694,7 @@ def test_split_over_the_cap_copies_each_part_by_its_date_range(mac):
     three_days(mac)
     mac.make("photos-2018-1", 19607)
     mac.make("photos-2018-2", 19607)
-    result = capped_split()
+    result = capped_split("--check-duplicates")
     assert result.exit_code == 0 and "3 libraries" not in result.output and "in 2 libraries" in result.output
     assert mac.calls("copy-photos.applescript") == [
         ["Source", "photos-2018-1", "2018-01-01", "2018-03-03", "photos"],
@@ -701,7 +704,7 @@ def test_split_over_the_cap_copies_each_part_by_its_date_range(mac):
 
 def test_split_under_the_cap_keeps_the_plain_library_name(mac):
     three_days(mac)
-    split("--max-size", "10GB")
+    split("--max-size", "10GB", "--check-duplicates")
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018"]
 
 
@@ -716,7 +719,7 @@ def test_split_stops_before_copying_when_a_part_library_is_missing(mac):
 def test_split_on_missing_skip_copies_the_libraries_that_exist(mac):
     three_days(mac)
     mac.make("photos-2018-1", 19607)
-    result = capped_split("--on-missing", "skip")
+    result = capped_split("--on-missing", "skip", "--check-duplicates")
     assert result.exit_code == 0 and "photos-2018-2 (2018-03-03 to 2018-12-31" in result.output and "skipped (not in PowerPhotos)" in result.output
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018-1"]
 
@@ -749,28 +752,28 @@ def test_split_skips_a_part_that_is_complete_and_copies_the_other(mac):
     mac.make("photos-2018-2", 19607)
     add_photos(mac.libraries["photos-2018-1"], [day_a, day_b])
     add_photos(mac.libraries["photos-2018-2"], [day_c])  # c is near the boundary: either library may hold it
-    result = capped_split()
+    result = capped_split("--check-duplicates")
     assert "photos-2018-1 (2018-01-01 to 2018-03-02, 200 B): up to date" in result.output
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018-2"]
 
 
-def test_split_no_duplicate_check_copies_what_a_part_lacks_and_photos_near_its_edges(mac):
+def test_split_by_default_copies_what_a_part_lacks_and_photos_near_its_edges(mac):
     day_a, day_b, day_c = three_days(mac)
     mac.make("photos-2018-1", 19607)
     mac.make("photos-2018-2", 19607)
     add_photos(mac.libraries["photos-2018-1"], [day_a])
     add_photos(mac.libraries["photos-2018-2"], [])
-    capped_split("--no-duplicate-check")
+    capped_split()
     # b and c are within a day of the boundary between the parts, so either library might be theirs (a, in part 1, is not)
-    assert mac.calls("copy-named.applescript") == [
-        ["Source", "photos-2018-1", ["b.jpg", "c.jpg"], "false"], ["Source", "photos-2018-2", ["b.jpg", "c.jpg"], "false"],
+    assert mac.calls("copy-ids.applescript") == [
+        ["Source", "photos-2018-1", ["UUID2", "UUID3"], "false"], ["Source", "photos-2018-2", ["UUID2", "UUID3"], "false"],
     ]
 
 
 def test_split_max_size_must_be_a_size_and_needs_the_source_database(mac):
     assert capped_split("--max-size", "lots").exit_code == 2
     assert split("--max-size", "lots").exit_code == 2
-    result = split("--max-size", "1GB")  # Source has no photo tables in this fixture
+    result = split("--max-size", "1GB", "--check-duplicates")  # Source has no photo tables in this fixture
     assert result.exit_code == 1 and "size cannot be worked out" in result.output
 
 
@@ -808,7 +811,7 @@ def test_diff_ignore_date_matches_the_same_clip_imported_with_a_shifted_time(mac
 def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):
     result = copy_list(["--list", "-"], "side,name,hidden,burst\nleft,a.jpg,false,false\nleft,b.jpg,true,true\nleft,c.jpg,true,false\n")
     assert result.exit_code == 0
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "true"]]
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "false"]]
     assert "Not copied: b.jpg: hidden in Photos (a burst member)" in result.output
     assert "Not copied: c.jpg: hidden in Photos, so" in result.output
     assert "2 hidden items (1 burst member) were not copied" in result.output
@@ -837,7 +840,7 @@ def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac)
     year_libraries(mac, [A, C], photos_2018=[])
     mac.make("videos-2018", 19607)
     add_photos(mac.libraries["videos-2018"], [])
-    result = split_all()
+    result = split_all("--check-duplicates")
     assert result.exit_code == 0
     assert mac.calls("copy-photos.applescript") == [
         ["Source", "photos-2018", "2018-01-01", "2019-01-01", "photos"],
@@ -848,10 +851,10 @@ def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac)
 
 def test_split_media_all_checks_both_kinds_for_missing_libraries_before_copying_either(mac):
     year_libraries(mac, [A, C], photos_2018=[])  # videos-2018 is not in PowerPhotos
-    result = split_all()
+    result = split_all("--check-duplicates")
     assert result.exit_code == 1 and "Not in PowerPhotos: videos-2018" in result.output
     assert mac.calls("copy-photos.applescript") == []
-    skipped = split_all("--on-missing", "skip")
+    skipped = split_all("--on-missing", "skip", "--check-duplicates")
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018"]
     assert "videos-2018: skipped (not in PowerPhotos)" in skipped.output
 
@@ -860,7 +863,7 @@ def test_split_media_all_skips_only_the_kind_that_is_complete(mac):
     year_libraries(mac, [A, C], photos_2018=[A])
     mac.make("videos-2018", 19607)
     add_photos(mac.libraries["videos-2018"], [])
-    result = split_all()
+    result = split_all("--check-duplicates")
     assert "photos-2018: up to date" in result.output
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["videos-2018"]
 
@@ -904,19 +907,19 @@ def test_a_library_without_an_originals_folder_is_never_said_to_miss_files(tmp_p
 def test_copy_list_does_not_send_photos_without_an_original_and_tells_shared_ones_from_the_rest(mac):
     csv_text = "side,name,missing,shared\nleft,a.jpg,false,false\nleft,shared.heic,true,true\nleft,gone.heic,true,false\n"
     result = copy_list(["--list", "-"], csv_text)
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "true"]]
+    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["a.jpg"], "false"]]
     assert "1 not copied: shared with you in Messages and not saved to the library Source" in result.output
     assert "Save them to the library in Photos, then run this again:\n    shared.heic" in result.output
     assert "1 not copied: the original is not stored in Source (it may live only in iCloud)" in result.output
-    assert result.output.index("asked PowerPhotos to copy") < result.output.index("shared with you in Messages")  # after the library's own line
+    assert result.output.index("(no duplicate check)") < result.output.index("shared with you in Messages")  # after the library's own line
     only = copy_list(["--list", "-"], "name,missing,shared\nshared.heic,true,true\n")
     assert only.exit_code == 0 and "everything listed is hidden in Photos or has no original in Source" in only.output
     assert len(mac.calls("copy-named.applescript")) == 1
 
 
-def test_split_no_duplicate_check_leaves_out_photos_that_have_no_original_and_says_why(mac):
+def test_split_by_default_leaves_out_photos_that_have_no_original_and_says_why(mac):
     year_libraries(mac, [A, PLACEHOLDER, (*NO_ORIGINAL[:3],)], photos_2018=[A])
-    result = split("--no-duplicate-check")
+    result = split()
     assert mac.calls("copy-named.applescript") == [] or all("shared.heic" not in call[2] and "gone.heic" not in call[2] for call in mac.calls("copy-named.applescript"))
     assert "shared with you in Messages and not saved to the library Source" in result.output
     assert "the original is not stored in Source" in result.output
@@ -973,28 +976,24 @@ def copy_only_missing(mac, left, right, *options):
     return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", *options])
 
 
-def test_only_missing_copies_what_the_pipe_of_diff_into_copy_would(mac):
-    """diff --only left --format csv | copy --list - --no-duplicate-check, without the pipe."""
-    add_photos(mac.libraries["Source"], [A, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
+def test_only_missing_copies_one_copy_of_each_missing_photo_by_its_identifier(mac):
+    add_photos(mac.libraries["Source"], [A, B, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
     add_photos(mac.libraries["photos-2018"], [A])
-    piped = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--only", "left", "--format", "csv"])
-    expected = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--list", "-", "--no-duplicate-check"], input=piped.stdout)
     result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"])
-    calls = mac.calls("copy-named.applescript")
-    assert result.exit_code == 0 and calls == [["Source", "photos-2018", ["b.jpg", "c.mov"], "false"]] * 2
-    assert result.output == expected.output and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
+    assert result.exit_code == 0 and mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2", "UUID4"], "false"]]  # b.jpg once (not twice) and c.mov
+    assert mac.calls("copy-named.applescript") == [] and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
 
 
 def test_only_missing_limits_by_dates_and_says_when_nothing_is_missing(mac):
     copy_only_missing(mac, [A, B, C], [A], "--since", "2018-03-03")
-    assert mac.calls("copy-named.applescript") == [["Source", "photos-2018", ["c.mov"], "false"]]
-    nothing = copy_only_missing(mac, [A], [A])
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3"], "false"]]
+    nothing = copy_only_missing(mac, [A, A], [A])  # a lack of duplicates is not a lack
     assert nothing.exit_code == 0 and "no files copied (nothing is missing from photos-2018)" in nothing.output
-    assert len(mac.calls("copy-named.applescript")) == 1
+    assert len(mac.calls("copy-ids.applescript")) == 1
 
 
-def test_only_missing_cannot_be_combined_with_a_list_or_no_duplicate_check(mac):
-    for option in (["--list", "-"], ["--no-duplicate-check"]):
+def test_only_missing_cannot_be_combined_with_a_list(mac):
+    for option in (["--list", "-"],):
         result = copy_only_missing(mac, [A], [], *option)
         assert result.exit_code == 2 and "--only-missing" in result.output
 
@@ -1028,7 +1027,7 @@ def test_split_check_fails_for_a_library_that_is_not_in_powerphotos(mac):
 
 def test_split_check_cannot_be_combined_with_what_it_does_not_do(mac):
     year_libraries(mac, [A], photos_2018=[A])
-    for option in ("--no-duplicate-check", "--no-skip-complete"):
+    for option in ("--check-duplicates", "--no-skip-complete"):
         assert split("--check", option).exit_code == 2
 
 
@@ -1305,3 +1304,103 @@ def test_fix_leaves_a_file_of_neither_kind_where_it_is(mac):
     result = fix()
     assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
     assert "unknown type: 2018-04-04 10:00:00 note.webp" in result.output and result.exit_code == 1
+
+
+def test_a_3g2_file_is_a_video():
+    kept = pp.of_media(Counter({("2018-03-01 10:00:00", "5", "clip.3G2"): 1, ("2018-03-01 10:00:00", "5", "a.jpg"): 1}), "videos")
+    assert list(kept) == [("2018-03-01 10:00:00", "5", "clip.3G2")]
+
+
+def test_fix_says_why_powerphotos_could_not_copy_an_item(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    hidden = ("2017-06-02 10:00:00", 50, "hidden.jpg", "hidden")
+    gone = ("2017-06-03 10:00:00", 0, "gone.jpg")  # no stored original
+    add_photos(mac.libraries["photos-2018"], [A, OLD, hidden, gone])
+    add_photos(mac.libraries["photos-2017"], [])
+    monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2,UUID3,UUID4")
+    result = fix()
+    assert "3 not copied: the database of photos-2018 has them, but PowerPhotos lists no photo" in result.output
+    assert "2017-06-02 10:00:00 hidden.jpg (hidden in Photos)" in result.output
+    assert "2017-06-03 10:00:00 gone.jpg (its original is not stored in the library)" in result.output
+    assert "2017-06-01 10:00:00 old.jpg (no reason found in the database; if Photos lists it under Recovered, restore it there)" in result.output
+
+
+def test_fix_with_a_source_also_copies_what_the_library_lacks(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2"], "false"]]  # b.jpg, by its Photos identifier, with no duplicate check
+    assert "photos-2018: asked PowerPhotos to copy 1 item from Source" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_dry_run_says_what_it_would_copy_from_the_source(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source", "--dry-run")
+    assert "would copy 1 item that photos-2018 lacks from Source" in result.output and mac.calls("copy-ids.applescript") == []
+
+
+def test_fix_says_why_a_missing_item_could_not_be_copied_from_the_source(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 0, "b.jpg")])  # a placeholder: no stored original
+    add_photos(mac.libraries["photos-2018"], [A])
+    monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2")
+    result = fix("--from", "Source")
+    assert "2018-03-02 11:00:00 b.jpg (its original is not stored in the library)" in result.output and result.exit_code == 1
+
+
+def test_a_photo_the_source_holds_twice_is_not_missing_from_a_library_that_has_it_once(mac):
+    add_photos(mac.libraries["Source"], [A, A, B])
+    add_photos(mac.libraries["photos-2018"], [A, B])
+    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert check.exit_code == 0 and "photos-2018: in order" in check.output
+    assert "up to date" in split().output and mac.calls("copy-named.applescript") == []
+
+
+def test_a_photo_the_source_holds_twice_is_missing_once_from_a_library_that_lacks_it(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, A, B])
+    add_photos(mac.libraries["photos-2018"], [B])
+    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert check.exit_code == 1 and "photos-2018: 1 missing" in check.output
+    fixed = fix("--from", "Source")
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]  # one copy: duplicates are not carried over
+    assert "photos-2018 (after the fix): in order" in fixed.output and fixed.exit_code == 0
+
+
+def test_diff_counts_a_photo_once_unless_told_to_include_duplicates(mac):
+    ignored = diff(mac, [A, A, B], [A, B])
+    assert ignored.exit_code == 0 and shown(ignored) == [] and "Only in Source: 0. Only in photos-2018: 0. In both: 2." in ignored.output
+    counted = diff(mac, [A, A, B], [A, B], "--include-duplicates")
+    assert counted.exit_code == 1 and shown(counted) == ["<  2018-03-01 10:00:00  100  a.jpg"] and "Only in Source: 1. Only in photos-2018: 0. In both: 2." in counted.output
+    still = diff(mac, [A, B], [B])
+    assert still.exit_code == 1 and shown(still) == ["<  2018-03-01 10:00:00  100  a.jpg"]  # a photo the other library lacks altogether is still a difference
+
+def test_fix_moves_one_copy_of_a_stray_held_several_times_and_removes_every_copy(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, OLD, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "photos-2017", ["UUID2"], "false"]]  # one copy goes across
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2", "UUID3", "UUID4"]]]  # and all three leave
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_copies_nothing_for_a_stray_the_right_library_has_but_still_removes_every_copy(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2", "UUID3"]]]
+    assert result.exit_code == 0
+
+
+def test_split_by_default_copies_one_copy_of_the_photo_and_not_another_that_shares_its_name(mac):
+    other_year = ("2019-05-05 10:00:00", 100, "b.jpg")  # the same file name, in the next year's range
+    year_libraries(mac, [B, B, other_year], photos_2018=[])
+    split()
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]] and mac.calls("copy-named.applescript") == []
