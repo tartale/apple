@@ -4,6 +4,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -649,6 +650,35 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     return not problems, outside, own
 
 
+POLL_SECONDS = 5  # how often a library being copied into is looked at
+IDLE_POLLS = 24  # how many looks in a row at an unchanged library (two minutes) before giving up on a copy
+
+
+def wait_for_library(libraries: dict, library: str, done, what: str) -> Counter:
+    """The items a library holds once done(held) is true of them, or when it stops changing without getting there.
+    PowerPhotos can hand back control of a copy or a delete while it is still writing, so this looks at the library's
+    database until the change has landed, for as long as the database keeps changing (its item count and the modification
+    times of its files), and gives up after IDLE_POLLS looks at an unchanged one. what is said when it has to wait."""
+    path = libraries.get(library)
+    files = [path / "database" / "Photos.sqlite", path / "database" / "Photos.sqlite-wal"] if path else []
+    waited = False
+    previous, idle = None, 0
+    while True:
+        found = read_library(libraries, library)
+        held = Counter() if found is None else found.visible + found.hidden
+        if done(held):
+            return held
+        signature = (sum(held.values()), [item.stat().st_mtime_ns if item.exists() else 0 for item in files])
+        idle = idle + 1 if signature == previous else 0
+        if idle >= IDLE_POLLS:
+            return held
+        if not waited:
+            typer.echo(f"    waiting for PowerPhotos to finish {what} ...", err=True)
+            waited = True
+        previous = signature
+        time.sleep(POLL_SECONDS)
+
+
 def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
     """--fix: copies the items outside the year of a library into the library of their own year (only those that library lacks,
     judged from its database, so PowerPhotos' duplicate check is not needed), then re-reads that library's database to confirm each one is there, and only then moves the
@@ -694,8 +724,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
                 typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
                 continue
             report_unlisted([names_of.get(uuid, uuid) for uuid in result.unlisted], part.name)
-        there = read_library(libraries, target)
-        now = Counter() if there is None else there.visible + there.hidden
+        now = wait_for_library(libraries, target, lambda held: all(held[key] >= outside[key] for key in keys), f"copying into {target}")
         confirmed = [key for key in keys if now[key] >= outside[key]]
         typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
         for key in keys:
@@ -707,6 +736,8 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     # Removed once, after every copy is confirmed: PowerPhotos asks to confirm each delete, and a library with strays of
     # several years would otherwise ask once per year.
     deleted, missing = trash_ids(libraries, part.name, [uuid for _, uuids in confirmed_everywhere for uuid in uuids])
+    moved = [key for key, _ in confirmed_everywhere]
+    wait_for_library(libraries, part.name, lambda held: not any(held[key] for key in moved), f"deleting from {part.name}")
     typer.echo(f"    {part.name}: moved {deleted} to its Recently Deleted: " + ", ".join(key[2] for key, _ in confirmed_everywhere))
     for uuid in missing:
         typer.echo(f"      not moved out of {part.name} (PowerPhotos lists no photo with that identifier, as it does not list hidden items): {names_of.get(uuid, uuid)}")

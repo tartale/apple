@@ -1060,6 +1060,12 @@ def test_split_needs_from_unless_it_only_checks(mac):
     assert result.exit_code == 2 and "--from is needed" in result.output
 
 
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """--fix looks at a library being copied into every few seconds: do not really wait."""
+    monkeypatch.setattr(lc, "POLL_SECONDS", 0)
+
+
 OLD = ("2017-06-01 10:00:00", 50, "old.jpg")
 
 
@@ -1208,3 +1214,68 @@ def test_fix_removes_the_strays_of_every_year_in_one_delete_after_all_are_copied
     trash = mac.calls("trash-ids.applescript")
     assert len(trash) == 1 and trash[0][0] == "photos-2018" and sorted(trash[0][1]) == ["UUID2", "UUID3"]  # one delete, and not for the one that did not arrive
     assert "NOT confirmed in photos-2015, so it stays in photos-2018" in result.output and result.exit_code == 1
+
+
+def test_fix_waits_for_powerphotos_to_finish_copying_before_it_confirms_and_deletes(mac, monkeypatch):
+    """PowerPhotos can hand back control while it is still writing: the library is looked at until the copy has arrived."""
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 3:  # the copy lands after the third look
+            add_photos(mac.libraries["photos-2017"], [OLD])
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    result = fix()
+    assert len(waits) == 3 and "waiting for PowerPhotos to finish copying into photos-2017" in result.output
+    assert "1 of 1 confirmed" in result.output and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]] and result.exit_code == 0
+
+
+def test_fix_keeps_waiting_while_the_library_is_still_changing_and_gives_up_when_it_is_not(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    monkeypatch.setattr(lc, "IDLE_POLLS", 2)
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) <= 5:  # other photos keep arriving first: it is busy, so it is not given up on
+            add_photos(mac.libraries["photos-2017"], [("2017-01-0%d 10:00:00" % len(waits), 50, "other%d.jpg" % len(waits))])
+        elif len(waits) == 6:
+            add_photos(mac.libraries["photos-2017"], [OLD])
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    busy = fix()
+    assert len(waits) == 6 and "1 of 1 confirmed" in busy.output
+    waits.clear()
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: waits.append(seconds))
+    add_photos(mac.libraries["photos-2018"], [A, OLD])  # the first run moved it out
+    add_photos(mac.libraries["photos-2017"], [])
+    still = fix()
+    assert len(waits) == 2 and "0 of 1 confirmed" in still.output  # gives up after IDLE_POLLS (2) unchanged looks
+
+
+def test_fix_waits_for_the_delete_to_land_before_it_checks_the_library_again(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [OLD])
+    waits = []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 2:  # the delete lands after the second look
+            connection = sqlite3.connect(mac.libraries["photos-2018"] / "database" / "Photos.sqlite")
+            connection.execute("update ZASSET set ZTRASHEDSTATE = 1 where ZUUID = 'UUID2'")
+            connection.commit()
+            connection.close()
+
+    monkeypatch.setattr(lc.time, "sleep", sleep)
+    result = fix()
+    assert len(waits) == 2 and "waiting for PowerPhotos to finish deleting from photos-2018" in result.output
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
