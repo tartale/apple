@@ -46,6 +46,15 @@ CheckDuplicatesOption = Annotated[
         "default: what is missing is worked out from the databases and only that is copied, which is faster into a large library.",
     ),
 ]
+StrictOption = Annotated[
+    bool,
+    typer.Option(
+        "--strict",
+        help="Count a photo as already in a library only if the library holds one with exactly its date, size and file name. "
+        "By default one with its file name, a date within two hours and a size within 1% is the same photo (a time zone or "
+        "daylight saving shift, or rewritten metadata).",
+    ),
+]
 OnUpgradeOption = Annotated[
     OnUpgrade,
     typer.Option(
@@ -512,7 +521,7 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
-def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media) -> list:
+def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, strict: bool = False) -> list:
     """The records of `diff LEFT RIGHT --only left` for the dates and media given, read from the databases."""
     try:
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
@@ -521,7 +530,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
-    missing = split_plan.absent(selected[0], selected[1])
+    missing = split_plan.absent(selected[0], selected[1], strict)
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
     ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
@@ -545,6 +554,7 @@ def copy_command(
         typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list -. --since, --until and --media limit what is compared. Not with --list."),
     ] = False,
     check_duplicates: CheckDuplicatesOption = False,
+    strict: StrictOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
 ) -> None:
     """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
@@ -563,12 +573,14 @@ def copy_command(
         raise typer.BadParameter("--until is before --since")
     if only_missing and list_file is not None:
         raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
+    if strict and not only_missing:
+        raise typer.BadParameter("--strict is for --only-missing: it says how the photos the destination lacks are told")
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
     ids = None
     if only_missing:
-        rows = only_in_left(source, destination, since, until, media)
+        rows = only_in_left(source, destination, since, until, media, strict)
         names, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too
@@ -635,7 +647,7 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible + found.hidden
 
 
-def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None) -> tuple:
+def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None, strict: bool = False) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
     split_command, --check). Also lists what is of the other kind (a video in a photos library) and what is of neither.
@@ -656,7 +668,7 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     if source_data is None:
         lacking = uncertain = Counter()
     else:
-        found = split_plan.missing_in_range(source_data.visible, part.start, part.end, kind, read_destination(part.name), [read_destination(name) for name in nearby])
+        found = split_plan.missing_in_range(source_data.visible, part.start, part.end, kind, read_destination(part.name), [read_destination(name) for name in nearby], strict)
         lacking, uncertain = found if found is not None else (Counter(), Counter())
     problems = []
     if source_data is None and not split_plan.count_in_range(held, date(year, 1, 1), date(year + 1, 1, 1), kind):
@@ -751,7 +763,7 @@ def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str
         typer.echo(f"      {key[0]} {key[2]} ({reason})")
 
 
-def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool) -> bool:
+def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool, strict: bool = False) -> bool:
     """--fix with a source: copies the source's photos of the library's dates that it lacks into it (without PowerPhotos'
     duplicate check, since the databases say what it lacks), named by their Photos identifiers, and waits for them to
     arrive. Items PowerPhotos lists no photo for (hidden, no stored original) are said and left. Returns whether anything
@@ -772,15 +784,17 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
         typer.echo(f"    {part.name}: skipped (needs a Photos upgrade)")
         return False
     report_not_listed(source_data, result.unlisted, key_of, source)
-    wait_for_library(libraries, part.name, lambda held: all(held[key] for key in key_of.values()), f"copying into {part.name}")
+    wanted = Counter(dict.fromkeys(key_of.values(), 1))
+    wait_for_library(libraries, part.name, lambda held: not split_plan.absent(wanted, held, strict), f"copying into {part.name}")
     typer.echo(f"    {part.name}: asked PowerPhotos to copy {count(len(key_of), 'item')} from {source}")
     return True
 
 
-def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool) -> bool:
+def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool, strict: bool = False) -> bool:
     """--fix: moves the items outside the year of a library into the library of their own year. The right library ends with
-    one copy of each (a photo it lacks is copied once, from its Photos identifier, without PowerPhotos' duplicate check; copies
-    of a photo are not carried over), and this library with none: once the right library's database shows the photo is there,
+    one copy of each (a photo it lacks, judged as the check judges it, so a copy that differs by an hour or a little in size
+    is there, is copied once, from its Photos identifier, without PowerPhotos' duplicate check; copies of a photo are not
+    carried over), and this library with none: once the right library's database shows the photo is there,
     every copy of it is moved out of this one, all in one delete after every copy has been confirmed, to its Recently
     Deleted (PowerPhotos' delete), so that PowerPhotos asks once however many years the strays come from. An item is left
     alone, and said so, when its year has no library, when it cannot be told which part of a capped year it belongs to,
@@ -815,7 +829,8 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         # large library) is not needed: only the items it lacks are copied.
         before = read_library(libraries, target)
         held = Counter() if before is None else before.visible + before.hidden
-        lacking = [key for key in keys if not held[key]]
+        wanted_here = Counter(dict.fromkeys(keys, 1))
+        lacking = [key for key in keys if key in split_plan.absent(wanted_here, held, strict)]  # as the check judges: a near copy is there
         to_copy = [identifiers[key][0] for key in lacking]  # one copy: duplicates are not carried over
         if to_copy:
             result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=False, ids=to_copy)
@@ -823,8 +838,9 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
                 typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
                 continue
             report_not_listed(own, result.unlisted, {uuid: key for key in keys for uuid in identifiers[key]}, part.name)
-        now = wait_for_library(libraries, target, lambda held: all(held[key] for key in keys), f"copying into {target}")
-        confirmed = [key for key in keys if now[key]]
+        now = wait_for_library(libraries, target, lambda held: not split_plan.absent(wanted_here, held, strict), f"copying into {target}")
+        still_lacking = split_plan.absent(wanted_here, now, strict)
+        confirmed = [key for key in keys if key not in still_lacking]
         typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
         for key in keys:
             if key not in confirmed:
@@ -843,7 +859,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     return deleted > 0
 
 
-def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None) -> bool:
+def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, strict: bool = False) -> bool:
     """--check: for each year and kind, the libraries photos would be split into (those the source's photos need, or without
     a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
     that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
@@ -873,13 +889,13 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                     nothing.append(part.name)  # the source has no photo for it, so it is not needed
                     continue
                 nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
-                ok, outside, own, lacking = check_part(libraries, part, kind, year, source_data, nearby, read_destination)
+                ok, outside, own, lacking = check_part(libraries, part, kind, year, source_data, nearby, read_destination, strict=strict)
                 if fix is not None and own is not None:
-                    changed = copy_missing(libraries, fix["source"], part, kind, lacking, source_data, fix["on_upgrade"], fix["dry"]) if lacking else False
-                    changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"]) or changed
+                    changed = copy_missing(libraries, fix["source"], part, kind, lacking, source_data, fix["on_upgrade"], fix["dry"], strict) if lacking else False
+                    changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"], strict) or changed
                     if changed:
                         cache.pop(part.name, None)  # it has changed
-                        ok, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)")
+                        ok, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)", strict)
                 in_order = ok and in_order
     if nothing:
         typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
@@ -909,6 +925,7 @@ def split_command(
         ),
     ] = True,
     check_duplicates: CheckDuplicatesOption = False,
+    strict: StrictOption = False,
     on_missing: Annotated[
         OnMissing,
         typer.Option(help="When a destination library is not in PowerPhotos: stop before copying anything, or skip it and go on."),
@@ -998,7 +1015,7 @@ def split_command(
                 if source and source_data is None:
                     fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
                 if not check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
-                                   {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None):
+                                   {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict):
                     raise typer.Exit(1)
                 return
             source_photos = None if source_data is None else source_data.visible
@@ -1059,7 +1076,7 @@ def split_command(
                         found = None
                         if source_photos is not None:
                             near = [read_destination(name) for name in nearby_names(kind, year, part.name)]
-                            found = split_plan.missing_in_range(source_photos, part.start, part.end, kind, read_destination(part.name), near)
+                            found = split_plan.missing_in_range(source_photos, part.start, part.end, kind, read_destination(part.name), near, strict)
                             if found is not None and not found[0] and not found[1]:
                                 typer.echo(f"{label}: up to date{note}")
                                 continue

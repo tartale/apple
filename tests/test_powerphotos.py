@@ -1440,3 +1440,56 @@ def test_a_copy_further_off_in_time_or_size_is_not_the_same_photo(mac):
     result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"])
     assert "photos-2018: 2 missing" in result.output and "missing: 2011-04-10 10:00:00 a.jpg" in result.output and "missing: 2011-04-10 10:00:00 b.jpg" in result.output
     assert "missing: 2011-04-10 10:00:00 c.jpg" not in result.output  # under two hours and half a percent
+
+
+def test_fix_does_not_copy_a_stray_the_right_library_has_a_near_copy_of(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    stray = ("2017-06-01 10:00:00", 1967270, "old.jpg")
+    near = ("2017-06-01 11:00:00", 1968640, "OLD.JPG")  # an hour later, 1370 bytes more, another case
+    add_photos(mac.libraries["photos-2018"], [A, stray])
+    add_photos(mac.libraries["photos-2017"], [near])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert "photos-2017: 1 item already there, copied 0 items; 1 of 1 confirmed" in result.output and result.exit_code == 0
+
+
+def test_fix_copies_a_stray_when_the_right_library_only_has_something_further_off(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 1967270, "old.jpg")])
+    add_photos(mac.libraries["photos-2017"], [("2017-06-01 14:00:00", 1967270, "old.jpg")])  # four hours off
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [["photos-2018", "photos-2017", ["UUID2"], "false"]] and result.exit_code == 0
+
+
+NEAR_SOURCE = [("2011-04-10 10:57:49", 1967270, "IMG_4254.JPG")]
+NEAR_COPY = [("2011-04-10 11:57:49", 1968640, "IMG_4254.JPG")]  # an hour later, 1370 bytes more
+
+
+def test_strict_counts_a_photo_as_there_only_with_its_exact_date_size_and_name(mac):
+    add_photos(mac.libraries["Source"], NEAR_SOURCE)
+    add_photos(mac.libraries["photos-2018"], NEAR_COPY)
+    options = ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"]
+    assert runner.invoke(app, options).exit_code == 0
+    strict = runner.invoke(app, [*options, "--strict"])
+    assert strict.exit_code == 1 and "photos-2018: 1 missing" in strict.output
+
+
+def test_strict_fix_copies_a_stray_whose_near_copy_is_in_the_right_library(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 1967270, "old.jpg")])
+    add_photos(mac.libraries["photos-2017"], [("2017-06-01 11:00:00", 1968640, "old.jpg")])
+    assert fix().exit_code in (0, 1) and mac.calls("copy-ids.applescript") == []
+    fix("--strict")
+    assert [call[:2] for call in mac.calls("copy-ids.applescript")] == [["photos-2018", "photos-2017"]]
+
+
+def test_only_missing_strict_copies_a_photo_whose_near_copy_the_destination_has(mac):
+    result = copy_only_missing(mac, NEAR_SOURCE, NEAR_COPY)
+    assert "nothing is missing from photos-2018" in result.output and mac.calls("copy-ids.applescript") == []
+    add_photos(mac.libraries["photos-2018"], NEAR_COPY)
+    strict = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", "--strict"])
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
+    assert runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--strict", "--since", "2011-01-01"]).exit_code == 2

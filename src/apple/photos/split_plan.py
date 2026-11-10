@@ -82,12 +82,14 @@ def same_size(first: str, second: str) -> bool:
     return abs(int(first) - int(second)) <= SIZE_TOLERANCE * max(int(first), int(second))
 
 
-def absent(wanted: Counter, held: Counter) -> Counter:
+def absent(wanted: Counter, held: Counter, strict: bool = False) -> Counter:
     """The photos of wanted that held has none of, one for each. A photo is there when held has a photo with its file name
     (without regard to case, and .jpeg is .jpg), a date within TIME_TOLERANCE of its own and a size within SIZE_TOLERANCE of
     its own: a copy that was imported again, or whose metadata was rewritten, or that is filed under a shifted time, is
     the same picture. A photo is missing when nothing like it is in the library, not when the library has fewer copies than
-    the source, and copies are not carried over."""
+    the source, and copies are not carried over. With strict, only a photo with its exact date, size and file name is there."""
+    if strict:
+        return Counter({key: 1 for key in wanted if not held[key]})
     by_name: dict = {}
     for key in held:
         by_name.setdefault(pp.normalized_name(key[2]), []).append((datetime.fromisoformat(key[0]), key[1]))
@@ -102,7 +104,7 @@ def absent(wanted: Counter, held: Counter) -> Counter:
 
 
 def missing_in_range(
-    source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]]
+    source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]], strict: bool = False
 ) -> Optional[Tuple[Counter, Counter]]:
     """What a library lacks of the source's photos from start up to end, judged from the databases.
 
@@ -127,13 +129,8 @@ def missing_in_range(
     around = own
     for other in nearby:
         around = around + (other or Counter())
-    return absent(core, own), absent(edge, around)
+    return absent(core, own, strict), absent(edge, around, strict)
 
-
-def complete(source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]]) -> bool:
-    """True when the library holds every photo of the range in the source (see missing_in_range)."""
-    found = missing_in_range(source_photos, start, end, media, own, nearby)
-    return found is not None and not found[0] and not found[1]
 
 
 def outside_year(held: Counter, year: int, media: str) -> Tuple[Counter, int]:
