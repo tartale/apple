@@ -1183,16 +1183,17 @@ def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
     assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-ids.applescript") == []
 
 
-def test_the_id_applescripts_look_photos_up_by_filter_and_do_not_read_the_whole_library():
-    """Reading the id of every photo of a large library into AppleScript, and looping over them, takes so long that the copy
-    looks hung: PowerPhotos finds the photos itself with a filter (every photo whose id is "a" or id is "b")."""
-    for name in ("copy-ids", "trash-ids"):
-        script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
-        assert "run script" in script and 'whose " & tests' in script and '"id is " & my asLiteral' in script and '"/L0/001"' in script
-        assert '"missing"' in script and 'text item delimiters to "/"' in script
-        assert "id of photos of" not in script and "count of allIds" not in script and "photos of theLibrary" not in script and "photos of sourceLibrary" not in script
+def test_the_id_applescripts_do_not_read_or_filter_the_whole_library():
+    """Reading the id of every photo of a large library into AppleScript and looping over them, or filtering the library by id,
+    makes PowerPhotos examine every photo and the copy looks hung. copy-ids reaches each photo by its id (photo id "..." of
+    library ...), which PowerPhotos looks up directly; trash-ids, which must delete one specifier, uses one filter for a batch."""
     copy = (pp.APPLESCRIPTS / "copy-ids.applescript").read_text()
-    assert "duplicate " in copy and "id of wanted" not in copy and "duplicate wanted" not in copy  # id of a list of references is an error; the filter itself is the specifier
+    assert 'photo id ((contents of anId) & "/L0/001") of sourceLibrary' in copy and "duplicate wanted" in copy and '"missing"' in copy
+    code = "\n".join(line for line in copy.splitlines() if not line.lstrip().startswith("--"))
+    assert " whose " not in code and "run script" not in code
+    trash = (pp.APPLESCRIPTS / "trash-ids.applescript").read_text()
+    assert "run script" in trash and 'whose " & tests' in trash and '"/L0/001"' in trash and '"missing"' in trash
+    assert "id of photos of" not in trash and "count of allIds" not in trash and "photos of theLibrary" not in trash
 
 
 def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_delete_a_list():
