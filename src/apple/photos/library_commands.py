@@ -763,10 +763,19 @@ def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str
         typer.echo(f"      {key[0]} {key[2]} ({reason})")
 
 
+class CopyFailed(Exception):
+    """Photos PowerPhotos was asked to copy into a library did not arrive: the cause is likely to be the same for the next
+    library, and what was confirmed so far should not be built on, so --fix stops."""
+
+    def __init__(self, library: str):
+        super().__init__(library)
+        self.library = library
+
+
 def report_copy_outcome(library: str, requested: int, arrived: int) -> None:
     """Says so when photos PowerPhotos was asked to copy into a library did not arrive. PowerPhotos does not report a failed
     copy to the script: it answers at once and shows the failure in its own window and Reports section, so all the script
-    can see is that the library did not change."""
+    can see is that the library did not change. Raises CopyFailed when any did not arrive."""
     if arrived >= requested:
         return
     if not arrived:
@@ -777,6 +786,7 @@ def report_copy_outcome(library: str, requested: int, arrived: int) -> None:
         )
     else:
         typer.echo(f"    {requested - arrived} of the {count(requested, 'photo')} did not arrive in {library}: see PowerPhotos' Reports section for why.")
+    raise CopyFailed(library)
 
 
 def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool, strict: bool = False) -> bool:
@@ -868,10 +878,10 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         still_lacking = split_plan.absent(wanted_here, now, strict)
         confirmed = [key for key in keys if key not in still_lacking]
         typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(copyable), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
-        report_copy_outcome(target, len(copyable), len(copyable) - len(split_plan.absent(arriving, now, strict)))
         for key in keys:
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
+        report_copy_outcome(target, len(copyable), len(copyable) - len(split_plan.absent(arriving, now, strict)))
         confirmed_everywhere += [(key, identifiers[key]) for key in confirmed]
     if not confirmed_everywhere:
         return False
@@ -1041,8 +1051,16 @@ def split_command(
             if check:
                 if source and source_data is None:
                     fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
-                if not check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
-                                   {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict):
+                try:
+                    in_order = check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
+                                           {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict)
+                except CopyFailed as stopped:
+                    typer.echo(
+                        f"Stopped: the copy into {stopped.library} did not complete, so the libraries after it were not touched, and nothing more was "
+                        "removed from any library. Fix the cause, then run this again: what was already copied is kept and the rerun carries on from there."
+                    )
+                    raise typer.Exit(1)
+                if not in_order:
                     raise typer.Exit(1)
                 return
             source_photos = None if source_data is None else source_data.visible

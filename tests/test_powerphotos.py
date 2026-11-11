@@ -1205,19 +1205,33 @@ def test_trash_ids_deletes_a_batch_with_one_filter_because_powerphotos_cannot_de
 
 def test_fix_removes_the_strays_of_every_year_in_one_delete_after_all_are_copied(mac, monkeypatch):
     trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac)
+    older = ("2016-02-02 10:00:00", 50, "older.jpg")
+    for name in ("photos-2017", "photos-2016"):
+        mac.make(name, 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD, older])
+    add_photos(mac.libraries["photos-2017"], [])
+    add_photos(mac.libraries["photos-2016"], [older])  # already there
+    result = fix()
+    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2017"]
+    trash = mac.calls("trash-ids.applescript")
+    assert len(trash) == 1 and trash[0][0] == "photos-2018" and sorted(trash[0][1]) == ["UUID2", "UUID3"]  # one delete, for both years
+    assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
+
+
+def test_fix_stops_at_the_first_library_a_copy_fails_in_and_removes_nothing(mac):
     older = ("2016-02-02 10:00:00", 50, "older.jpg")
     unlucky = ("2015-03-03 10:00:00", 50, "unlucky.jpg")
     for name in ("photos-2017", "photos-2016", "photos-2015"):
         mac.make(name, 19607)
     add_photos(mac.libraries["photos-2018"], [A, OLD, older, unlucky])
-    add_photos(mac.libraries["photos-2017"], [OLD])
-    add_photos(mac.libraries["photos-2016"], [older])
-    add_photos(mac.libraries["photos-2015"], [])  # this copy did not arrive
+    add_photos(mac.libraries["photos-2017"], [OLD])  # already there: only the removal is left
+    add_photos(mac.libraries["photos-2016"], [])
+    add_photos(mac.libraries["photos-2015"], [])  # the fake PowerPhotos copies nothing, as when PowerPhotos fails
     result = fix()
-    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2015"]  # the other two libraries already hold theirs
-    trash = mac.calls("trash-ids.applescript")
-    assert len(trash) == 1 and trash[0][0] == "photos-2018" and sorted(trash[0][1]) == ["UUID2", "UUID3"]  # one delete, and not for the one that did not arrive
-    assert "NOT confirmed in photos-2015, so it stays in photos-2018" in result.output and result.exit_code == 1
+    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2015"]  # the first, in order; 2016 was not tried
+    assert mac.calls("trash-ids.applescript") == []  # nothing was removed, not even what was confirmed
+    assert "Stopped: the copy into photos-2015 did not complete" in result.output and "(after the fix)" not in result.output and result.exit_code == 1
 
 
 def test_fix_waits_for_powerphotos_to_finish_copying_before_it_confirms_and_deletes(mac, monkeypatch):
@@ -1542,3 +1556,22 @@ def test_fix_says_when_none_of_the_strays_it_copied_arrived(mac):
     add_photos(mac.libraries["photos-2017"], [])
     result = fix()
     assert "none of the 1 photo arrived in photos-2017" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018" in result.output
+
+
+def test_fix_stops_before_the_next_year_when_a_copy_from_the_source_fails(mac):
+    add_photos(mac.libraries["Source"], [A, ("2019-03-01 10:00:00", 100, "b19.jpg")])
+    add_photos(mac.libraries["photos-2018"], [])
+    add_photos(mac.libraries["photos-2019"], [])
+    result = runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
+    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2018"]  # photos-2019 was not tried
+    assert "Stopped: the copy into photos-2018 did not complete" in result.output and "photos-2019" not in result.output.split("Stopped:")[1] and result.exit_code == 1
+
+
+def test_fix_stops_when_only_some_of_the_photos_arrive(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, arrives={"b.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D, ("2019-03-01 10:00:00", 100, "b19.jpg")])
+    add_photos(mac.libraries["photos-2018"], [A])
+    add_photos(mac.libraries["photos-2019"], [])
+    result = runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
+    assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
+    assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2018"]
