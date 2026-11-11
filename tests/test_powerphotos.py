@@ -1347,12 +1347,12 @@ def test_fix_dry_run_says_what_it_would_copy_from_the_source(mac):
     assert "would copy 1 item that photos-2018 lacks from Source" in result.output and mac.calls("copy-ids.applescript") == []
 
 
-def test_fix_says_why_a_missing_item_could_not_be_copied_from_the_source(mac, monkeypatch):
+def test_fix_leaves_a_photo_with_no_stored_original_out_of_the_copy_and_says_so(mac):
     add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 0, "b.jpg")])  # a placeholder: no stored original
     add_photos(mac.libraries["photos-2018"], [A])
-    monkeypatch.setenv("FAKE_NAMED_MISSING", "UUID2")
     result = fix("--from", "Source")
-    assert "2018-03-02 11:00:00 b.jpg (its original is not stored in the library)" in result.output and result.exit_code == 1
+    assert mac.calls("copy-ids.applescript") == []  # nothing PowerPhotos could copy is sent
+    assert "1 not copied: the original is not stored in Source (it may live only in iCloud)" in result.output and "    b.jpg" in result.output and result.exit_code == 1
 
 
 def test_a_photo_the_source_holds_twice_is_not_missing_from_a_library_that_has_it_once(mac):
@@ -1507,3 +1507,38 @@ def test_the_id_applescripts_do_not_use_applescript_words_as_variable_names():
         script = (pp.APPLESCRIPTS / f"{name}.applescript").read_text()
         assigned = set(re.findall(r"^\s*set (\w+) to", script, re.M))
         assert not assigned & {"lines", "line", "selection", "words", "characters", "paragraphs", "photos", "text", "item", "items", "result", "properties"}
+
+
+def test_fix_says_when_none_of_the_photos_it_copied_arrived(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])  # the fake PowerPhotos copies nothing, as when PowerPhotos fails every photo
+    result = fix("--from", "Source")
+    assert "none of the 1 photo arrived in photos-2018: PowerPhotos probably failed to copy them" in result.output
+    assert "Reports section" in result.output and "killall photolibraryd" in result.output and result.exit_code == 1
+
+
+def test_fix_says_how_many_of_the_photos_it_copied_did_not_arrive(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, arrives={"b.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "1 of the 2 photos did not arrive in photos-2018: see PowerPhotos' Reports section for why." in result.output
+    assert "killall" not in result.output
+
+
+def test_fix_does_not_copy_a_stray_that_has_no_stored_original_and_leaves_it_where_it_is(mac, monkeypatch):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 0, "old.jpg")])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
+    assert "not copied to photos-2017, so it stays in photos-2018: 2017-06-01 10:00:00 old.jpg (its original is not stored in photos-2018)" in result.output
+    assert "none of the" not in result.output and result.exit_code == 1
+
+
+def test_fix_says_when_none_of_the_strays_it_copied_arrived(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert "none of the 1 photo arrived in photos-2017" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018" in result.output

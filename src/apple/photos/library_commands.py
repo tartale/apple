@@ -763,17 +763,37 @@ def report_not_listed(photos: pp.Photos, uuids: list, key_of: dict, library: str
         typer.echo(f"      {key[0]} {key[2]} ({reason})")
 
 
+def report_copy_outcome(library: str, requested: int, arrived: int) -> None:
+    """Says so when photos PowerPhotos was asked to copy into a library did not arrive. PowerPhotos does not report a failed
+    copy to the script: it answers at once and shows the failure in its own window and Reports section, so all the script
+    can see is that the library did not change."""
+    if arrived >= requested:
+        return
+    if not arrived:
+        typer.echo(
+            f"    none of the {count(requested, 'photo')} arrived in {library}: PowerPhotos probably failed to copy them. Its Reports section "
+            "has the reason. If that says Photos returned an internal error (PHPhotosErrorDomain Code=-1) for photos that import "
+            "fine by hand, quit Photos and PowerPhotos, run `killall photolibraryd` (or restart the Mac), and try again."
+        )
+    else:
+        typer.echo(f"    {requested - arrived} of the {count(requested, 'photo')} did not arrive in {library}: see PowerPhotos' Reports section for why.")
+
+
 def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool, strict: bool = False) -> bool:
     """--fix with a source: copies the source's photos of the library's dates that it lacks into it (without PowerPhotos'
     duplicate check, since the databases say what it lacks), named by their Photos identifiers, and waits for them to
-    arrive. Items PowerPhotos lists no photo for (hidden, no stored original) are said and left. Returns whether anything
-    was copied."""
+    arrive. Photos with no stored original are left out and said, and so are items PowerPhotos lists no photo for (hidden);
+    a copy that did not arrive is said (see report_copy_outcome). Returns whether anything was copied."""
     key_of = {}
+    no_original = {}
     for key in sorted(lacking):
-        if source_data.uuids.get(key):
+        if source_data.original_missing(key):  # nothing to copy: Photos keeps a placeholder (iCloud only, or shared and never saved)
+            no_original[key[2]] = no_original.get(key[2], False) or key in source_data.shared
+        elif source_data.uuids.get(key):
             key_of[source_data.uuids[key][0]] = key  # one copy of each: copies of a photo are not carried over
         else:
             typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
+    report_missing(no_original, source)
     if not key_of:
         return False
     if dry:
@@ -785,8 +805,9 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
         return False
     report_not_listed(source_data, result.unlisted, key_of, source)
     wanted = Counter(dict.fromkeys(key_of.values(), 1))
-    wait_for_library(libraries, part.name, lambda held: not split_plan.absent(wanted, held, strict), f"copying into {part.name}")
+    now = wait_for_library(libraries, part.name, lambda held: not split_plan.absent(wanted, held, strict), f"copying into {part.name}")
     typer.echo(f"    {part.name}: asked PowerPhotos to copy {count(len(key_of), 'item')} from {source}")
+    report_copy_outcome(part.name, len(wanted), len(wanted) - len(split_plan.absent(wanted, now, strict)))
     return True
 
 
@@ -831,17 +852,23 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         held = Counter() if before is None else before.visible + before.hidden
         wanted_here = Counter(dict.fromkeys(keys, 1))
         lacking = [key for key in keys if key in split_plan.absent(wanted_here, held, strict)]  # as the check judges: a near copy is there
-        to_copy = [identifiers[key][0] for key in lacking]  # one copy: duplicates are not carried over
+        stuck = [key for key in lacking if own.original_missing(key)]  # no original is stored, so there is nothing to copy
+        copyable = [key for key in lacking if key not in stuck]
+        for key in stuck:
+            typer.echo(f"      not copied to {target}, so it stays in {part.name}: {key[0]} {key[2]} (its original is not stored in {part.name})")
+        to_copy = [identifiers[key][0] for key in copyable]  # one copy: duplicates are not carried over
         if to_copy:
             result = copy_one(libraries, part.name, target, None, None, kind, on_upgrade, check_duplicates=False, ids=to_copy)
             if result.sent is None:
                 typer.echo(f"    {target}: skipped (needs a Photos upgrade)")
                 continue
             report_not_listed(own, result.unlisted, {uuid: key for key in keys for uuid in identifiers[key]}, part.name)
-        now = wait_for_library(libraries, target, lambda held: not split_plan.absent(wanted_here, held, strict), f"copying into {target}")
+        arriving = Counter(dict.fromkeys(copyable, 1))
+        now = wait_for_library(libraries, target, lambda held: not split_plan.absent(arriving, held, strict), f"copying into {target}") if copyable else held
         still_lacking = split_plan.absent(wanted_here, now, strict)
         confirmed = [key for key in keys if key not in still_lacking]
-        typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(lacking), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
+        typer.echo(f"    {target}: {count(len(keys) - len(lacking), 'item')} already there, copied {count(len(copyable), 'item')}; {len(confirmed)} of {len(keys)} confirmed in its database")
+        report_copy_outcome(target, len(copyable), len(copyable) - len(split_plan.absent(arriving, now, strict)))
         for key in keys:
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
