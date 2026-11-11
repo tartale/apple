@@ -757,7 +757,8 @@ def test_split_skips_a_part_that_is_complete_and_copies_the_other(mac):
     assert [call[1] for call in mac.calls("copy-photos.applescript")] == ["photos-2018-2"]
 
 
-def test_split_by_default_copies_what_a_part_lacks_and_photos_near_its_edges(mac):
+def test_split_by_default_copies_what_a_part_lacks_and_photos_near_its_edges(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
     day_a, day_b, day_c = three_days(mac)
     mac.make("photos-2018-1", 19607)
     mac.make("photos-2018-2", 19607)
@@ -836,7 +837,8 @@ def split_all(*options):
     return runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "all", "--years", "2018", *options])
 
 
-def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac):
+def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
     year_libraries(mac, [A, C], photos_2018=[])
     mac.make("videos-2018", 19607)
     add_photos(mac.libraries["videos-2018"], [])
@@ -849,7 +851,8 @@ def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac)
     assert "all-2018" not in result.output
 
 
-def test_split_media_all_checks_both_kinds_for_missing_libraries_before_copying_either(mac):
+def test_split_media_all_checks_both_kinds_for_missing_libraries_before_copying_either(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
     year_libraries(mac, [A, C], photos_2018=[])  # videos-2018 is not in PowerPhotos
     result = split_all("--check-duplicates")
     assert result.exit_code == 1 and "Not in PowerPhotos: videos-2018" in result.output
@@ -976,7 +979,8 @@ def copy_only_missing(mac, left, right, *options):
     return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", *options])
 
 
-def test_only_missing_copies_one_copy_of_each_missing_photo_by_its_identifier(mac):
+def test_only_missing_copies_one_copy_of_each_missing_photo_by_its_identifier(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
     add_photos(mac.libraries["Source"], [A, B, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
     add_photos(mac.libraries["photos-2018"], [A])
     result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"])
@@ -1063,6 +1067,7 @@ def test_split_needs_from_unless_it_only_checks(mac):
 def no_waiting(monkeypatch):
     """--fix looks at a library being copied into every few seconds: do not really wait."""
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
+    monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
 
 
 OLD = ("2017-06-01 10:00:00", 50, "old.jpg")
@@ -1097,7 +1102,13 @@ def copying_updates_the_database(monkeypatch, mac, arrives=None):
         have = list((key[0], key[1] and int(key[1]), key[2]) for key in held.visible.elements())
         photos = pp.library_photos(mac.libraries[source])
         for key in photos.visible.elements():
-            if any(uuid in (ids or []) for uuid in photos.uuids.get(key, [])) and (arrives is None or key[2] in arrives):
+            if ids is not None:
+                copied = any(uuid in ids for uuid in photos.uuids.get(key, []))
+            elif names is not None:
+                copied = pp.normalized_name(key[2]) in {pp.normalized_name(name) for name in names}
+            else:  # a date range of one media
+                copied = (since is None or key[0][:10] >= since.isoformat()) and (before is None or key[0][:10] < before.isoformat()) and bool(pp.of_media(Counter({key: 1}), media))
+            if copied and (arrives is None or key[2] in arrives) and key not in held.visible:
                 have.append((key[0], int(key[1]), key[2]))
         add_photos(mac.libraries[destination], have)
         return result
@@ -1258,7 +1269,6 @@ def test_fix_keeps_waiting_while_the_library_is_still_changing_and_gives_up_when
     mac.make("photos-2017", 19607)
     add_photos(mac.libraries["photos-2018"], [A, OLD])
     add_photos(mac.libraries["photos-2017"], [])
-    monkeypatch.setattr(lc, "IDLE_POLLS", 2)
     waits = []
 
     def sleep(seconds):
@@ -1269,14 +1279,14 @@ def test_fix_keeps_waiting_while_the_library_is_still_changing_and_gives_up_when
             add_photos(mac.libraries["photos-2017"], [OLD])
 
     monkeypatch.setattr(lc.time, "sleep", sleep)
-    busy = fix()
+    busy = fix("--timeout", "2")
     assert len(waits) == 6 and "1 of 1 confirmed" in busy.output
     waits.clear()
     monkeypatch.setattr(lc.time, "sleep", lambda seconds: waits.append(seconds))
     add_photos(mac.libraries["photos-2018"], [A, OLD])  # the first run moved it out
     add_photos(mac.libraries["photos-2017"], [])
-    still = fix()
-    assert len(waits) == 2 and "0 of 1 confirmed" in still.output  # gives up after IDLE_POLLS (2) unchanged looks
+    still = fix("--timeout", "2")
+    assert len(waits) == 2 and "0 of 1 confirmed" in still.output  # gives up after 2 unchanged looks
 
 
 def test_fix_waits_for_the_delete_to_land_before_it_checks_the_library_again(mac, monkeypatch):
@@ -1575,3 +1585,48 @@ def test_fix_stops_when_only_some_of_the_photos_arrive(mac, monkeypatch):
     result = runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
     assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
     assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2018"]
+
+
+def test_copy_waits_for_the_photos_to_arrive_and_says_when_they_do_not(mac):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    result = runner.invoke(app, options)  # the fake PowerPhotos copies nothing
+    assert result.exit_code == 1 and "waiting for PowerPhotos to finish copying into photos-2018" in result.output
+    assert "none of the 1 photo arrived in photos-2018: PowerPhotos probably failed to copy them" in result.output
+    assert "still waiting: 0 of 1 photos have arrived in photos-2018" in result.output  # progress while it waits
+
+
+def test_copy_waits_for_a_list_and_a_date_range_too(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [])
+    listed = copy_list(["--list", "-"], "a.jpg\nb.jpg\n")
+    assert listed.exit_code == 1 and "none of the 2 photos arrived in photos-2018" in listed.output
+    ranged = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--since", "2018-03-01", "--until", "2018-03-02", "--media", "photos"])
+    assert ranged.exit_code == 1 and "none of the 2 photos arrived in photos-2018" in ranged.output
+    copying_updates_the_database(monkeypatch, mac)
+    assert copy_list(["--list", "-"], "a.jpg\nb.jpg\n").exit_code == 0
+
+
+def test_timeout_says_how_long_an_unchanged_library_is_waited_for(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A])
+    add_photos(mac.libraries["photos-2018"], [])
+    looks = []
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: looks.append(seconds))
+    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    runner.invoke(app, [*options, "--timeout", "3"])
+    assert len(looks) == 3  # three unchanged looks, a "minute" each in this test
+    looks.clear()
+    runner.invoke(app, [*options, "--timeout", "7"])
+    assert len(looks) == 7
+    assert runner.invoke(app, [*options, "--timeout", "0"]).exit_code == 2  # at least a few seconds
+
+
+def test_the_default_timeout_is_fifteen_minutes_and_split_has_the_option_too(mac, monkeypatch):
+    assert lc.DEFAULT_TIMEOUT == 15.0
+    looks = []
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: looks.append(seconds))
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", "--timeout", "4"])
+    assert len(looks) == 4
