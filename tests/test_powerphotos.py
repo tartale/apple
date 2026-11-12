@@ -5,6 +5,7 @@ import plistlib
 import re
 import sqlite3
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -1687,16 +1688,28 @@ def test_a_photo_powerphotos_reports_a_failed_import_for_is_recorded_as_uncopyab
     assert "(after the fix): 1 missing" in result.output and result.exit_code == 1  # it is still missing, but nothing is left to try
 
 
-def test_an_uncopyable_photo_is_left_out_of_later_copies_and_listed(mac, monkeypatch):
+def test_an_uncopyable_photo_is_left_out_of_later_copies_and_tagged_on_its_missing_line(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    fix("--from", "Source")
+    first = fix("--from", "Source")
+    assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in first.output  # not blacklisted yet when it is first looked at
     before = len(mac.calls("copy-ids.applescript"))
     again = fix("--from", "Source")
     assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
-    assert "1 photo left out, blacklisted (--ignore-blacklist tries them again)" in again.output
-    assert "2018-03-04 09:00:00 d.jpg (uncopyable: Photos failed to import the photo" in again.output and "; recorded " in again.output and "Stopped:" not in again.output
+    assert f"    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on {date.today().isoformat()}]" in again.output
+    assert "Photos failed to import" not in again.output and "left out, blacklisted" not in again.output and "Stopped:" not in again.output  # the error is not printed again
+
+
+def test_ignore_blacklist_shows_the_plain_missing_line_and_copies_it_again(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).write_text(json.dumps({"version": 1, "entries": [
+        {"kind": "uncopyable", "library": "Source", "uuid": "UUID2", "name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "r", "recorded": "2026-11-11T10:00:00"}]}))
+    tagged = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert "    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on 2026-11-11]" in tagged.output
+    plain = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018", "--ignore-blacklist"])
+    assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in plain.output and "blacklisted" not in plain.output
 
 
 def test_ignore_blacklist_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
@@ -1727,7 +1740,7 @@ def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkey
     first = runner.invoke(app, options)
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
     second = runner.invoke(app, options)
-    assert "no files copied (everything missing is left out, blacklisted)" in second.output and "d.jpg (uncopyable: Photos failed to import the photo" in second.output
+    assert "no files copied (everything missing is left out, blacklisted)" in second.output and "Photos failed to import" not in second.output
     assert len(mac.calls("copy-ids.applescript")) == 1
 
 

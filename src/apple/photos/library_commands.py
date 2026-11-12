@@ -638,7 +638,7 @@ def copy_command(
             if ids is not None:  # copies by identifier leave out the photos on the blacklist
                 known = read_library(libraries, source)
                 key_of = {} if known is None else {uuids[0]: key for key, uuids in known.uuids.items()}
-                kept = without_blacklisted(source, {listed: key_of[listed] for listed in ids if listed in key_of}, ignore_blacklist)
+                kept = without_blacklisted(source, {listed: key_of[listed] for listed in ids if listed in key_of}, ignore_blacklist, say=True)
                 ids = [listed for listed in ids if listed not in key_of or listed in kept]
                 if not ids:
                     typer.echo(f"{destination}: no files copied (everything missing is left out, blacklisted)")
@@ -712,7 +712,7 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible + found.hidden
 
 
-def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None, strict: bool = False, read_neighbor=None) -> tuple:
+def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None, strict: bool = False, read_neighbor=None, blacklisted=None) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
     split_command, --check). Also lists what is of the other kind (a video in a photos library) and what is of neither.
@@ -764,7 +764,8 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     for key in sorted(unknown.elements()):
         typer.echo(f"    unknown type: {key[0]} {key[2]}")
     for key in sorted(lacking.elements()):
-        typer.echo(f"    missing: {key[0]} {key[2]}" + lookalikes(key, own))
+        since = blacklisted(key) if blacklisted else None  # the date it was blacklisted, or None
+        typer.echo(f"    missing: {key[0]} {key[2]}" + lookalikes(key, own) + (f" [blacklisted on {since}]" if since else ""))
     return not problems, outside + other_kind, own, lacking, uncertain
 
 
@@ -820,9 +821,9 @@ def blacklist_entries() -> list:
         fail(str(error))
 
 
-def without_blacklisted(source: str, key_of: dict, ignore: bool) -> dict:
-    """key_of (a photo's Photos identifier -> its key) without the photos on the blacklist for copies from source, which are
-    said, unless ignore (--ignore-blacklist)."""
+def without_blacklisted(source: str, key_of: dict, ignore: bool, say: bool = False) -> dict:
+    """key_of (a photo's Photos identifier -> its key) without the photos on the blacklist for copies from source, unless ignore
+    (--ignore-blacklist). With say, how many were left out is said (the check says which, on the `missing:` lines)."""
     if ignore:
         return key_of
     known = {(entry["library"], entry["uuid"]): entry for entry in blacklist_entries() if entry["kind"] == blacklist.UNCOPYABLE}
@@ -833,10 +834,8 @@ def without_blacklisted(source: str, key_of: dict, ignore: bool) -> dict:
             skipped.append((key, entry))
         else:
             kept[uuid] = key
-    if skipped:
-        typer.echo(f"    {count(len(skipped), 'photo')} left out, blacklisted (--ignore-blacklist tries them again):")
-        for key, entry in sorted(skipped, key=lambda item: item[0]):
-            typer.echo(f"      {key[0]} {key[2]} ({entry['kind']}: {entry['reason']}; recorded {entry['recorded'][:10]})")
+    if skipped and say:
+        typer.echo(f"    {count(len(skipped), 'photo')} left out, blacklisted (--ignore-blacklist tries them again)")
     return kept
 
 
@@ -1069,13 +1068,21 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     return deleted > 0
 
 
-def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False) -> bool:
+def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False, source: Optional[str] = None) -> bool:
     """--check: for each year and kind, the libraries photos would be split into (those the source's photos need, or without
     a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
     that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
     library is in order."""
     cache: dict = {}
     first_look: dict = {}
+    known = {} if ignore_blacklist or source is None else {
+        (entry["library"], entry["uuid"]): entry for entry in blacklist_entries() if entry["kind"] == blacklist.UNCOPYABLE
+    }
+
+    def blacklisted_on(key: tuple) -> Optional[str]:
+        """The date the source's photo was blacklisted for copies, or None (also when --ignore-blacklist is given)."""
+        entry = known.get((source, (source_data.uuids.get(key) or [None])[0])) if source_data is not None else None
+        return entry["recorded"][:10] if entry else None
 
     def read_destination(name: str):
         if name not in cache:
@@ -1113,14 +1120,14 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                     nothing.append(part.name)  # the source has no photo for it, so it is not needed
                     continue
                 nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
-                ok, outside, own, lacking, uncertain = check_part(libraries, part, kind, year, source_data, nearby, read_destination, strict=strict, read_neighbor=read_before)
+                ok, outside, own, lacking, uncertain = check_part(libraries, part, kind, year, source_data, nearby, read_destination, strict=strict, read_neighbor=read_before, blacklisted=blacklisted_on)
                 if fix is not None and own is not None:
                     to_copy = lacking + uncertain  # as split copies them: what is lacking, and what is near the ends and in no library
                     changed = copy_missing(libraries, fix["source"], part, kind, to_copy, source_data, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) if to_copy else False
                     changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) or changed
                     if changed:
                         cache.pop(part.name, None)  # it has changed
-                        ok, _, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)", strict, read_before)
+                        ok, _, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)", strict, read_before, blacklisted_on)
                 in_order = ok and in_order
     if nothing:
         typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
@@ -1242,7 +1249,7 @@ def split_command(
                 if source and source_data is None:
                     fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
                 in_order = check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
-                                       {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict, timeout, ignore_blacklist)
+                                       {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict, timeout, ignore_blacklist, source)
                 if not in_order:
                     raise typer.Exit(1)
                 return
@@ -1330,7 +1337,7 @@ def split_command(
                                     keys_of[ids[-1]] = key
                                 else:
                                     typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
-                            keys_of = without_blacklisted(source, keys_of, ignore_blacklist)
+                            keys_of = without_blacklisted(source, keys_of, ignore_blacklist, say=True)
                             ids = [listed for listed in ids if listed in keys_of]
                             if not ids:
                                 typer.echo(f"{label}: nothing to copy{note}")
