@@ -382,7 +382,16 @@ def import_found_command(
     mapping = parse_map(map_paths)
     progress = Progress()
     rows, hits, unreachable, denied = [], [], {}, []
-    for entry in load_list(list_file):
+    listed = load_list(list_file)
+    if listed and not any(entry["files"] for entry in listed):
+        if not any(entry["source"] for entry in listed):  # no source column: nobody has looked for these originals
+            raise typer.BadParameter(
+                f"{list_file} lists photos but not where their originals are (it has no source and files columns), as the output of `apple photos "
+                f"missing` or `diff` does: search for them first, `apple photos find {list_file} --folders PATH --format csv > found.csv`, and import found.csv"
+            )
+        typer.echo(f"None of the {count(len(listed), 'photo')} in {list_file} has an original that was found, so there is nothing to import: run `apple photos find` again with other places to search.", err=True)
+        return
+    for entry in listed:
         key = (entry["date"], "0", entry["name"])
         if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
             continue

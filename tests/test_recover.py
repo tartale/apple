@@ -1263,3 +1263,22 @@ def test_import_with_neither_library_nor_default_says_which_to_give(mac, tmp_pat
     words = " ".join(result.output.replace("│", " ").split())
     assert result.exit_code == 2 and "--library or --default-library is needed" in words
 
+
+
+def test_import_of_a_list_that_says_nothing_about_originals_is_told_to_run_find_first(mac, tmp_path):
+    listing = tmp_path / "diff.csv"
+    listing.write_text("side,date,size,name\n<,2020-01-01 18:42:17,100,one.heic\n<,2020-01-02 18:42:17,100,two.heic\n")  # as `apple photos diff --format csv` writes it
+    result = import_found(listing, "--library", "photos-2018", "--apply", "yes")
+    words = " ".join(result.output.replace("│", " ").split())
+    assert result.exit_code == 2 and "lists photos but not where their originals are" in words and "apple photos find" in words and f"found.csv" in words
+    assert mac.calls("import-photos.applescript") == []
+    missing = tmp_path / "missing.csv"
+    missing.write_text("date,name,hidden,shared,identifier\n2020-01-01 18:42:17,one.heic,false,false,\n")  # as `apple photos missing` writes it
+    assert import_found(missing).exit_code == 2
+
+
+def test_import_of_a_list_whose_originals_were_all_searched_for_and_not_found_says_so(mac, tmp_path):
+    listing = write_list(tmp_path / "found.csv", [f"{WHEN},one.heic,false,false,none,,,", f"{LATER},two.heic,false,false,none,,,"])  # find ran and found nothing
+    result = import_found(listing)
+    assert result.exit_code == 0 and "None of the 2 photos in" in result.output and "nothing to import" in result.output
+    assert "Imported 0 of" not in result.output
