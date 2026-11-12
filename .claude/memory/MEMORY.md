@@ -1,0 +1,1 @@
+- [PowerPhotos AGENTS.md docs](powerphotos-agents-docs.md) — PowerPhotos documents its reports and logs for tools; read before changing copy-failure detection

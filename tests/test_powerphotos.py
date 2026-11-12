@@ -1066,9 +1066,9 @@ def test_split_needs_from_unless_it_only_checks(mac):
 
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch, tmp_path):
-    """--fix looks at a library being copied into every few seconds: do not really wait. PowerPhotos' log and the list of
+    """--fix looks at a library being copied into every few seconds: do not really wait. PowerPhotos' reports and the list of
     uncopyable photos are the test's own, never the real ones."""
-    monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_LOG", str(tmp_path / "PowerPhotos.buffer"))
+    monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_REPORTS", str(tmp_path / "Reports"))
     monkeypatch.setenv("APPLE_PHOTOS_UNCOPYABLE", str(tmp_path / "uncopyable.json"))
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
     monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
@@ -1096,23 +1096,31 @@ def trashing_updates_the_database(monkeypatch, mac):
     monkeypatch.setattr(lc, "trash_ids", trash)
 
 
-def log_failure(name, code="3302", message="Invalid resource (code 3302)"):
-    """What PowerPhotos writes to its log when it cannot import a photo, framed in binary as in the real file."""
-    entry = (
-        "\x00" * 12 + "\x01\xf2\xd7\xa3\x01Got PhotoKit error Error Domain=PHPhotosErrorDomain Code=" + code + ' "' + message + '" '
-        "UserInfo={_PHResourceUrlsErrorKey=(\n"
-        '    "file:///Volumes/home/Pictures/photos-2018.photoslibrary/private/com.fatcatsoftware.PowerPhotos/assetresourcecache/Batch/'
-        + f'{name.upper()}-BATCH/{name}",\n'
-        '    "file:///Volumes/home/Pictures/photos-2018.photoslibrary/private/com.fatcatsoftware.PowerPhotos/assetresourcecache/Batch/FF2E/FullSizeRender.jpeg\xc4@>P"\x01\x00\x00\xdb\x01'
-        + "\x00" * 8
-    )
-    with open(os.environ["APPLE_PHOTOS_POWERPHOTOS_LOG"], "ab") as log:
-        log.write(entry.encode("latin-1"))
+def write_report(destination, results=None, error=None, finished=True, operation_log=None):
+    """The report PowerPhotos writes for a copy (a .ppreport bundle with Assets.db, as its AGENTS.md documents).
+    results: {photo identifier: (IPAssetResult, description)}; error: the operation's error as JSON text."""
+    reports = Path(os.environ["APPLE_PHOTOS_POWERPHOTOS_REPORTS"])
+    bundle = reports / f"2026-11-12-{len(list(reports.glob('*.ppreport')) if reports.exists() else []):06d} Copy {len(results or {})} photos to library \u201c{destination}\u201d.ppreport"
+    bundle.mkdir(parents=True)
+    connection = sqlite3.connect(bundle / "Assets.db")
+    connection.execute("create table assets (libraryIdentifier text, uuid text, filename text, status integer, result integer, resultDescription text)")
+    connection.execute("create table reportMedatata (operationType integer, wasCancelled integer, startDate real, endDate real, error blob)")
+    for uuid, (result, description) in (results or {}).items():
+        connection.execute("insert into assets values ('L', ?, 'x.jpg', 1, ?, ?)", (uuid, result, description))
+    connection.execute("insert into reportMedatata values (1, 0, 1.0, ?, ?)", (2.0 if finished else None, error.encode() if error else None))
+    connection.commit()
+    connection.close()
+    if operation_log is not None:
+        (bundle / "operation.log").write_text(operation_log, encoding="utf-8")
 
 
-def copying_updates_the_database(monkeypatch, mac, arrives=None, fails=()):
-    """The fake PowerPhotos copies nothing, so put the copied photos into the destination's database. arrives: the names that
-    arrive (default: all). fails: names it logs a failed import for, which do not arrive."""
+IMPORT_FAILED = 'Photos failed to import the photo \u201c{name}\u201d: uuid {uuid}/L0/001 (Error Domain=PHPhotosErrorDomain Code=3302 "Invalid resource (Invalid resource (code 3302))")'
+
+
+def copying_updates_the_database(monkeypatch, mac, arrives=None, fails=(), error=None, report=True):
+    """The fake PowerPhotos copies nothing, so put the copied photos into the destination's database, and write the report
+    PowerPhotos would. arrives: the names that arrive (default: all). fails: names it records a failed import for, which do
+    not arrive. error: an error (JSON text) it ends the whole operation with, copying nothing. report=False: it writes none."""
     real = lc.copy_one
 
     def copy(libraries, source, destination, since, before, media, mode, names=None, check_duplicates=True, ids=None):
@@ -1120,19 +1128,26 @@ def copying_updates_the_database(monkeypatch, mac, arrives=None, fails=()):
         held = pp.library_photos(mac.libraries[destination])
         have = list((key[0], key[1] and int(key[1]), key[2]) for key in held.visible.elements())
         photos = pp.library_photos(mac.libraries[source])
+        results = {}
         for key in photos.visible.elements():
-            if key[2] in fails and (ids is None or any(uuid in ids for uuid in photos.uuids.get(key, []))):
-                log_failure(key[2])
-                continue
             if ids is not None:
                 copied = any(uuid in ids for uuid in photos.uuids.get(key, []))
             elif names is not None:
                 copied = pp.normalized_name(key[2]) in {pp.normalized_name(name) for name in names}
             else:  # a date range of one media
                 copied = (since is None or key[0][:10] >= since.isoformat()) and (before is None or key[0][:10] < before.isoformat()) and bool(pp.of_media(Counter({key: 1}), media))
-            if copied and (arrives is None or key[2] in arrives) and key not in held.visible:
+            if not copied or key in held.visible:
+                continue
+            uuid = photos.uuids[key][0]
+            if key[2] in fails:
+                results[uuid + "/L0/001"] = (8, IMPORT_FAILED.format(name=key[2], uuid=uuid))
+            elif arrives is None or key[2] in arrives:
+                results[uuid + "/L0/001"] = (6, "")
                 have.append((key[0], int(key[1]), key[2]))
-        add_photos(mac.libraries[destination], have)
+        if report:
+            write_report(destination, results, error=error)
+        if error is None:
+            add_photos(mac.libraries[destination], have)
         return result
 
     monkeypatch.setattr(lc, "copy_one", copy)
@@ -1654,12 +1669,12 @@ def test_the_default_timeout_is_fifteen_minutes_and_split_has_the_option_too(mac
     assert len(looks) == 4
 
 
-def test_a_photo_powerphotos_logs_a_failed_import_for_is_recorded_as_uncopyable_and_the_run_goes_on(mac, monkeypatch):
+def test_a_photo_powerphotos_reports_a_failed_import_for_is_recorded_as_uncopyable_and_the_run_goes_on(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
-    assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg (PhotoKit error 3302: Invalid resource (code 3302))" in result.output
+    assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg (Photos failed to import the photo \u201cd.jpg\u201d: uuid UUID3/L0/001" in result.output and "Code=3302" in result.output
     assert "it is left out from now on" in result.output and "Stopped:" not in result.output  # a logged failure of one photo does not stop the run
     assert "none of the" not in result.output and "did not arrive" not in result.output
     recorded = json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())
@@ -1676,7 +1691,7 @@ def test_an_uncopyable_photo_is_left_out_of_later_copies_and_listed(mac, monkeyp
     again = fix("--from", "Source")
     assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
     assert "1 photo left out, recorded as uncopyable (--retry-uncopyable tries them again)" in again.output
-    assert "2018-03-04 09:00:00 d.jpg (PhotoKit error 3302: Invalid resource (code 3302); recorded " in again.output and "Stopped:" not in again.output
+    assert "2018-03-04 09:00:00 d.jpg (Photos failed to import the photo" in again.output and "; recorded " in again.output and "Stopped:" not in again.output
 
 
 def test_retry_uncopyable_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
@@ -1706,7 +1721,7 @@ def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkey
     first = runner.invoke(app, options)
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
     second = runner.invoke(app, options)
-    assert "no files copied (everything missing is left out as uncopyable)" in second.output and "d.jpg (PhotoKit error 3302" in second.output
+    assert "no files copied (everything missing is left out as uncopyable)" in second.output and "d.jpg (Photos failed to import the photo" in second.output
     assert len(mac.calls("copy-ids.applescript")) == 1
 
 
@@ -1730,3 +1745,64 @@ def test_a_stray_that_failed_to_copy_stays_where_it_is_and_is_recorded(mac, monk
     assert "PowerPhotos could not copy 2017-06-01 10:00:00 old.jpg" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018" in result.output
     assert mac.calls("trash-ids.applescript") == [] and list(json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())) == ["photos-2018\tUUID2"]
     assert "Stopped:" not in result.output
+
+
+def test_an_error_that_ended_the_whole_copy_is_shown_and_stops_the_run_at_once(mac, monkeypatch):
+    error = '{"code":10,"domain":"BWFoundation.BWCodableError","errorDescription":"The contents of the library \u201cphotos-2018\u201d could not be read.","recoverySuggestion":"Please try opening this library in Photos to make sure it is intact, then open it in PowerPhotos again."}'
+    copying_updates_the_database(monkeypatch, mac, error=error)
+    waits = []
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: waits.append(seconds))
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "PowerPhotos could not copy into photos-2018: The contents of the library \u201cphotos-2018\u201d could not be read. Please try opening this library in Photos" in result.output
+    assert "Stopped: the copy into photos-2018 did not complete" in result.output and result.exit_code == 1
+    assert waits == [] and not Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).exists()  # no waiting for a copy that has ended, and nothing recorded
+
+
+def test_an_error_shown_in_the_operation_log_ends_the_copy_too(mac, monkeypatch):
+    real = lc.copy_one
+
+    def copy(*args, **kwargs):
+        result = real(*args, **kwargs)
+        write_report("photos-2018", {}, operation_log="2026-11-12 10:00:00.000  Session \u201cCopy 1 photo\u201d started\n2026-11-12 10:00:02.000  Error shown: Photos is open. Quit Photos and try again.\n")
+        return result
+
+    monkeypatch.setattr(lc, "copy_one", copy)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "PowerPhotos could not copy into photos-2018: Photos is open. Quit Photos and try again." in result.output and result.exit_code == 1
+
+
+def test_a_failed_photo_is_matched_by_its_photos_identifier_and_not_by_its_file_name(mac, monkeypatch):
+    """Two photos with the same name: only the one the report names is recorded, and the other, which arrived, is not."""
+    real = lc.copy_one
+
+    def copy(libraries, source, destination, *args, **kwargs):
+        result = real(libraries, source, destination, *args, **kwargs)
+        write_report(destination, {"UUID2/L0/001": (8, "failed"), "UUID3/L0/001": (6, "")})
+        add_photos(mac.libraries[destination], [A, ("2018-03-04 09:00:00", 100, "twin.jpg")])
+        return result
+
+    monkeypatch.setattr(lc, "copy_one", copy)
+    add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 100, "twin.jpg"), ("2018-03-04 09:00:00", 100, "twin.jpg")])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    recorded = json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())
+    assert list(recorded) == ["Source\tUUID2"] and recorded["Source\tUUID2"]["date"] == "2018-03-02 11:00:00" and "Stopped:" not in result.output
+
+
+def test_without_a_report_a_copy_that_arrived_is_fine(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, report=False)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    assert fix("--from", "Source").exit_code == 0
+
+
+def test_without_a_report_a_copy_that_did_not_arrive_is_said_and_nothing_says_why(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, arrives=set(), report=False)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "none of the 1 photo arrived in photos-2018" in result.output and "Stopped:" in result.output
