@@ -223,8 +223,9 @@ def expand(path: Path, progress: Optional[Callable[[str], None]] = None) -> List
 
 
 class Stamp(NamedTuple):
-    """The part of a file's status that is kept in the cache: its modification time."""
+    """The part of a file's status that is kept in the cache: its modification time and size."""
     st_mtime: float
+    st_size: int
 
 
 class Entry(NamedTuple):
@@ -322,7 +323,7 @@ def walk(
                     elif Path(entry.name).suffix.lower() in MEDIA_FILES and not entry.name.startswith("._"):
                         found = entry.stat(follow_symlinks=False)
                         if stat.S_ISREG(found.st_mode):
-                            files.append([entry.name, found.st_mtime, found.st_ino])
+                            files.append([entry.name, found.st_mtime, found.st_ino, found.st_size])
                 except OSError:
                     continue
             listing = {"mtime": status.st_mtime_ns, "dirs": sorted(dirs), "files": sorted(files)}
@@ -334,13 +335,13 @@ def walk(
             results.put(Entry(child_logical, child_real, None, True))
             if not skip(child_logical, child_real):
                 enter(child_real, child_logical)
-        for name, modified, inode in listing["files"]:
+        for name, modified, inode, size in listing["files"]:
             key = (status.st_dev, inode)
             with lock:
                 if key in seen_files:
                     continue
                 seen_files.add(key)
-            results.put(Entry(logical / name, real / name, Stamp(modified), False))
+            results.put(Entry(logical / name, real / name, Stamp(modified, size), False))
 
     def process(real: Path, logical: Path) -> None:
         if remember is not None and volume is None and "Backups.backupdb" not in logical.parts:

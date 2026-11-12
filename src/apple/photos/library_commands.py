@@ -483,6 +483,10 @@ def diff_command(
         bool,
         typer.Option("--include-duplicates", help="Count every copy of a photo (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is a difference. By default a photo is counted once."),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="For a folder: read it again instead of reusing what an earlier run (of `diff` or `find`) saved. A directory whose modification time is unchanged is not listed again, so a file written over in place is not noticed until then."),
+    ] = False,
     exclude_hidden: Annotated[
         bool,
         typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members), which PowerPhotos does not list and so cannot copy: compare only what it can see. How many were left out is reported on stderr."),
@@ -510,7 +514,7 @@ def diff_command(
         raise typer.BadParameter("--until is before --since")
     try:
         sides = [Path(side) if folder_photos.is_folder(side) else find_library(side) for side in (left, right)]  # a name that is not known fails before anything is read
-        data = [folder_photos.folder_photos(side) if folder_photos.is_folder(str(side)) else pp.library_photos(side) for side in sides]
+        data = [folder_photos.folder_photos(side, refresh=refresh) if folder_photos.is_folder(str(side)) else pp.library_photos(side) for side in sides]
     except pp.PowerPhotosError as error:
         fail(str(error))
 

@@ -1073,6 +1073,7 @@ def no_waiting(monkeypatch, tmp_path):
     the blacklist are the test's own, never the real ones."""
     monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_REPORTS_DIR", str(tmp_path / "Reports"))
     monkeypatch.setenv("APPLE_PHOTOS_BLACKLIST_FILE", str(tmp_path / "blacklist.json"))
+    monkeypatch.setenv("APPLE_PHOTOS_CACHE_FILE", str(tmp_path / "cache.sqlite"))
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
     monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
 
@@ -1976,3 +1977,30 @@ def test_the_media_option_and_dates_limit_a_folder_too(mac, tmp_path):
     touch(folder / "old.jpg", "2010-01-01 00:00:00")
     only_photos = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--media", "photos", "--since", "2018-01-01", "--fields", "date,size,name"])
     assert only_photos.exit_code == 0 and "In both: 1" in only_photos.output
+
+
+def test_a_folder_is_cached_with_its_files_sizes_and_refresh_reads_it_again(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "pics"
+    target = touch(folder / "a.jpg", A[0])
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"]
+    first = runner.invoke(app, options)
+    assert first.exit_code == 0 and "as cached" not in first.output
+    stamp = target.stat().st_mtime
+    target.write_bytes(b"x" * 250)  # written over in place: the folder's own time does not change
+    os.utime(target, (stamp, stamp))
+    cached = runner.invoke(app, options)
+    assert cached.exit_code == 0 and "1 of 1 folders as cached" in cached.output  # the size in the cache is still 100
+    fresh = runner.invoke(app, [*options, "--refresh"])
+    assert fresh.exit_code == 1 and shown(fresh)[0].startswith("<") and "as cached" not in fresh.output  # now 250 bytes: a difference
+
+
+def test_a_changed_folder_is_listed_again_and_a_cached_size_is_used_for_the_files_that_did_not_change(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B])
+    folder = tmp_path / "pics"
+    touch(folder / "a.jpg", A[0], size=100)
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--only", "left"]
+    assert shown(runner.invoke(app, options)) == ["2018-03-02 11:00:00  100  b.jpg"]
+    touch(folder / "b.jpg", B[0], size=100)  # a new file changes the directory's time: it is listed again
+    again = runner.invoke(app, options)
+    assert again.exit_code == 0 and shown(again) == []

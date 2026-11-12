@@ -1213,3 +1213,15 @@ def test_a_3g2_video_is_searched_for_by_name_and_time(tmp_path):
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},clip.3g2,false,false,"], header="date,name,hidden,shared,identifier")
     result = runner.invoke(app, ["photos", "find", str(listing), "--folders", str(tmp_path / "backup"), "--format", "csv"])
     assert rows_of(result)[0]["source"] == "folder"
+
+
+def test_a_cached_directory_listing_keeps_each_files_size(tmp_path):
+    make_file(tmp_path / "pics" / "a.jpg", size=321)
+    make_file(tmp_path / "pics" / "sub" / "b.mov", LATER, size=77)
+    remember = {}
+    first = {entry.real.name: entry.status.st_size for entry in rs.walk(tmp_path / "pics", remember=remember) if not entry.is_directory}
+    assert first == {"a.jpg": 321, "b.mov": 77}
+    counts = {}
+    cached = {entry.real.name: (entry.status.st_size, entry.status.st_mtime) for entry in rs.walk(tmp_path / "pics", listings=remember, remember={}, counts=counts) if not entry.is_directory}
+    assert counts == {"reused": 2} and cached == {"a.jpg": (321, unix(WHEN)), "b.mov": (77, unix(LATER))}  # from the cache: the sizes are still there
+    assert cache_module.VERSION >= 2  # an entry saved before sizes were kept is never used
