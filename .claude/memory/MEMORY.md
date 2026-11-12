@@ -1,0 +1,4 @@
+- [PowerPhotos AGENTS.md docs](powerphotos-agents-docs.md) — PowerPhotos documents its reports and logs for tools; start here before changing copy-failure detection
+- [PowerPhotos reports notes](powerphotos-reports-notes.md) — .ppreport bundle layout, Assets.db tables, result codes (6 ok, 8 failed, 2 skipped), the operation error JSON
+- [PowerPhotos logs notes](powerphotos-logs-notes.md) — the .log files, `Session … completed/failed` and `Error shown:` lines, why the Diagnostics buffer is not worth parsing
+- [Refreshing the PowerPhotos notes](refreshing-powerphotos-agents-docs.md) — how the two AGENTS.md files were found and the cp commands to copy them over again

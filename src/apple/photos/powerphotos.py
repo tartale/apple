@@ -153,6 +153,12 @@ def model_version(library: Path, exact: bool = True) -> Optional[int]:
         return None
 
 
+def normalized_name(name: str) -> str:
+    """A file name as PowerPhotos compares it: without regard to case, and .jpeg is .jpg."""
+    lowered = name.lower()
+    return lowered[:-5] + ".jpg" if lowered.endswith(".jpeg") else lowered
+
+
 def media_of(name: str) -> Optional[str]:
     """photos or videos by the ending of a file name, None for a type that is neither."""
     lowered = name.lower()
