@@ -1812,3 +1812,40 @@ def test_without_a_report_a_copy_that_did_not_arrive_is_said_and_nothing_says_wh
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
     assert "none of the 1 photo arrived in photos-2018" in result.output and "Stopped:" in result.output
+
+
+NEW_YEAR = ("2018-01-01 05:00:00", 100, "ny.jpg")  # within a day of the end of 2017 and of the start of 2018
+
+
+def fix_years(*options):
+    return runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2017-2018", *options])
+
+
+def test_fix_copies_a_photo_near_new_year_that_no_library_holds_into_each_library_it_could_belong_to(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix_years()
+    assert [(call[0], call[1], call[2]) for call in mac.calls("copy-ids.applescript")] == [("Source", "photos-2017", ["UUID2"]), ("Source", "photos-2018", ["UUID2"])]  # in both, as split does
+    assert result.exit_code == 0 and "photos-2017 (after the fix): in order" in result.output and "photos-2018 (after the fix): in order" in result.output
+
+
+def test_fix_does_not_copy_a_photo_near_new_year_that_the_library_either_side_holds(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [NEW_YEAR])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix_years()
+    assert mac.calls("copy-ids.applescript") == [] and result.exit_code == 0
+
+
+def test_check_without_fix_still_only_notes_a_photo_near_new_year(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and "1 of the source's within a day of its dates' ends are in no library" in result.output and mac.calls("copy-ids.applescript") == []
