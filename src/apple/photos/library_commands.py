@@ -38,7 +38,7 @@ class OnUpgrade(str, Enum):
     stop = "stop"
 
 
-SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`.")]
+SourceArgument = Annotated[str, typer.Argument(help="Source library, as named by `./apple photos libraries`.")]
 CheckDuplicatesOption = Annotated[
     bool,
     typer.Option(
@@ -611,8 +611,8 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
 
 
 def copy_command(
-    source: SourceOption,
-    destination: Annotated[str, typer.Option("--to", help="Destination library; it must already exist in PowerPhotos.")],
+    source: SourceArgument,
+    destination: Annotated[str, typer.Argument(help="Destination library; it must already exist in PowerPhotos.")],
     since: Annotated[Optional[datetime], typer.Option(help="First date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Last date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Copy photos, videos or both.")] = Media.all,
@@ -629,6 +629,9 @@ def copy_command(
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
     ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Copy nothing; say what would be copied. Same as DRY_RUN=true.")
+    ] = False,
 ) -> None:
     """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
 
@@ -693,6 +696,19 @@ def copy_command(
                 if not ids:
                     typer.echo(f"{destination}: no files copied (everything missing is left out, blacklisted)")
                     return
+            if is_dry_run(dry_run):
+                what = (
+                    f"{len(ids)} photos of {source} that it lacks" if ids is not None
+                    else f"the {len(names)} listed names of {source}" if names is not None
+                    else f"the photos of {source}" + (f" from {since.date()}" if since else "") + (f" to {until.date()}" if until else "")
+                    + " (PowerPhotos skips those it already has)"
+                )
+                typer.echo(f"{destination}: would copy {what} [dry run]")
+                if names is not None and hidden:
+                    report_hidden(hidden)
+                if names is not None:
+                    report_missing(no_original, source)
+                return
             expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, names, ids, strict)
             before_log = powerphotos_reports.snapshot()
             result = copy_one(
@@ -1246,9 +1262,9 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
 def split_command(
     media: Annotated[Media, typer.Option(help="Split photos, videos or both. With all, photos and videos go to their own libraries (photos-2018 and videos-2018), in the same run.")],
     years: Annotated[str, typer.Option(help="One year or a range, such as 2018 or 2018-2020.")],
-    source: Annotated[Optional[str], typer.Option("--from", help="Source library, as named by `./apple photos libraries`. Needed unless --check is given without one.")] = None,
+    source: Annotated[Optional[str], typer.Argument(metavar="[SOURCE]", help="Source library, as named by `./apple photos libraries`. Needed unless --check is given: `-` is no source, to give a DESTINATION to --check without one.")] = None,
     destination_name: Annotated[
-        str, typer.Option("--to", help="Destination library name for each year; {media} and {year} are filled in.")
+        str, typer.Argument(metavar="[DESTINATION]", help="Destination library name for each year; {media} and {year} are filled in.")
     ] = "{media}-{year}",
     max_size: Annotated[
         Optional[str],
@@ -1288,7 +1304,7 @@ def split_command(
             "--fix",
             help="With --check (implied): copy each item outside its library's year into the library of its own year, confirm it is "
             "there from that library's database, then move it out of the wrong library to that library's Recently Deleted; and, with "
-            "--from, copy into each library the source's photos of its dates that it lacks. --dry-run shows what would be done.",
+            "a SOURCE, copy into each library the source's photos of its dates that it lacks. --dry-run shows what would be done.",
         ),
     ] = False,
     dry_run: Annotated[
@@ -1319,7 +1335,7 @@ def split_command(
     A photo of the other kind (a video in photos-2005) or of neither kind (a type not in the photo or video lists) is listed
     too, and fails the check.
 
-    --fix (it implies --check) puts that right, as far as it safely can. With --from it copies into each library the
+    --fix (it implies --check) puts that right, as far as it safely can. With a SOURCE it copies into each library the
     source's photos of its dates that the library lacks. It moves the strays, and the items of the other kind, to the
     library of their own year and kind: each is copied there if that library lacks it (judged from its database, so
     without PowerPhotos' duplicate check), and once that library's database shows every copy has arrived, all of them are
@@ -1332,8 +1348,10 @@ def split_command(
     """
     require_macos()
     check = check or fix
+    if source == "-":
+        source = None
     if source is None and not check:
-        raise typer.BadParameter("--from is needed (it is optional only with --check)")
+        raise typer.BadParameter("SOURCE is needed (it is optional only with --check)")
     first, _, last = years.partition("-")
     if not (first.isdigit() and (last.isdigit() or not last)):
         raise typer.BadParameter("--years must be a year or a range such as 2018-2020")

@@ -83,7 +83,7 @@ def recover(*options, default="Source"):
 
 
 def import_found(listing, *options, to="Source"):
-    return runner.invoke(app, ["photos", "import", str(listing), *(["--to", to] if to and "--to" not in options else []), *options])
+    return runner.invoke(app, ["photos", "import", str(listing), *([to] if to else []), *options])
 
 
 def found_list(tmp_path, *options):
@@ -182,8 +182,8 @@ def test_find_needs_no_library_and_never_looks_one_up(mac, monkeypatch, tmp_path
     monkeypatch.setenv("APPLE_PHOTOS_DEFAULT_LIBRARY", "Default Library")  # set on a NAS too, and must not be looked up
     assert runner.invoke(app, ["photos", "find", str(listing), "--folders", str(folder)]).exit_code == 0
     monkeypatch.delenv("APPLE_PHOTOS_DEFAULT_LIBRARY")
-    needs = import_found(listing, "--apply", "yes", to=None)
-    assert needs.exit_code == 2 and "--to is needed" in needs.output
+    needs = import_found(listing, to=None)
+    assert needs.exit_code == 2 and "Missing argument" in needs.output
 
 
 # Messages ----------------------------------------------------------------------------------------------------------------
@@ -583,7 +583,7 @@ def test_messages_are_found_by_the_identifier_a_list_carries(mac, monkeypatch, t
 def test_a_list_row_that_says_where_its_files_are_is_used_as_it_is(tmp_path):
     original = make_file(tmp_path / "here" / "one.heic", size=321)
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,library,{tmp_path}/here,{tmp_path}/lib,{original}"])
-    row = rows_of(import_found(listing, "--format", "csv", to=None))[0]
+    row = rows_of(import_found(listing, "--format", "csv", "--dry-run"))[0]
     assert (row["source"], row["root"], row["library"], row["size"], row["files"]) == ("library", f"{tmp_path}/here", f"{tmp_path}/lib", "321", str(original))
 
 
@@ -593,7 +593,7 @@ def test_paths_in_a_list_are_translated_and_those_that_cannot_be_reached_are_sai
         f"{WHEN},one.heic,false,false,folder,/nas/pics,,/nas/pics/one.heic",
         f"{LATER},two.heic,false,false,folder,/nas/other,,/nas/other/two.heic",
     ])
-    result = import_found(listing, "--map", f"/nas/pics={tmp_path}/mac", "--format", "csv", to=None)
+    result = import_found(listing, "--map", f"/nas/pics={tmp_path}/mac", "--format", "csv", "--dry-run")
     first, second = rows_of(result)
     assert (first["source"], first["files"]) == ("folder", str(original)) and second["source"] == "none"
     assert "cannot be reached from here: /nas/other (1 photo)" in result.output and "--map /nas/other=<path here>" in result.output
@@ -632,7 +632,7 @@ def test_the_last_line_says_what_was_done(mac, tmp_path):
     make_file(folder / "one.heic")
     assert "Found 1 of 2 missing files" in recover("--folders", str(folder)).output and "[list only]" not in recover("--folders", str(folder)).output
     listing = found_list(tmp_path, "--folders", str(folder))
-    assert "Imported 0 of 2 missing files; 0 errors, 2 skipped [dry run]" in import_found(listing).output
+    assert "Imported 0 of 2 missing files; 0 errors, 2 skipped [dry run]" in import_found(listing, "--dry-run").output
     empty = tmp_path / "empty"
     empty.mkdir()
     assert "[dry run]" not in import_found(found_list(tmp_path, "--folders", str(empty))).output
@@ -654,51 +654,35 @@ def found_folder(tmp_path):
     return folder
 
 
-def test_apply_no_and_dry_run_never_import_even_when_asked_to(mac, tmp_path):
+def test_dry_run_never_imports(mac, tmp_path):
     placeholders(mac)
     listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
-    for options, env in ((["--apply", "no"], {}), (["--apply", "yes", "--dry-run"], {}), (["--apply", "yes"], {"DRY_RUN": "true"})):
-        result = runner.invoke(app, ["photos", "import", str(listing), "--to", "Source", *options], env=env)
+    for options, env in ((["--dry-run"], {}), ([], {"DRY_RUN": "true"})):
+        result = runner.invoke(app, ["photos", "import", str(listing), "Source", *options], env=env)
         assert result.exit_code == 0 and "[dry run]" in result.output
     assert mac.calls("import-photos.applescript") == []
 
 
-def test_apply_imports_into_the_library_photos_has_open(mac, monkeypatch, tmp_path):
+def test_import_goes_into_the_library_photos_has_open(mac, monkeypatch, tmp_path):
     placeholders(mac)
     folder = found_folder(tmp_path)
     opened(monkeypatch, mac.libraries["Source"], "/Users/x/Library/Photos/Libraries/Syndication.photoslibrary")
-    result = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    result = import_found(found_list(tmp_path, "--folders", str(folder)))
     assert result.exit_code == 0 and "Imported 2 of 2 missing files; 0 errors, 0 skipped" in result.output
     assert "[dry run]" not in result.output and "Importing 2 photos into Source" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "two.heic")]]]
 
 
-def test_apply_refuses_unless_photos_has_the_default_library_open(mac, monkeypatch, tmp_path):
+def test_import_refuses_unless_photos_has_the_default_library_open(mac, monkeypatch, tmp_path):
     placeholders(mac)
     folder = found_folder(tmp_path)
     monkeypatch.setenv("FAKE_LSOF", "")
-    stopped = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    stopped = import_found(found_list(tmp_path, "--folders", str(folder)))
     assert stopped.exit_code == 1 and "Photos did not open" in stopped.output and "Photos is not running" in stopped.output
     opened(monkeypatch, mac.libraries["photos-2018"], "/Users/x/Library/Photos/Libraries/Syndication.photoslibrary")
-    other = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    other = import_found(found_list(tmp_path, "--folders", str(folder)))
     assert other.exit_code == 1 and "Photos did not open" in other.output and "photos-2018.photoslibrary" in other.output
     assert mac.calls("import-photos.applescript") == []
-
-
-def test_apply_ask_needs_a_terminal_and_an_answer(mac, monkeypatch, tmp_path):
-    placeholders(mac)
-    folder = tmp_path / "backup"
-    make_file(folder / "one.heic")
-    listing = found_list(tmp_path, "--folders", str(folder))
-    opened(monkeypatch, mac.libraries["Source"])
-    no_terminal = import_found(listing, "--apply", "ask")
-    assert "needs a terminal" in no_terminal.output and "Imported 0 of 2 missing files; 0 errors, 2 skipped" in no_terminal.output
-    assert "[dry run]" not in no_terminal.output  # skipped by the answer, not by --apply no
-    monkeypatch.setattr(recover_module, "has_terminal", lambda: True)
-    declined = runner.invoke(app, ["photos", "import", str(listing), "--to", "Source", "--apply", "ask"], input="n\n")
-    assert "Import 1 photos" in declined.output and mac.calls("import-photos.applescript") == []
-    accepted = runner.invoke(app, ["photos", "import", str(listing), "--to", "Source", "--apply", "ask"], input="y\n")
-    assert "Imported 1 of 2 missing files; 0 errors, 1 skipped" in accepted.output and len(mac.calls("import-photos.applescript")) == 1
 
 
 def test_a_failed_import_is_an_error_and_exits_1(mac, monkeypatch, tmp_path):
@@ -707,7 +691,7 @@ def test_a_failed_import_is_an_error_and_exits_1(mac, monkeypatch, tmp_path):
     make_file(folder / "one.heic")
     opened(monkeypatch, mac.libraries["Source"])
     monkeypatch.setenv("FAKE_IMPORT_ERROR", "Photos got an error")
-    result = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    result = import_found(found_list(tmp_path, "--folders", str(folder)))
     assert result.exit_code == 1 and "Photos failed to import" in result.output
     assert "Imported 0 of 2 missing files; 1 error, 1 skipped" in result.output
 
@@ -717,14 +701,14 @@ def test_photos_photos_already_had_are_not_missing(mac, monkeypatch, tmp_path):
     folder = found_folder(tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
     monkeypatch.setenv("FAKE_IMPORT_COUNT", "1")  # Photos took one of the two: it already had the other
-    assert "Imported 1 of 1 missing files; 0 errors, 0 skipped" in import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes").output
+    assert "Imported 1 of 1 missing files; 0 errors, 0 skipped" in import_found(found_list(tmp_path, "--folders", str(folder))).output
 
 
 def test_a_list_can_be_imported_from_the_paths_it_names(mac, monkeypatch, tmp_path):
     original = make_file(tmp_path / "mac" / "one.heic")
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,/nas,,/nas/one.heic"])
     opened(monkeypatch, mac.libraries["Source"])
-    result = import_found(listing, "--map", f"/nas={tmp_path}/mac", "--apply", "yes")
+    result = import_found(listing, "--map", f"/nas={tmp_path}/mac")
     assert result.exit_code == 0 and "Imported 1 of 1 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(original)]]]
 
@@ -1107,11 +1091,11 @@ def test_importing_from_a_list_with_nothing_to_search_is_a_plain_import(mac, mon
     original = make_file(tmp_path / "mac" / "one.heic")
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,/nas,,/nas/one.heic", f"{LATER},two.heic,false,true,none,,,"])
     opened(monkeypatch, mac.libraries["Source"])
-    imported = import_found(listing, "--map", f"/nas={tmp_path}/mac", "--apply", "yes")
+    imported = import_found(listing, "--map", f"/nas={tmp_path}/mac")
     assert imported.exit_code == 0 and "Imported 1 of 2 missing files; 0 errors, 1 skipped" in imported.output
     assert "[list only]" not in imported.output and mac.calls("import-photos.applescript") == [[[str(original)]]]
-    report = import_found(listing, "--map", f"/nas={tmp_path}/mac")
-    assert "[dry run]" in report.output and "[list only]" not in report.output  # something is known, and --apply keeps it from being imported
+    report = import_found(listing, "--map", f"/nas={tmp_path}/mac", "--dry-run")
+    assert "[dry run]" in report.output and "[list only]" not in report.output  # something is known, and --dry-run keeps it from being imported
     nothing = write_list(tmp_path / "n.csv", [f"{WHEN},one.heic,false,true,none,,,"])
     assert "[dry run]" not in import_found(nothing).output  # nothing known, nothing to import
 
@@ -1136,7 +1120,7 @@ def test_importing_a_list_searches_nothing(mac, tmp_path, monkeypatch):
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,false,folder,/nas,,/nas/one.heic"])
     monkeypatch.setenv("APPLE_PHOTOS_RECOVER_SEARCH", f"folders={tmp_path}/mac")
     monkeypatch.setattr(recover_module, "build_sources", lambda *a, **k: pytest.fail("nothing is searched"))
-    result = import_found(listing, "--map", f"/nas={tmp_path}/mac", to=None)
+    result = import_found(listing, "--map", f"/nas={tmp_path}/mac", "--dry-run")
     assert result.exit_code == 0 and "Imported 0 of 1 missing files" in result.output
 
 
@@ -1187,7 +1171,7 @@ def test_messages_attachments_that_cannot_be_read_are_an_error_naming_full_disk_
 @needs_a_user
 def test_a_list_that_cannot_be_read_is_an_error_not_a_traceback(tmp_path, locked):
     listing = locked(write_list(tmp_path / "l.csv", [f"{WHEN},one.heic"], header="date,name"))
-    for command in (["find", str(listing), "--folders", str(tmp_path)], ["import", str(listing)]):
+    for command in (["find", str(listing), "--folders", str(tmp_path)], ["import", str(listing), "Source", "--dry-run"]):
         result = runner.invoke(app, ["photos", *command])
         assert result.exit_code == 1 and "Cannot read" in result.output and "Traceback" not in result.output
 
@@ -1198,7 +1182,7 @@ def test_a_file_that_cannot_be_read_is_an_error_and_the_others_are_still_looked_
     secret = make_file(tmp_path / "private" / "two.heic", LATER)
     locked(tmp_path / "private")
     listing = write_list(tmp_path / "l.csv", [f"{WHEN},one.heic,false,true,folder,{tmp_path}/ok,,{ok}", f"{LATER},two.heic,false,true,folder,{tmp_path}/private,,{secret}"])
-    result = import_found(listing, "--format", "csv", to=None)
+    result = import_found(listing, "--format", "csv", "--dry-run")
     assert result.exit_code == 1 and "1 file cannot be read (permission denied)" in result.output and str(secret) in result.output
     assert [r["source"] for r in rows_of(result)] == ["folder", "none"] and "1 error" in result.output
 
@@ -1237,7 +1221,7 @@ def test_import_can_go_into_a_library_that_is_not_the_default_when_photos_has_it
     folder = found_folder(tmp_path)
     listing = found_list(tmp_path, "--folders", str(folder))
     opened(monkeypatch, mac.libraries["photos-2018"])
-    result = import_found(listing, "--to", "photos-2018", "--apply", "yes")  # the default, Source, is not the one
+    result = import_found(listing, to="photos-2018")  # the default, Source, is not the one
     assert result.exit_code == 0 and "Importing 2 photos into photos-2018" in result.output and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "two.heic")]]]
 
@@ -1246,7 +1230,7 @@ def test_import_into_another_library_refuses_while_photos_has_a_different_one_op
     placeholders(mac)
     listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
     opened(monkeypatch, mac.libraries["Source"])  # the default is open, but the one asked for is not
-    result = import_found(listing, "--to", "photos-2018", "--apply", "yes")
+    result = import_found(listing, to="photos-2018")
     words = " ".join(result.output.replace("│", " ").split())
     assert result.exit_code == 1 and "Photos did not open" in words and "photos-2018.photoslibrary" in words and "hold Option while starting Photos" in words
     assert mac.calls("import-photos.applescript") == []
@@ -1257,23 +1241,22 @@ def test_import_into_a_library_given_by_path_is_not_looked_up(mac, monkeypatch, 
     folder = found_folder(tmp_path)
     listing = found_list(tmp_path, "--folders", str(folder))
     opened(monkeypatch, mac.libraries["photos-2019"])
-    result = import_found(listing, "--to", str(mac.libraries["photos-2019"]), "--apply", "yes", to=None)
+    result = import_found(listing, to=str(mac.libraries["photos-2019"]))
     assert result.exit_code == 0 and "Importing 2 photos into" in result.output and len(mac.calls("import-photos.applescript")) == 1
 
 
-def test_import_without_to_says_which_to_give(mac, tmp_path):
+def test_import_needs_a_destination(mac, tmp_path):
     placeholders(mac)
     listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
-    result = import_found(listing, "--apply", "yes", to=None)
-    words = " ".join(result.output.replace("│", " ").split())
-    assert result.exit_code == 2 and "--to is needed" in words
+    result = import_found(listing, to=None)
+    assert result.exit_code == 2 and "Missing argument" in result.output
 
 
 
 def test_import_of_a_list_that_says_nothing_about_originals_is_told_to_run_find_first(mac, tmp_path):
     listing = tmp_path / "diff.csv"
     listing.write_text("side,date,size,name\n<,2020-01-01 18:42:17,100,one.heic\n<,2020-01-02 18:42:17,100,two.heic\n")  # as `apple photos diff --format csv` writes it
-    result = import_found(listing, "--to", "photos-2018", "--apply", "yes")
+    result = import_found(listing, to="photos-2018")
     words = " ".join(result.output.replace("│", " ").split())
     assert result.exit_code == 2 and "lists photos but not where their originals are" in words and "apple photos find" in words and f"found.csv" in words
     assert mac.calls("import-photos.applescript") == []
@@ -1299,7 +1282,7 @@ def test_what_a_library_lacks_of_a_folder_is_imported_from_the_diff_of_the_two(m
     diffed = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--format", "csv"])
     listing.write_text(diffed.stdout)
     opened(monkeypatch, mac.libraries["photos-2018"])
-    result = import_found(listing, "--to", "photos-2018", "--apply", "yes")
+    result = import_found(listing, to="photos-2018")
     assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
 
@@ -1316,7 +1299,7 @@ def folder_with_a_library_photo(mac, tmp_path):
 def test_import_from_a_folder_with_only_missing_imports_the_files_the_library_lacks(mac, monkeypatch, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
-    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--to", "Source", "--apply", "yes"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing"])
     assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
 
@@ -1324,13 +1307,13 @@ def test_import_from_a_folder_with_only_missing_imports_the_files_the_library_la
 def test_import_from_a_folder_without_only_missing_imports_every_file(mac, monkeypatch, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
-    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--to", "Source", "--apply", "yes"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source"])
     assert result.exit_code == 0 and "Imported 3 of 3" in result.output
 
 
-def test_import_from_a_folder_changes_nothing_unless_applied(mac, tmp_path):
+def test_import_from_a_folder_with_dry_run_changes_nothing(mac, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
-    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--to", "Source"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert result.exit_code == 0 and "[dry run]" in result.output and mac.calls("import-photos.applescript") == []
 
 
@@ -1338,26 +1321,24 @@ def test_only_missing_judges_with_the_tolerances_and_strict_wants_exact(mac, tmp
     add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)
-    loose = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--to", "Source"])
+    loose = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 0" in loose.output
-    exact = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--strict", "--to", "Source"])
+    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--strict", "--dry-run"])
     assert "Imported 0 of 1" in exact.output and "[dry run]" in exact.output
 
 
-def test_import_takes_a_list_or_a_folder_and_only_missing_needs_the_folder_and_a_library(mac, tmp_path):
+def test_only_missing_and_strict_are_for_a_folder_and_strict_needs_only_missing(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
-    for options, text in (
-        ([], "either a LIST or --from"),
-        ([str(tmp_path / "x.csv"), "--from", str(folder)], "either a LIST or --from"),
-        (["--from", str(folder), "--strict"], "--strict says"),
-        (["--from", str(folder), "--only-missing"], "compares with a library"),
-    ):
-        result = runner.invoke(app, ["photos", "import", *options])
-        assert result.exit_code != 0 and text in result.output, options
     listed = tmp_path / "x.csv"
     listed.write_text("date,name\n")
-    assert "are for --from" in runner.invoke(app, ["photos", "import", str(listed), "--only-missing"]).output
+    for options, text in (
+        ([str(listed), "Source", "--only-missing"], "are for a folder"),
+        ([str(listed), "Source", "--strict"], "are for a folder"),
+        ([str(folder), "Source", "--strict"], "--strict says"),
+    ):
+        result = runner.invoke(app, ["photos", "import", *options])
+        assert result.exit_code != 0 and text in " ".join(result.output.replace("│", " ").split()), options
 
 
 def test_import_asks_photos_to_open_the_library_and_waits_for_it(mac, monkeypatch, tmp_path):
@@ -1366,7 +1347,7 @@ def test_import_asks_photos_to_open_the_library_and_waits_for_it(mac, monkeypatc
     monkeypatch.setenv("FAKE_LSOF", "")
     asked = []
     monkeypatch.setattr(pp, "open_in_photos", lambda library: (asked.append(library), opened(monkeypatch, library)))
-    result = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    result = import_found(found_list(tmp_path, "--folders", str(folder)))
     assert asked == [mac.libraries["Source"]] and "Opening" in result.output
     assert result.exit_code == 0 and "Imported 2 of 2" in result.output
     assert len(mac.calls("import-photos.applescript")) == 1 and mac.calls("quit-photos.applescript") == [[]]  # and closed again after
@@ -1377,6 +1358,6 @@ def test_a_library_photos_already_has_open_is_not_opened_again(mac, monkeypatch,
     asked = []
     monkeypatch.setattr(pp, "open_in_photos", lambda library: asked.append(library))
     opened(monkeypatch, mac.libraries["Source"])
-    import_found(found_list(tmp_path, "--folders", str(found_folder(tmp_path))), "--apply", "yes")
+    import_found(found_list(tmp_path, "--folders", str(found_folder(tmp_path))))
     assert asked == []
     assert mac.calls("quit-photos.applescript") == []  # it was the user's to keep open

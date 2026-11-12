@@ -10,7 +10,7 @@ from apple.cli import app
 
 FAKES = Path(__file__).resolve().parent / "fakes"
 runner = CliRunner()
-SPLIT = ["photos", "split", "--from", "Default Library", "--media", "photos", "--years", "2018-2020"]
+SPLIT = ["photos", "split", "Default Library", "--media", "photos", "--years", "2018-2020"]
 
 
 @pytest.fixture
