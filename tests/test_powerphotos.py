@@ -1,11 +1,13 @@
+import csv
 import fcntl
+import io
 import json
 import os
 import plistlib
 import re
 import sqlite3
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -72,7 +74,7 @@ def mac(tmp_path, monkeypatch):
 
 def test_the_powerphotos_commands_refuse_to_run_off_macos(monkeypatch):
     monkeypatch.setattr(apple_platform, "is_macos", lambda: False)
-    for args in (["libraries"], ["copy", "--from", "a", "--to", "b"], ["split", "--from", "a", "--media", "photos", "--years", "2018"]):
+    for args in (["libraries"], ["copy", "a", "b"], ["split", "a", "--media", "photos", "--years", "2018"]):
         result = runner.invoke(app, ["photos", *args])
         assert result.exit_code == 2
         assert "macOS only" in result.output
@@ -93,7 +95,7 @@ def test_libraries_shows_unknown_for_a_library_whose_version_cannot_be_read(mac,
 
 def test_copy_passes_the_range_and_media_and_makes_until_inclusive(mac):
     result = runner.invoke(
-        app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--since", "2018-03-01",
+        app, ["photos", "copy", "Source", "photos-2018", "--since", "2018-03-01",
               "--until", "2018-12-31", "--media", "videos"],
     )
     assert result.exit_code == 0
@@ -102,29 +104,30 @@ def test_copy_passes_the_range_and_media_and_makes_until_inclusive(mac):
 
 
 def test_copy_with_no_range_passes_dashes_and_all(mac):
-    runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018"])
+    runner.invoke(app, ["photos", "copy", "Source", "photos-2018"])
     assert mac.calls("copy-photos.applescript") == [["Source", "photos-2018", "-", "-", "all"]]
 
 
-def test_an_unknown_library_lists_the_known_ones(mac):
-    result = runner.invoke(app, ["photos", "copy", "--from", "Nope", "--to", "photos-2018"])
+def test_an_unknown_library_is_named_and_the_known_ones_are_not_listed(mac):
+    result = runner.invoke(app, ["photos", "copy", "Nope", "photos-2018"])
     assert result.exit_code == 1
-    assert "No library named Nope" in result.output and "photos-2019" in result.output
+    assert "No library named Nope in PowerPhotos" in result.output and "photos-2019" not in result.output and "photos-2018" not in result.output.split("Nope")[1]
+    assert "./apple photos libraries" in result.output  # where to see them
     assert mac.calls("copy-photos.applescript") == []
 
 
 def test_a_bad_date_or_reversed_range_is_a_usage_error(mac):
-    bad = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--since", "last week"])
+    bad = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--since", "last week"])
     assert bad.exit_code == 2
     reversed_ = runner.invoke(
-        app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--since", "2018-05-01", "--until", "2018-01-01"]
+        app, ["photos", "copy", "Source", "photos-2018", "--since", "2018-05-01", "--until", "2018-01-01"]
     )
     assert reversed_.exit_code == 2
 
 
 def test_an_older_destination_is_skipped_before_any_copy(mac):
     mac.make("photos-2017", 19320)
-    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2017"])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2017"])
     assert result.exit_code == 0
     assert "skipped" in result.output
     assert mac.calls("copy-photos.applescript") == []
@@ -132,7 +135,7 @@ def test_an_older_destination_is_skipped_before_any_copy(mac):
 
 def test_stop_ends_with_an_error_for_an_older_destination(mac):
     mac.make("photos-2017", 19320)
-    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2017", "--on-upgrade", "stop"])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2017", "--on-upgrade", "stop"])
     assert result.exit_code == 1
     assert "needs a Photos upgrade" in result.output
     assert mac.calls("copy-photos.applescript") == []
@@ -140,21 +143,21 @@ def test_stop_ends_with_an_error_for_an_older_destination(mac):
 
 def test_ask_without_a_terminal_skips(mac):
     mac.make("photos-2017", 19320)
-    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2017", "--on-upgrade", "ask"])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2017", "--on-upgrade", "ask"])
     assert result.exit_code == 0 and "skipped" in result.output
 
 
 def test_a_refused_copy_with_error_5_is_handled_like_an_old_destination(mac, monkeypatch):
     monkeypatch.setenv("FAKE_COPY_ERROR", "PowerPhotos got an error: Library needs upgrade (5)")
-    skipped = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018"])
+    skipped = runner.invoke(app, ["photos", "copy", "Source", "photos-2018"])
     assert skipped.exit_code == 0 and "skipped" in skipped.output
-    stopped = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--on-upgrade", "stop"])
+    stopped = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--on-upgrade", "stop"])
     assert stopped.exit_code == 1
 
 
 def test_any_other_powerphotos_error_fails_the_command(mac, monkeypatch):
     monkeypatch.setenv("FAKE_COPY_ERROR", "PowerPhotos got an error: Can't get library (-1728)")
-    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018"])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018"])
     assert result.exit_code == 1
     assert "-1728" in result.output
 
@@ -162,14 +165,14 @@ def test_any_other_powerphotos_error_fails_the_command(mac, monkeypatch):
 def test_only_one_run_at_a_time(mac, tmp_path):
     with open(tmp_path / "lock", "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
-        result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018"])
+        result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018"])
     assert result.exit_code == 1
     assert "already running" in result.output
     assert mac.calls("copy-photos.applescript") == []
 
 
 def test_split_copies_each_year_into_its_own_library(mac):
-    result = runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018-2019", "--check-duplicates"])
+    result = runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "2018-2019", "--check-duplicates"])
     assert result.exit_code == 0
     assert mac.calls("copy-photos.applescript") == [
         ["Source", "photos-2018", "2018-01-01", "2019-01-01", "photos"],
@@ -178,8 +181,8 @@ def test_split_copies_each_year_into_its_own_library(mac):
 
 
 def test_split_rejects_a_bad_year_range(mac):
-    assert runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "x"]).exit_code == 2
-    assert runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2019-2018"]).exit_code == 2
+    assert runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "x"]).exit_code == 2
+    assert runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "2019-2018"]).exit_code == 2
 
 
 def test_model_version_reads_the_database_and_tolerates_a_missing_one(tmp_path):
@@ -444,7 +447,7 @@ def test_diff_sort_orders_by_date_name_or_size(mac):
 
 
 def copy_list(args, text, **options):
-    return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", *args], input=text, **options)
+    return runner.invoke(app, ["photos", "copy", "Source", "photos-2018", *args], input=text, **options)
 
 
 def test_copy_list_copies_the_names_in_diff_csv_output(mac):
@@ -516,7 +519,7 @@ def year_libraries(mac, source, **destinations):
 
 
 def split(*options):
-    return runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", *options])
+    return runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "2018", *options])
 
 
 def test_split_skips_a_year_whose_library_already_has_everything(mac):
@@ -588,7 +591,7 @@ def two_videos_2016(mac, monkeypatch, tmp_path):
 
 def test_libraries_sharing_a_name_stop_copy_and_diff_and_outdated(mac, monkeypatch, tmp_path):
     two_videos_2016(mac, monkeypatch, tmp_path)
-    for args in (["copy", "--from", "Source", "--to", "photos-2018"], ["diff", "Source", "photos-2018"], ["libraries", "--outdated"]):
+    for args in (["copy", "Source", "photos-2018"], ["diff", "Source", "photos-2018"], ["libraries", "--outdated"]):
         result = runner.invoke(app, ["photos", *args])
         assert result.exit_code == 1 and "share a name" in result.output and "photos-2018" in result.output
     assert mac.calls("copy-photos.applescript") == []
@@ -741,7 +744,7 @@ def test_the_dry_run_environment_variable_is_a_dry_run_too(mac):
     three_days(mac)
     mac.make("photos-2018-1", 19607)
     mac.make("photos-2018-2", 19607)
-    result = runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", "--max-size", "250"], env={"DRY_RUN": "true"})
+    result = runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "2018", "--max-size", "250"], env={"DRY_RUN": "true"})
     assert result.exit_code == 0 and "would copy" in result.output
     assert mac.calls("copy-photos.applescript") == []
 
@@ -836,7 +839,7 @@ def test_split_says_how_many_hidden_items_it_cannot_copy(mac):
 
 
 def split_all(*options):
-    return runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "all", "--years", "2018", *options])
+    return runner.invoke(app, ["photos", "split", "Source", "--media", "all", "--years", "2018", *options])
 
 
 def test_split_media_all_copies_photos_and_videos_each_into_its_own_library(mac, monkeypatch):
@@ -978,14 +981,14 @@ def test_counts_say_item_once_and_items_otherwise():
 def copy_only_missing(mac, left, right, *options):
     for name, photos in (("Source", left), ("photos-2018", right)):
         add_photos(mac.libraries[name], photos)
-    return runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", *options])
+    return runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", *options])
 
 
 def test_only_missing_copies_one_copy_of_each_missing_photo_by_its_identifier(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac)
     add_photos(mac.libraries["Source"], [A, B, B, C, ("2018-03-04 09:00:00", 100, "h.jpg", "hidden"), ("2018-03-05 09:00:00", 0, "s.jpg", "shared")])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing"])
     assert result.exit_code == 0 and mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2", "UUID4"], "false"]]  # b.jpg once (not twice) and c.mov
     assert mac.calls("copy-named.applescript") == [] and "h.jpg" in result.output and "s.jpg" in result.output  # hidden and shared are reported, not copied
 
@@ -1027,7 +1030,7 @@ def test_split_check_does_not_call_an_item_within_a_day_of_the_year_a_stray(mac)
 
 def test_split_check_fails_for_a_library_that_is_not_in_powerphotos(mac):
     year_libraries(mac, [A], photos_2018=[A])
-    result = split("--check", "--to", "nothing-{year}", "--on-missing", "skip")
+    result = split("--check", "nothing-{year}", "--on-missing", "skip")
     assert result.exit_code == 1 and "nothing-2018: library missing" in result.output
 
 
@@ -1056,13 +1059,32 @@ def test_split_check_without_a_source_checks_the_libraries_that_exist_for_the_ye
 def test_split_check_with_a_source_does_not_ask_for_libraries_of_years_it_has_no_photos_in(mac):
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A, B])
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2017-2018"])
     assert result.exit_code == 0 and "photos-2018: in order" in result.output and "No library, and none needed: photos-2017" in result.output
 
 
-def test_split_needs_from_unless_it_only_checks(mac):
+def test_split_needs_a_source_unless_it_only_checks(mac):
     result = runner.invoke(app, ["photos", "split", "--media", "photos", "--years", "2018"])
-    assert result.exit_code == 2 and "--from is needed" in result.output
+    assert result.exit_code == 2 and "SOURCE is needed" in result.output
+
+
+def test_split_check_takes_a_destination_without_a_source_when_the_source_is_a_dash(mac):
+    year_libraries(mac, [A], photos_2018=[A])
+    result = runner.invoke(app, ["photos", "split", "--check", "-", "nothing-{year}", "--media", "photos", "--years", "2018", "--on-missing", "skip"])
+    assert result.exit_code == 0 and "No library, and none needed: nothing-2018" in result.output  # the destination pattern was used
+
+
+def test_copy_dry_run_copies_nothing_and_says_what_it_would(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, B, C])
+    add_photos(mac.libraries["photos-2018"], [A])
+    for options, env, said in (
+        (["--only-missing", "--dry-run"], {}, "would copy 2 photos of Source that it lacks"),
+        (["--only-missing"], {"DRY_RUN": "true"}, "would copy 2 photos of Source that it lacks"),
+        (["--dry-run", "--since", "2018-03-01"], {}, "would copy the photos of Source from 2018-03-01"),
+    ):
+        result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", *options], env=env)
+        assert result.exit_code == 0 and said in result.output and "[dry run]" in result.output, options
+    assert mac.calls("copy-photos.applescript") == [] and mac.calls("copy-ids.applescript") == [] and mac.calls("copy-named.applescript") == []
 
 
 @pytest.fixture(autouse=True)
@@ -1071,6 +1093,7 @@ def no_waiting(monkeypatch, tmp_path):
     the blacklist are the test's own, never the real ones."""
     monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_REPORTS_DIR", str(tmp_path / "Reports"))
     monkeypatch.setenv("APPLE_PHOTOS_BLACKLIST_FILE", str(tmp_path / "blacklist.json"))
+    monkeypatch.setenv("APPLE_PHOTOS_CACHE_FILE", str(tmp_path / "cache.sqlite"))
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
     monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
 
@@ -1233,7 +1256,7 @@ def test_fix_dry_run_copies_nothing(mac):
 def test_fix_names_a_year_library_that_is_planned_but_not_in_powerphotos(mac):
     add_photos(mac.libraries["Source"], [A, OLD])
     add_photos(mac.libraries["photos-2018"], [A, OLD])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "not moved: 2017-06-01 10:00:00 old.jpg (photos-2017 is not in PowerPhotos)" in result.output and mac.calls("copy-ids.applescript") == []
 
 
@@ -1401,7 +1424,7 @@ def test_fix_with_a_source_also_copies_what_the_library_lacks(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac)
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID2"], "false"]]  # b.jpg, by its Photos identifier, with no duplicate check
     assert "photos-2018: asked PowerPhotos to copy 1 item from Source" in result.output
     assert "photos-2018 (after the fix): in order" in result.output and result.exit_code == 0
@@ -1410,14 +1433,14 @@ def test_fix_with_a_source_also_copies_what_the_library_lacks(mac, monkeypatch):
 def test_fix_dry_run_says_what_it_would_copy_from_the_source(mac):
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source", "--dry-run")
+    result = fix("Source", "--dry-run")
     assert "would copy 1 item that photos-2018 lacks from Source" in result.output and mac.calls("copy-ids.applescript") == []
 
 
 def test_fix_leaves_a_photo_with_no_stored_original_out_of_the_copy_and_says_so(mac):
     add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 0, "b.jpg")])  # a placeholder: no stored original
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert mac.calls("copy-ids.applescript") == []  # nothing PowerPhotos could copy is sent
     assert "1 not copied: the original is not stored in Source (it may live only in iCloud)" in result.output and "    b.jpg" in result.output and result.exit_code == 1
 
@@ -1425,7 +1448,7 @@ def test_fix_leaves_a_photo_with_no_stored_original_out_of_the_copy_and_says_so(
 def test_a_photo_the_source_holds_twice_is_not_missing_from_a_library_that_has_it_once(mac):
     add_photos(mac.libraries["Source"], [A, A, B])
     add_photos(mac.libraries["photos-2018"], [A, B])
-    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    check = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert check.exit_code == 0 and "photos-2018: in order" in check.output
     assert "up to date" in split().output and mac.calls("copy-named.applescript") == []
 
@@ -1434,9 +1457,9 @@ def test_a_photo_the_source_holds_twice_is_missing_once_from_a_library_that_lack
     copying_updates_the_database(monkeypatch, mac)
     add_photos(mac.libraries["Source"], [A, A, B])
     add_photos(mac.libraries["photos-2018"], [B])
-    check = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    check = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert check.exit_code == 1 and "photos-2018: 1 missing" in check.output
-    fixed = fix("--from", "Source")
+    fixed = fix("Source")
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]  # one copy: duplicates are not carried over
     assert "photos-2018 (after the fix): in order" in fixed.output and fixed.exit_code == 0
 
@@ -1481,7 +1504,7 @@ def test_split_by_default_copies_one_copy_of_the_photo_and_not_another_that_shar
 def test_a_photo_that_is_hidden_in_the_library_is_not_missing_from_it(mac):
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A, (*B, "hidden")])
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert result.exit_code == 0 and "photos-2018: in order" in result.output
     assert "up to date" in split().output and mac.calls("copy-ids.applescript") == []
 
@@ -1489,7 +1512,7 @@ def test_a_photo_that_is_hidden_in_the_library_is_not_missing_from_it(mac):
 def test_check_says_what_a_library_holds_under_the_name_of_a_photo_it_lacks(mac):
     add_photos(mac.libraries["Source"], [A, B, C])
     add_photos(mac.libraries["photos-2018"], [A, ("2018-03-02 14:00:00", 100, "B.JPG"), ("2018-03-03 12:00:00", 90, "c.mov")])
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "all", "--years", "2018", "--to", "photos-{year}"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "all", "--years", "2018", "photos-{year}"])
     assert "    missing: 2018-03-02 11:00:00 b.jpg (the library has this name: dated 2018-03-02 14:00:00)" in result.output
     assert "    missing: 2018-03-03 12:00:00 c.mov (the library has this name: 90 bytes)" in result.output
     assert "    missing: 2018-03-05" not in result.output
@@ -1500,7 +1523,7 @@ def test_a_copy_that_differs_by_an_hour_or_a_little_in_size_is_the_same_photo(ma
     dest = [("2011-04-10 10:57:49", 1968640, "IMG_4254.JPG"), ("2011-05-29 23:53:30", 1865823, "imag0020.JPG")]  # 1370 bytes more, an hour earlier
     add_photos(mac.libraries["Source"], source)
     add_photos(mac.libraries["photos-2018"], dest)
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2011", "photos-2018"])
     assert result.exit_code == 0 and "photos-2018: in order" in result.output  # both source copies of IMG_4254, and the lower-cased name
 
 
@@ -1509,7 +1532,7 @@ def test_a_copy_further_off_in_time_or_size_is_not_the_same_photo(mac):
     dest = [("2011-04-10 13:00:00", 1000000, "a.jpg"), ("2011-04-10 10:00:00", 1100000, "b.jpg"), ("2011-04-10 11:59:00", 1005000, "c.jpg")]
     add_photos(mac.libraries["Source"], source)
     add_photos(mac.libraries["photos-2018"], dest)
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2011", "photos-2018"])
     assert "photos-2018: 2 missing" in result.output and "missing: 2011-04-10 10:00:00 a.jpg" in result.output and "missing: 2011-04-10 10:00:00 b.jpg" in result.output
     assert "missing: 2011-04-10 10:00:00 c.jpg" not in result.output  # under two hours and half a percent
 
@@ -1543,7 +1566,7 @@ NEAR_COPY = [("2011-04-10 11:57:49", 1968640, "IMG_4254.JPG")]  # an hour later,
 def test_strict_counts_a_photo_as_there_only_with_its_exact_date_size_and_name(mac):
     add_photos(mac.libraries["Source"], NEAR_SOURCE)
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
-    options = ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2011", "--to", "photos-2018"]
+    options = ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2011", "photos-2018"]
     assert runner.invoke(app, options).exit_code == 0
     strict = runner.invoke(app, [*options, "--strict"])
     assert strict.exit_code == 1 and "photos-2018: 1 missing" in strict.output
@@ -1562,9 +1585,9 @@ def test_only_missing_strict_copies_a_photo_whose_near_copy_the_destination_has(
     result = copy_only_missing(mac, NEAR_SOURCE, NEAR_COPY)
     assert "nothing is missing from photos-2018" in result.output and mac.calls("copy-ids.applescript") == []
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
-    strict = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing", "--strict"])
+    strict = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--strict"])
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
-    assert runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--strict", "--since", "2011-01-01"]).exit_code == 2
+    assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--strict", "--since", "2011-01-01"]).exit_code == 2
 
 
 def test_the_id_applescripts_do_not_use_applescript_words_as_variable_names():
@@ -1579,7 +1602,7 @@ def test_the_id_applescripts_do_not_use_applescript_words_as_variable_names():
 def test_fix_says_when_none_of_the_photos_it_copied_arrived(mac):
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])  # the fake PowerPhotos copies nothing, as when PowerPhotos fails every photo
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "none of the 1 photo arrived in photos-2018: PowerPhotos probably failed to copy them" in result.output
     assert "Reports section" in result.output and "killall photolibraryd" in result.output and result.exit_code == 1
 
@@ -1588,7 +1611,7 @@ def test_fix_says_how_many_of_the_photos_it_copied_did_not_arrive(mac, monkeypat
     copying_updates_the_database(monkeypatch, mac, arrives={"b.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "1 of the 2 photos did not arrive in photos-2018: see PowerPhotos' Reports section for why." in result.output
     assert "killall" not in result.output
 
@@ -1615,7 +1638,7 @@ def test_fix_stops_before_the_next_year_when_a_copy_from_the_source_fails(mac):
     add_photos(mac.libraries["Source"], [A, ("2019-03-01 10:00:00", 100, "b19.jpg")])
     add_photos(mac.libraries["photos-2018"], [])
     add_photos(mac.libraries["photos-2019"], [])
-    result = runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
+    result = runner.invoke(app, ["photos", "split", "--fix", "Source", "--media", "photos", "--years", "2018-2019"])
     assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2018"]  # photos-2019 was not tried
     assert "Stopped: the copy into photos-2018 did not complete" in result.output and "photos-2019" not in result.output.split("Stopped:")[1] and result.exit_code == 1
 
@@ -1625,7 +1648,7 @@ def test_fix_stops_when_only_some_of_the_photos_arrive(mac, monkeypatch):
     add_photos(mac.libraries["Source"], [A, B, D, ("2019-03-01 10:00:00", 100, "b19.jpg")])
     add_photos(mac.libraries["photos-2018"], [A])
     add_photos(mac.libraries["photos-2019"], [])
-    result = runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2018-2019"])
+    result = runner.invoke(app, ["photos", "split", "--fix", "Source", "--media", "photos", "--years", "2018-2019"])
     assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
     assert [call[1] for call in mac.calls("copy-ids.applescript")] == ["photos-2018"]
 
@@ -1633,7 +1656,7 @@ def test_fix_stops_when_only_some_of_the_photos_arrive(mac, monkeypatch):
 def test_copy_waits_for_the_photos_to_arrive_and_says_when_they_do_not(mac):
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    options = ["photos", "copy", "Source", "photos-2018", "--only-missing"]
     result = runner.invoke(app, options)  # the fake PowerPhotos copies nothing
     assert result.exit_code == 1 and "waiting for PowerPhotos to finish copying into photos-2018" in result.output
     assert "none of the 1 photo arrived in photos-2018: PowerPhotos probably failed to copy them" in result.output
@@ -1645,7 +1668,7 @@ def test_copy_waits_for_a_list_and_a_date_range_too(mac, monkeypatch):
     add_photos(mac.libraries["photos-2018"], [])
     listed = copy_list(["--list", "-"], "a.jpg\nb.jpg\n")
     assert listed.exit_code == 1 and "none of the 2 photos arrived in photos-2018" in listed.output
-    ranged = runner.invoke(app, ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--since", "2018-03-01", "--until", "2018-03-02", "--media", "photos"])
+    ranged = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--since", "2018-03-01", "--until", "2018-03-02", "--media", "photos"])
     assert ranged.exit_code == 1 and "none of the 2 photos arrived in photos-2018" in ranged.output
     copying_updates_the_database(monkeypatch, mac)
     assert copy_list(["--list", "-"], "a.jpg\nb.jpg\n").exit_code == 0
@@ -1656,7 +1679,7 @@ def test_timeout_says_how_long_an_unchanged_library_is_waited_for(mac, monkeypat
     add_photos(mac.libraries["photos-2018"], [])
     looks = []
     monkeypatch.setattr(lc.time, "sleep", lambda seconds: looks.append(seconds))
-    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    options = ["photos", "copy", "Source", "photos-2018", "--only-missing"]
     runner.invoke(app, [*options, "--timeout", "3"])
     assert len(looks) == 3  # three unchanged looks, a "minute" each in this test
     looks.clear()
@@ -1671,7 +1694,7 @@ def test_the_default_timeout_is_fifteen_minutes_and_split_has_the_option_too(mac
     monkeypatch.setattr(lc.time, "sleep", lambda seconds: looks.append(seconds))
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", "--timeout", "4"])
+    runner.invoke(app, ["photos", "split", "Source", "--media", "photos", "--years", "2018", "--timeout", "4"])
     assert len(looks) == 4
 
 
@@ -1679,7 +1702,7 @@ def test_a_photo_powerphotos_reports_a_failed_import_for_is_recorded_as_uncopyab
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg (Photos failed to import the photo \u201cd.jpg\u201d: uuid UUID3/L0/001" in result.output and "Code=3302" in result.output
     assert "it is blacklisted and left out from now on" in result.output and "Stopped:" not in result.output  # a logged failure of one photo does not stop the run
     assert "none of the" not in result.output and "did not arrive" not in result.output
@@ -1692,10 +1715,10 @@ def test_an_uncopyable_photo_is_left_out_of_later_copies_and_tagged_on_its_missi
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    first = fix("--from", "Source")
+    first = fix("Source")
     assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in first.output  # not blacklisted yet when it is first looked at
     before = len(mac.calls("copy-ids.applescript"))
-    again = fix("--from", "Source")
+    again = fix("Source")
     assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
     assert f"    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on {date.today().isoformat()}]" in again.output
     assert "Photos failed to import" not in again.output and "left out, blacklisted" not in again.output and "Stopped:" not in again.output  # the error is not printed again
@@ -1706,9 +1729,9 @@ def test_ignore_blacklist_shows_the_plain_missing_line_and_copies_it_again(mac, 
     add_photos(mac.libraries["photos-2018"], [A])
     Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).write_text(json.dumps({"version": 1, "entries": [
         {"kind": "uncopyable", "library": "Source", "uuid": "UUID2", "name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "r", "recorded": "2026-11-11T10:00:00"}]}))
-    tagged = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    tagged = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert "    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on 2026-11-11]" in tagged.output
-    plain = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018", "--ignore-blacklist"])
+    plain = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018", "--ignore-blacklist"])
     assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in plain.output and "blacklisted" not in plain.output
 
 
@@ -1718,7 +1741,7 @@ def test_ignore_blacklist_tries_a_listed_photo_again_and_forgets_it_when_it_copi
     Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).write_text(json.dumps({"version": 1, "entries": [
         {"kind": "uncopyable", "library": "Source", "uuid": "UUID3", "name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "Photos failed to import it", "recorded": "2026-11-12T10:00:00"}]}))
     copying_updates_the_database(monkeypatch, mac)  # this time it copies
-    result = fix("--from", "Source", "--ignore-blacklist")
+    result = fix("Source", "--ignore-blacklist")
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3"], "false"]] and "left out, recorded" not in result.output
     assert blacklisted() == [] and result.exit_code == 0
 
@@ -1727,7 +1750,7 @@ def test_photos_that_do_not_arrive_with_no_logged_failure_still_stop_the_run(mac
     copying_updates_the_database(monkeypatch, mac, arrives={"b.jpg"})  # d.jpg does not arrive, and PowerPhotos logs nothing
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
     assert not Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).exists()  # nothing is recorded without evidence
 
@@ -1736,7 +1759,7 @@ def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkey
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    options = ["photos", "copy", "Source", "photos-2018", "--only-missing"]
     first = runner.invoke(app, options)
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
     second = runner.invoke(app, options)
@@ -1773,7 +1796,7 @@ def test_an_error_that_ended_the_whole_copy_is_shown_and_stops_the_run_at_once(m
     monkeypatch.setattr(lc.time, "sleep", lambda seconds: waits.append(seconds))
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "PowerPhotos could not copy into photos-2018: The contents of the library \u201cphotos-2018\u201d could not be read. Please try opening this library in Photos" in result.output
     assert "Stopped: the copy into photos-2018 did not complete" in result.output and result.exit_code == 1
     assert waits == [] and not Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).exists()  # no waiting for a copy that has ended, and nothing recorded
@@ -1790,7 +1813,7 @@ def test_an_error_shown_in_the_operation_log_ends_the_copy_too(mac, monkeypatch)
     monkeypatch.setattr(lc, "copy_one", copy)
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "PowerPhotos could not copy into photos-2018: Photos is open. Quit Photos and try again." in result.output and result.exit_code == 1
 
 
@@ -1807,7 +1830,7 @@ def test_a_failed_photo_is_matched_by_its_photos_identifier_and_not_by_its_file_
     monkeypatch.setattr(lc, "copy_one", copy)
     add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 100, "twin.jpg"), ("2018-03-04 09:00:00", 100, "twin.jpg")])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     recorded = blacklisted()
     assert [(entry["uuid"], entry["date"]) for entry in recorded] == [("UUID2", "2018-03-02 11:00:00")] and "Stopped:" not in result.output
 
@@ -1816,14 +1839,14 @@ def test_without_a_report_a_copy_that_arrived_is_fine(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac, report=False)
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    assert fix("--from", "Source").exit_code == 0
+    assert fix("Source").exit_code == 0
 
 
 def test_without_a_report_a_copy_that_did_not_arrive_is_said_and_nothing_says_why(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac, arrives=set(), report=False)
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert "none of the 1 photo arrived in photos-2018" in result.output and "Stopped:" in result.output
 
 
@@ -1831,7 +1854,7 @@ NEW_YEAR = ("2018-01-01 05:00:00", 100, "ny.jpg")  # within a day of the end of 
 
 
 def fix_years(*options):
-    return runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2017-2018", *options])
+    return runner.invoke(app, ["photos", "split", "--fix", "Source", "--media", "photos", "--years", "2017-2018", *options])
 
 
 def test_fix_copies_a_photo_near_new_year_that_no_library_holds_into_each_library_it_could_belong_to(mac, monkeypatch):
@@ -1860,7 +1883,7 @@ def test_check_without_fix_still_only_notes_a_photo_near_new_year(mac):
     add_photos(mac.libraries["Source"], [A, NEW_YEAR])
     add_photos(mac.libraries["photos-2017"], [])
     add_photos(mac.libraries["photos-2018"], [A])
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2017-2018"])
     assert result.exit_code == 0 and "1 of the source's within a day of its dates' ends are in no library" in result.output and mac.calls("copy-ids.applescript") == []
 
 
@@ -1885,7 +1908,7 @@ def test_a_check_reads_only_the_year_asked_for_when_nothing_is_near_its_ends(mac
         add_photos(mac.libraries[name], [])
     add_photos(mac.libraries["photos-2018"], [A])
     names = counting_reads(monkeypatch)
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2018"]  # not 2017 or 2019: nothing is within a day of 2018's ends
 
 
@@ -1897,7 +1920,7 @@ def test_a_library_either_side_is_read_only_for_the_end_a_photo_is_near(mac, mon
     add_photos(mac.libraries["photos-2017"], [NEW_YEAR])
     add_photos(mac.libraries["photos-2018"], [A])
     names = counting_reads(monkeypatch)
-    runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2018"])
     assert sorted(names) == ["Source", "photos-2017", "photos-2018"]  # the start's neighbor, not the end's
 
 
@@ -1908,7 +1931,7 @@ def test_each_library_is_read_once_in_a_run_of_several_years_and_the_reads_are_a
     add_photos(mac.libraries["photos-2017"], [("2017-06-01 10:00:00", 50, "old.jpg")])
     add_photos(mac.libraries["photos-2018"], [A])
     names = counting_reads(monkeypatch)
-    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    result = runner.invoke(app, ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2017-2018"])
     assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2017", "photos-2018"]  # once each
     assert "Read 2 library databases" in result.output
 
@@ -1918,7 +1941,125 @@ def test_a_fix_reads_a_library_again_only_after_it_was_changed(mac, monkeypatch)
     add_photos(mac.libraries["Source"], [A, B])
     add_photos(mac.libraries["photos-2018"], [A])
     names = counting_reads(monkeypatch)
-    result = fix("--from", "Source")
+    result = fix("Source")
     assert result.exit_code == 0
     # the source once; photos-2018 at the start, while waiting for the copy (until it arrived) and after it, not once for every look
     assert names.count("Source") == 1 and names.count("photos-2018") <= 4
+
+
+def touch(path, when, size=100):
+    """A file whose modification time is the capture time (UTC) and whose size is as given, as a backup keeps it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    stamp = datetime.strptime(when, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_diff_compares_a_library_with_a_folder_of_files(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B, C])
+    folder = tmp_path / "backup"
+    touch(folder / "a.jpg", A[0])  # the same photo as A
+    touch(folder / "sub" / "c.mov", C[0])  # in a subfolder
+    touch(folder / "d.jpg", D[0])  # only in the folder
+    touch(folder / "notes.txt", A[0])  # not a photo
+    touch(folder / "@eaDir" / "a.jpg", "2020-01-01 00:00:00")  # what a NAS keeps for itself
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
+    assert result.exit_code == 1 and shown(result) == ["<  2018-03-02 11:00:00  100  b.jpg", ">  2018-03-04 09:00:00  100  d.jpg"]
+    assert f"Only in Source: 1. Only in {folder}: 1. In both: 2." in result.output
+
+
+def test_a_folder_can_be_the_left_side_and_a_difference_in_size_or_time_is_a_difference(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B])
+    folder = tmp_path / "pics"
+    touch(folder / "a.jpg", A[0], size=101)  # another size
+    touch(folder / "b.jpg", "2018-03-02 12:00:00")  # an hour later: the time of a re-saved file
+    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 1 and sorted((r["side"], r["name"]) for r in rows) == [("left", "a.jpg"), ("left", "b.jpg"), ("right", "a.jpg"), ("right", "b.jpg")]
+
+
+def test_a_library_is_still_a_library_and_a_folder_with_one_in_it_does_not_read_it(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "archive"
+    touch(folder / "a.jpg", A[0])
+    other = make_library(folder, "inner", 19607)
+    add_photos(other, [B])  # a library inside the folder: its photos are not the folder's files
+    path_of_library = runner.invoke(app, ["photos", "diff", str(mac.libraries["Source"]), str(folder), "--fields", "date,size,name"])
+    assert path_of_library.exit_code == 0 and "In both: 1" in path_of_library.output  # a.jpg only; the library's b.jpg is not counted
+
+
+def test_the_media_option_and_dates_limit_a_folder_too(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "f"
+    touch(folder / "a.jpg", A[0])
+    touch(folder / "c.mov", C[0])
+    touch(folder / "old.jpg", "2010-01-01 00:00:00")
+    only_photos = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--media", "photos", "--since", "2018-01-01", "--fields", "date,size,name"])
+    assert only_photos.exit_code == 0 and "In both: 1" in only_photos.output
+
+
+def test_a_folder_is_cached_with_its_files_sizes_and_refresh_reads_it_again(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "pics"
+    target = touch(folder / "a.jpg", A[0])
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"]
+    first = runner.invoke(app, options)
+    assert first.exit_code == 0 and "as cached" not in first.output
+    stamp = target.stat().st_mtime
+    target.write_bytes(b"x" * 250)  # written over in place: the folder's own time does not change
+    os.utime(target, (stamp, stamp))
+    cached = runner.invoke(app, options)
+    assert cached.exit_code == 0 and "1 of 1 folders as cached" in cached.output  # the size in the cache is still 100
+    fresh = runner.invoke(app, [*options, "--refresh"])
+    assert fresh.exit_code == 1 and shown(fresh)[0].startswith("<") and "as cached" not in fresh.output  # now 250 bytes: a difference
+
+
+def test_a_changed_folder_is_listed_again_and_a_cached_size_is_used_for_the_files_that_did_not_change(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B])
+    folder = tmp_path / "pics"
+    touch(folder / "a.jpg", A[0], size=100)
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--only", "left"]
+    assert shown(runner.invoke(app, options)) == ["2018-03-02 11:00:00  100  b.jpg"]
+    touch(folder / "b.jpg", B[0], size=100)  # a new file changes the directory's time: it is listed again
+    again = runner.invoke(app, options)
+    assert again.exit_code == 0 and shown(again) == []
+
+
+def test_a_target_written_as_a_path_that_does_not_exist_is_not_looked_up_as_a_library_name(mac, monkeypatch, tmp_path):
+    looked_up = []
+    real = lc.need
+    monkeypatch.setattr(lc, "need", lambda libraries, name: looked_up.append(name) or real(libraries, name))
+    for missing in (str(tmp_path / "gone.photoslibrary"), "./missing", "~/no-such-folder", "sub/dir", "../elsewhere"):
+        for sides in ((missing, "Source"), ("Source", missing)):
+            result = runner.invoke(app, ["photos", "diff", *sides])
+            assert result.exit_code == 1 and f"{missing} does not exist." in result.output, (missing, sides)
+            assert "No library named" not in result.output and missing not in looked_up  # only "Source" was ever looked up
+
+
+def test_a_plain_name_that_is_not_a_library_is_still_an_unknown_library(mac):
+    result = runner.invoke(app, ["photos", "diff", "Nope", "Source"])
+    assert result.exit_code == 1 and "No library named Nope in PowerPhotos" in result.output and "does not exist" not in result.output
+
+
+def test_a_folder_side_adds_the_path_of_each_file_and_a_library_side_has_none(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    touch(folder / "a.jpg", A[0])
+    touch(folder / "sub" / "d.jpg", D[0])
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 1 and [(r["name"], r["files"]) for r in rows] == [("d.jpg", str(folder / "sub" / "d.jpg"))]
+    add_photos(mac.libraries["photos-2018"], [B])
+    plain = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "csv"])
+    assert "files" not in plain.stdout.splitlines()[0]
+
+
+def test_each_copy_of_a_photo_in_a_folder_has_its_own_path_with_include_duplicates(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    touch(folder / "one" / "d.jpg", D[0])
+    touch(folder / "two" / "d.jpg", D[0])
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--include-duplicates", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert sorted(r["files"] for r in rows) == [str(folder / "one" / "d.jpg"), str(folder / "two" / "d.jpg")]

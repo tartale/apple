@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stands in for open: logs the call to $FAKE_OPEN_LOG when that is set; opens nothing.
+[ -n "${FAKE_OPEN_LOG:-}" ] && echo "$*" >> "$FAKE_OPEN_LOG"
+exit 0

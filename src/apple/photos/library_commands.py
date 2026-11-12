@@ -16,7 +16,7 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
-from apple.photos import blacklist, powerphotos_reports, split_plan
+from apple.photos import blacklist, folder_photos, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 
@@ -38,7 +38,7 @@ class OnUpgrade(str, Enum):
     stop = "stop"
 
 
-SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`.")]
+SourceArgument = Annotated[str, typer.Argument(help="Source library, as named by `./apple photos libraries`.")]
 CheckDuplicatesOption = Annotated[
     bool,
     typer.Option(
@@ -101,14 +101,23 @@ def known_libraries() -> dict:
 
 def need(libraries: dict, name: str) -> Path:
     if name not in libraries:
-        fail(f"No library named {name} in PowerPhotos. Libraries: {', '.join(sorted(libraries))}")
+        fail(f"No library named {name} in PowerPhotos (`./apple photos libraries` lists them).")
     return libraries[name]
 
 
+def looks_like_a_path(text: str) -> bool:
+    """Whether text is written as a path (it has a / in it, or starts with ~ or .) and so cannot be a library's name."""
+    return "/" in text or text.startswith(("~", "."))
+
+
 def find_library(name_or_path: str) -> Path:
-    """A library given as the path of a .photoslibrary, or by its name in PowerPhotos (macOS only)."""
-    if Path(name_or_path).is_dir():
-        return Path(name_or_path)
+    """A library given as the path of a .photoslibrary, or by its name in PowerPhotos (macOS only). Something written as a
+    path that does not exist is an error, not a name to look up."""
+    path = Path(name_or_path).expanduser()
+    if path.is_dir():
+        return path
+    if looks_like_a_path(name_or_path):
+        fail(f"{name_or_path} does not exist.")
     require_macos()
     return need(known_libraries(), name_or_path)
 
@@ -354,7 +363,7 @@ def libraries_command(
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
-DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing", "shared")
+DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing", "shared", "files")
 DEFAULT_FIELDS = ["date", "size", "name"]
 
 
@@ -382,21 +391,27 @@ def parse_fields(text: str) -> list:
     return fields
 
 
-def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool) -> list:
+def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool, folders: Optional[dict] = None) -> list:
     """The photos to show as dicts of side, date, size (int or None), name, hidden, burst and missing (true or false), in
     the order asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden
     items and of its burst members; libraries gives its pp.Photos, which says whether an original is not stored there
-    (found by looking at the files, so only when with_missing), and shared whether the item came from Messages."""
+    (found by looking at the files, so only when with_missing), and shared whether the item came from Messages. folders says
+    which sides are a folder of files: for those, each row also has the path of its file (each copy of a photo its own, in
+    order) as files, a list; for a library it is empty."""
     rows = []
     for side, counted in ((Side.left, only_left), (Side.right, only_right)):
         if which in (None, side):
+            copy_of = Counter()
             for key in counted.elements():
                 when, size, name = key
+                paths = libraries[side.value].files.get(key, []) if folders and folders[side.value] else []
+                files = [paths[min(copy_of[key], len(paths) - 1)]] if paths else []
+                copy_of[key] += 1
                 rows.append({
                     "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
                     "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
                     "missing": libraries[side.value].original_missing(key) if with_missing else False,
-                    "shared": key in libraries[side.value].shared,
+                    "shared": key in libraries[side.value].shared, "files": files,
                 })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
@@ -408,6 +423,8 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
 
 def cell_text(value) -> str:
     """A value as text: true and false for booleans, nothing for a missing value."""
+    if isinstance(value, list):
+        return "|".join(str(item) for item in value)  # the paths of a row, as import reads them
     return "" if value is None else ("true" if value else "false") if isinstance(value, bool) else str(value)
 
 
@@ -462,8 +479,8 @@ def ignoring_date(first: Counter, second: Counter) -> tuple:
 
 
 def diff_command(
-    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
-    right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
+    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary; or a folder of photo and video files.")],
+    right: Annotated[str, typer.Argument(help="Second library or folder, named the same way.")],
     summary: Annotated[bool, typer.Option("--summary", help="Print only the counts.")] = False,
     only: Annotated[Optional[Side], typer.Option(help="Show only the photos that are in just the left, or just the right, library; the side column is left out.")] = None,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
@@ -483,12 +500,24 @@ def diff_command(
         bool,
         typer.Option("--include-duplicates", help="Count every copy of a photo (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is a difference. By default a photo is counted once."),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="For a folder: read it again instead of reusing what an earlier run (of `diff` or `find`) saved. A directory whose modification time is unchanged is not listed again, so a file written over in place is not noticed until then."),
+    ] = False,
     exclude_hidden: Annotated[
         bool,
         typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members), which PowerPhotos does not list and so cannot copy: compare only what it can see. How many were left out is reported on stderr."),
     ] = False,
 ) -> None:
     """Show which photos and videos are in one library and not the other.
+
+    Either side can be a folder of photo and video files instead of a library: a file is its modification time (taken as its
+    capture time, in UTC), size and name, the same triple a library's database gives a photo, so a folder that kept its files'
+    times (a backup, a copy) compares exactly, and one whose files were re-saved does not. Subfolders are read, Time Machine's
+    linked folders are followed, and libraries inside the folder and what a disk keeps for itself are skipped. With a folder
+    on either side the output also has a files column, the path of each row's file (empty for a library's photos), so that
+    `diff LIBRARY FOLDER --only right --format csv` lists the folder's files the library lacks, in the form `apple photos import
+    -` reads to import them into the library.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Items Photos
@@ -500,12 +529,13 @@ def diff_command(
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing", "shared"]
+    folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing", "shared"] + (["files"] if any(folders.values()) else [])
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
-        left_path, right_path = find_library(left), find_library(right)
-        data = [pp.library_photos(left_path), pp.library_photos(right_path)]
+        sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
+        data = [folder_photos.folder_photos(side, refresh=refresh) if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
     except pp.PowerPhotosError as error:
         fail(str(error))
 
@@ -524,7 +554,7 @@ def diff_command(
     else:
         only_left, only_right, both = first - second, second - first, sum((first & second).values())
     if not summary:
-        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns)
+        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
     if sum(superseded[0].values()) or sum(superseded[1].values()):
@@ -561,9 +591,28 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
+def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, strict: bool = False, refresh: bool = False) -> list:
+    """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
+    of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, strict or within the
+    tolerances)."""
+    try:
+        data = [folder_photos.folder_photos(Path(folder), refresh=refresh)] + ([pp.library_photos(library)] if library else [])
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+    selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
+    wanted = split_plan.absent(selected[0], selected[1], strict) if library else Counter(dict.fromkeys(selected[0], 1))
+    rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
+                     {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
+    return [
+        {"name": row["name"], "date": row["date"], "hidden": False, "shared": False, "identifier": "", "source": "folder",
+         "root": folder, "library": "", "files": row["files"]}
+        for row in rows
+    ]
+
+
 def copy_command(
-    source: SourceOption,
-    destination: Annotated[str, typer.Option("--to", help="Destination library; it must already exist in PowerPhotos.")],
+    source: SourceArgument,
+    destination: Annotated[str, typer.Argument(help="Destination library; it must already exist in PowerPhotos.")],
     since: Annotated[Optional[datetime], typer.Option(help="First date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Last date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Copy photos, videos or both.")] = Media.all,
@@ -580,6 +629,9 @@ def copy_command(
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
     ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Copy nothing; say what would be copied. Same as DRY_RUN=true.")
+    ] = False,
 ) -> None:
     """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
 
@@ -644,6 +696,19 @@ def copy_command(
                 if not ids:
                     typer.echo(f"{destination}: no files copied (everything missing is left out, blacklisted)")
                     return
+            if is_dry_run(dry_run):
+                what = (
+                    f"{len(ids)} photos of {source} that it lacks" if ids is not None
+                    else f"the {len(names)} listed names of {source}" if names is not None
+                    else f"the photos of {source}" + (f" from {since.date()}" if since else "") + (f" to {until.date()}" if until else "")
+                    + " (PowerPhotos skips those it already has)"
+                )
+                typer.echo(f"{destination}: would copy {what} [dry run]")
+                if names is not None and hidden:
+                    report_hidden(hidden)
+                if names is not None:
+                    report_missing(no_original, source)
+                return
             expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, names, ids, strict)
             before_log = powerphotos_reports.snapshot()
             result = copy_one(
@@ -1197,9 +1262,9 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
 def split_command(
     media: Annotated[Media, typer.Option(help="Split photos, videos or both. With all, photos and videos go to their own libraries (photos-2018 and videos-2018), in the same run.")],
     years: Annotated[str, typer.Option(help="One year or a range, such as 2018 or 2018-2020.")],
-    source: Annotated[Optional[str], typer.Option("--from", help="Source library, as named by `./apple photos libraries`. Needed unless --check is given without one.")] = None,
+    source: Annotated[Optional[str], typer.Argument(metavar="[SOURCE]", help="Source library, as named by `./apple photos libraries`. Needed unless --check is given: `-` is no source, to give a DESTINATION to --check without one.")] = None,
     destination_name: Annotated[
-        str, typer.Option("--to", help="Destination library name for each year; {media} and {year} are filled in.")
+        str, typer.Argument(metavar="[DESTINATION]", help="Destination library name for each year; {media} and {year} are filled in.")
     ] = "{media}-{year}",
     max_size: Annotated[
         Optional[str],
@@ -1239,7 +1304,7 @@ def split_command(
             "--fix",
             help="With --check (implied): copy each item outside its library's year into the library of its own year, confirm it is "
             "there from that library's database, then move it out of the wrong library to that library's Recently Deleted; and, with "
-            "--from, copy into each library the source's photos of its dates that it lacks. --dry-run shows what would be done.",
+            "a SOURCE, copy into each library the source's photos of its dates that it lacks. --dry-run shows what would be done.",
         ),
     ] = False,
     dry_run: Annotated[
@@ -1270,7 +1335,7 @@ def split_command(
     A photo of the other kind (a video in photos-2005) or of neither kind (a type not in the photo or video lists) is listed
     too, and fails the check.
 
-    --fix (it implies --check) puts that right, as far as it safely can. With --from it copies into each library the
+    --fix (it implies --check) puts that right, as far as it safely can. With a SOURCE it copies into each library the
     source's photos of its dates that the library lacks. It moves the strays, and the items of the other kind, to the
     library of their own year and kind: each is copied there if that library lacks it (judged from its database, so
     without PowerPhotos' duplicate check), and once that library's database shows every copy has arrived, all of them are
@@ -1283,8 +1348,10 @@ def split_command(
     """
     require_macos()
     check = check or fix
+    if source == "-":
+        source = None
     if source is None and not check:
-        raise typer.BadParameter("--from is needed (it is optional only with --check)")
+        raise typer.BadParameter("SOURCE is needed (it is optional only with --check)")
     first, _, last = years.partition("-")
     if not (first.isdigit() and (last.isdigit() or not last)):
         raise typer.BadParameter("--years must be a year or a range such as 2018-2020")

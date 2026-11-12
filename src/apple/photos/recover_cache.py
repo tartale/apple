@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 FILE_VARIABLE = "APPLE_PHOTOS_CACHE_FILE"
-VERSION = 1  # raise it when what is indexed, or how, changes: an older entry is then never used
+VERSION = 2  # raise it when what is indexed, or how, changes: an older entry is then never used (2: a directory's listing has each file's size)
 
 
 def cache_file() -> Path:

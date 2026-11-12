@@ -62,7 +62,7 @@ def launchctl(*args: str) -> int:
 @app.command()
 def add(
     name: Annotated[str, typer.Argument(help="A name for this schedule (letters, digits, dot, dash, underscore).")],
-    command: Annotated[List[str], typer.Argument(help="The apple command to run, after `--`: for example photos split --from ...")],
+    command: Annotated[List[str], typer.Argument(help="The apple command to run, after `--`: for example photos split SOURCE ...")],
     at: Annotated[str, typer.Option(help="Time of day, HH:MM (24-hour).")] = "03:00",
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the launchd agent; install nothing.")] = False,
 ) -> None:
