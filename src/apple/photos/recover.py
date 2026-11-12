@@ -358,27 +358,19 @@ def import_found_command(
             "--only-missing",
             help="With --from, import only the files the library lacks, judged from its database as `copy --only-missing` judges a "
             "library: a photo of the same file name (case ignored, .jpeg is .jpg) within two hours and 1% of the size is there. "
-            "The library is the one --library or --default-library names.",
+            "The library is the one --to names.",
         ),
     ] = False,
     strict: Annotated[
         bool,
         typer.Option("--strict", help="With --only-missing, a photo is there only when its date, size and file name are exactly the file's."),
     ] = False,
-    default_library: Annotated[
+    to: Annotated[
         Optional[str],
         typer.Option(
-            "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
-            help="The library to import into unless --library names another: a name from `./apple photos libraries`, or the path of a "
-            ".photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. Photos must have it open.",
-        ),
-    ] = None,
-    library: Annotated[
-        Optional[str],
-        typer.Option(
-            "--library",
-            help="Import into this library instead of the default library: a name from `./apple photos libraries`, or the path of a "
-            ".photoslibrary. Photos imports into whichever library it has open, so it must have this one open.",
+            "--to",
+            help="The library to import into: a name from `./apple photos libraries`, or the path of a "
+            ".photoslibrary. Photos imports into whichever library it has open, so it is asked to open this one first.",
         ),
     ] = None,
     map_paths: Annotated[
@@ -401,7 +393,7 @@ def import_found_command(
     are on this machine, and with --apply yes (or ask) imports them into the library that Photos has open, so open the
     library in Photos first. The import makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts
     it once the copy is there. Nothing is deleted, and nothing is changed unless --apply says so (--dry-run, or
-    DRY_RUN=true, always wins). Photos go into the default library, or the one --library names, and only while Photos has
+    DRY_RUN=true, always wins). Photos go into the library --to names, and only while Photos has
     exactly that library open: with another one open nothing is imported.
 
     Instead of a list, --from FOLDER imports the photo and video files below a folder, and --only-missing limits that to
@@ -417,9 +409,9 @@ def import_found_command(
     if strict and not only_missing:
         raise typer.BadParameter("--strict says how --only-missing tells that the library has a photo")
     mode = Apply.no if is_dry_run(dry_run) else apply
-    target = library or default_library  # the library to import into
+    target = to  # the library to import into
     if target is None and mode != Apply.no:
-        raise typer.BadParameter("--library or --default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY) to import")
+        raise typer.BadParameter("--to is needed to import")
     if target and Path(target).expanduser().is_dir():
         path = Path(target).expanduser()
     elif target and mode != Apply.no:
@@ -429,7 +421,7 @@ def import_found_command(
     if from_folder is not None:
         if only_missing:
             if target is None:
-                raise typer.BadParameter("--only-missing compares with a library: give --library or --default-library (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
+                raise typer.BadParameter("--only-missing compares with a library: give --to")
             path = Path(target).expanduser() if Path(target).expanduser().is_dir() else find_library(target)
         listed = folder_listing(from_folder, path if only_missing else None, since, until, media, strict)
         import_listed(listed, from_folder, target, path, mode, [], since, until, media, format)
