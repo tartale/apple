@@ -9,7 +9,7 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
     filename=ignore          any name
     date=within=2h           within a time (a number and s, m, h or d; 2h is the default)
     date=exact | date=ignore
-    filesize=within=1%       within a share of the size (1% is the default)
+    filesize=within=1%       within a share of the size (1% is the default), or a number of bytes: filesize=within=512bytes
     filesize=exact | filesize=ignore
 
 A mode is a comma-separated list read from left to right, starting from the default: `exact` (all three exact, a name as written)
@@ -22,7 +22,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from apple.photos import powerphotos as pp
 
@@ -38,6 +38,7 @@ class Mode:
     date_within: timedelta = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
     filesize: str = "within"  # exact, within or ignore
     size_within: float = 0.01  # and by a little in size, when the file's metadata was rewritten (a share of the size)
+    size_bytes: Optional[int] = None  # or, when set, that many bytes whatever the size
 
 
 TOLERANT = Mode()
@@ -46,7 +47,7 @@ PRESETS = {"tolerant": TOLERANT, "exact": EXACT}
 HELP = (
     "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore|prefix=N "
     "(full ignores case, and .jpeg is .jpg), date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
-    "filesize=exact|ignore|within=PERCENT (such as 1%), or the whole modes exact and tolerant, read from left to right: "
+    "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
     "`exact,filename=prefix=8`. The default is tolerant: filename=full,date=within=2h,filesize=within=1%. Also read from "
     "APPLE_PHOTOS_DIFF_MODE."
 )
@@ -83,9 +84,11 @@ def parse(text: str) -> Mode:
             if kind in ("exact", "ignore") and not amount:
                 mode = replace(mode, filesize=kind)
             elif kind == "within" and (found := re.fullmatch(r"(\d+(?:\.\d+)?)%", amount)):
-                mode = replace(mode, filesize="within", size_within=float(found.group(1)) / 100)
+                mode = replace(mode, filesize="within", size_within=float(found.group(1)) / 100, size_bytes=None)
+            elif kind == "within" and (found := re.fullmatch(r"(\d+) ?(?:bytes?|b)", amount)):
+                mode = replace(mode, filesize="within", size_bytes=int(found.group(1)))
             else:
-                raise ValueError(f"filesize={value!r}: use exact, ignore or within=PERCENT (such as 1%)")
+                raise ValueError(f"filesize={value!r}: use exact, ignore or within=PERCENT (such as 1%) or within=N bytes (such as 512bytes)")
         else:
             raise ValueError(f"{item!r}: use filename=..., date=..., filesize=..., exact or tolerant")
     return mode
@@ -108,7 +111,8 @@ def same_size(mode: Mode, first: str, second: str) -> bool:
         return first == second
     if not (first.isdigit() and second.isdigit() and int(first) and int(second)):
         return True
-    return abs(int(first) - int(second)) <= mode.size_within * max(int(first), int(second))
+    allowed = mode.size_bytes if mode.size_bytes is not None else mode.size_within * max(int(first), int(second))
+    return abs(int(first) - int(second)) <= allowed
 
 
 def bucket(mode: Mode, photo: Photo) -> tuple:

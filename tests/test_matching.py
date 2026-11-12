@@ -20,10 +20,12 @@ def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
     assert m.parse("filename=exact") == m.Mode(filename="exact")
     assert m.parse("date=ignore,exact") == m.EXACT  # a whole mode after a field starts over
     assert m.parse("date=within=90m").date_within == timedelta(minutes=90)
+    assert m.parse("filesize=within=512bytes").size_bytes == 512 and m.parse("filesize=within=1byte").size_bytes == 1 and m.parse("filesize=within=20b").size_bytes == 20
+    assert m.parse("filesize=within=512bytes,filesize=within=2%").size_bytes is None  # the last one wins
 
 
 @pytest.mark.parametrize("text", ["filename", "filename=prefix", "filename=prefix=0", "filename=prefix=x", "filename=sideways", "date=within",
-                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=x%", "exif=true", "strict"])
+                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=true", "strict"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
         m.parse(text)
@@ -84,3 +86,12 @@ def test_date_ignore_pairs_by_size_and_name_as_a_clip_imported_twice_with_a_shif
     first = Counter({("2018-03-01 10:00:00", "1000", "a.mov"): 1})
     second = Counter({("2019-07-01 10:00:00", "1000", "a.mov"): 1})
     assert m.pair(first, second, m.parse("exact,date=ignore")) == (Counter(), Counter(), 1)
+
+
+def test_a_size_can_differ_by_a_number_of_bytes_whatever_the_size():
+    held = Counter({("2018-03-01 10:00:00", "1000000", "a.jpg"): 1, ("2018-03-01 10:00:00", "100", "b.jpg"): 1})
+    mode = m.parse("filesize=within=50bytes")
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000050", "a.jpg"): 1}), held, mode)  # 50 bytes of a million: far under 1%
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000051", "a.jpg"): 1}), held, mode)
+    assert m.absent(Counter({("2018-03-01 10:00:00", "151", "b.jpg"): 1}), held, mode)  # 51 bytes off a hundred: over the 50
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "150", "b.jpg"): 1}), held, mode)  # 50 bytes off a hundred: 50%, but within the 50 bytes
