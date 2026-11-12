@@ -1299,29 +1299,57 @@ def test_what_a_library_lacks_of_a_folder_is_imported_from_the_diff_of_the_two(m
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
 
 
-def test_copy_only_missing_from_a_folder_imports_the_files_the_library_lacks(mac, monkeypatch, tmp_path):
+def folder_with_a_library_photo(mac, tmp_path):
     add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
     folder = tmp_path / "backup"
     make_file(folder / "one.heic")
     make_file(folder / "sub" / "two.heic", LATER)
     make_file(folder / "a.jpg", "2018-03-01 10:00:00")  # the library has this one
+    return folder
+
+
+def test_import_from_a_folder_with_only_missing_imports_the_files_the_library_lacks(mac, monkeypatch, tmp_path):
+    folder = folder_with_a_library_photo(mac, tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
-    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source", "--only-missing"])
+    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--library", "Source", "--apply", "yes"])
     assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
-    assert mac.calls("copy-ids.applescript") == []
 
 
-def test_copy_from_a_folder_with_nothing_missing_imports_nothing(mac, tmp_path):
+def test_import_from_a_folder_without_only_missing_imports_every_file(mac, monkeypatch, tmp_path):
+    folder = folder_with_a_library_photo(mac, tmp_path)
+    opened(monkeypatch, mac.libraries["Source"])
+    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--library", "Source", "--apply", "yes"])
+    assert result.exit_code == 0 and "Imported 3 of 3" in result.output
+
+
+def test_import_from_a_folder_changes_nothing_unless_applied(mac, tmp_path):
+    folder = folder_with_a_library_photo(mac, tmp_path)
+    result = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--library", "Source"])
+    assert result.exit_code == 0 and "[dry run]" in result.output and mac.calls("import-photos.applescript") == []
+
+
+def test_only_missing_judges_with_the_tolerances_and_strict_wants_exact(mac, tmp_path):
     add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
     folder = tmp_path / "backup"
-    make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)  # within the size tolerance
-    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source", "--only-missing"])
-    assert result.exit_code == 0 and "nothing in" in result.output and mac.calls("import-photos.applescript") == []
+    make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)
+    loose = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--library", "Source"])
+    assert "Imported 0 of 0" in loose.output
+    exact = runner.invoke(app, ["photos", "import", "--from", str(folder), "--only-missing", "--strict", "--library", "Source"])
+    assert "Imported 0 of 1" in exact.output and "[dry run]" in exact.output
 
 
-def test_a_folder_is_a_source_only_for_only_missing(mac, tmp_path):
+def test_import_takes_a_list_or_a_folder_and_only_missing_needs_the_folder_and_a_library(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
-    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source"])
-    assert result.exit_code != 0 and "only with --only-missing" in result.output
+    for options, text in (
+        ([], "either a LIST or --from"),
+        ([str(tmp_path / "x.csv"), "--from", str(folder)], "either a LIST or --from"),
+        (["--from", str(folder), "--strict"], "--strict says"),
+        (["--from", str(folder), "--only-missing"], "compares with a library"),
+    ):
+        result = runner.invoke(app, ["photos", "import", *options])
+        assert result.exit_code != 0 and text in result.output, options
+    listed = tmp_path / "x.csv"
+    listed.write_text("date,name\n")
+    assert "are for --from" in runner.invoke(app, ["photos", "import", str(listed), "--only-missing"]).output

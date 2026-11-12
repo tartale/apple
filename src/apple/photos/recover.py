@@ -21,7 +21,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, within
+from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, folder_listing, within
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -321,13 +321,34 @@ def found_row(key: tuple, item: dict, found: Optional[Found]) -> dict:
 
 def import_found_command(
     list_file: Annotated[
-        str,
+        Optional[str],
         typer.Argument(
-            metavar="LIST",
+            metavar="[LIST]",
             help="The csv or json (- for stdin) that `apple photos find --format csv` wrote: each row says where its original "
-            "is (the source, root, library and files columns). Nothing is searched; a row with no file is skipped.",
+            "is (the source, root, library and files columns). Nothing is searched; a row with no file is skipped. Not with --from.",
         ),
-    ],
+    ] = None,
+    from_folder: Annotated[
+        Optional[str],
+        typer.Option(
+            "--from",
+            help="Import the photo and video files below this folder instead of a list (a file is its modification time as its capture "
+            "time in UTC, its size and its name; --since, --until and --media limit them). Without --only-missing that is every file.",
+        ),
+    ] = None,
+    only_missing: Annotated[
+        bool,
+        typer.Option(
+            "--only-missing",
+            help="With --from, import only the files the library lacks, judged from its database as `copy --only-missing` judges a "
+            "library: a photo of the same file name (case ignored, .jpeg is .jpg) within two hours and 1% of the size is there. "
+            "The library is the one --library or --default-library names.",
+        ),
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="With --only-missing, a photo is there only when its date, size and file name are exactly the file's."),
+    ] = False,
     default_library: Annotated[
         Optional[str],
         typer.Option(
@@ -366,9 +387,19 @@ def import_found_command(
     it once the copy is there. Nothing is deleted, and nothing is changed unless --apply says so (--dry-run, or
     DRY_RUN=true, always wins). Photos go into the default library, or the one --library names, and only while Photos has
     exactly that library open: with another one open nothing is imported.
+
+    Instead of a list, --from FOLDER imports the photo and video files below a folder, and --only-missing limits that to
+    the ones the library lacks (a file within two hours and 1% of the size of a photo of that name is not lacking; --strict
+    wants it exact).
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
+    if (list_file is None) == (from_folder is None):
+        raise typer.BadParameter("give either a LIST or --from FOLDER")
+    if from_folder is None and (only_missing or strict):
+        raise typer.BadParameter("--only-missing and --strict are for --from: a list says what to import")
+    if strict and not only_missing:
+        raise typer.BadParameter("--strict says how --only-missing tells that the library has a photo")
     mode = Apply.no if is_dry_run(dry_run) else apply
     target = library or default_library  # the library to import into
     if target is None and mode != Apply.no:
@@ -379,13 +410,21 @@ def import_found_command(
         path = find_library(target)
     else:
         path = Path("/nonexistent/default.photoslibrary")
+    if from_folder is not None:
+        if only_missing:
+            if target is None:
+                raise typer.BadParameter("--only-missing compares with a library: give --library or --default-library (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
+            path = Path(target).expanduser() if Path(target).expanduser().is_dir() else find_library(target)
+        listed = folder_listing(from_folder, path if only_missing else None, since, until, media, strict)
+        import_listed(listed, from_folder, target, path, mode, [], since, until, media, format)
+        return
     import_listed(load_list(list_file), list_file, target, path, mode, parse_map(map_paths), since, until, media, format)
 
 
 def import_listed(listed: List[dict], list_name: str, target: Optional[str], path: Path, mode: Apply, mapping: List[tuple],
                   since: Optional[datetime], until: Optional[datetime], media: Media, format: DiffFormat) -> None:
     """Import the originals the listed rows (from read_list) say where to find, as import does, into the library target (at
-    path) when mode says so: what `import` and `copy --only-missing` from a folder share. list_name is what the rows came from."""
+    path) when mode says so: a list's rows and a folder's files are imported the same way. list_name is what the rows came from."""
     progress = Progress()
     rows, hits, unreachable, denied = [], [], {}, []
     if listed and not any(entry["files"] for entry in listed):
