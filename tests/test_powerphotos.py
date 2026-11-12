@@ -2021,3 +2021,26 @@ def test_a_target_written_as_a_path_that_does_not_exist_is_not_looked_up_as_a_li
 def test_a_plain_name_that_is_not_a_library_is_still_an_unknown_library(mac):
     result = runner.invoke(app, ["photos", "diff", "Nope", "Source"])
     assert result.exit_code == 1 and "No library named Nope in PowerPhotos" in result.output and "does not exist" not in result.output
+
+
+def test_a_folder_side_adds_the_path_of_each_file_and_a_library_side_has_none(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    touch(folder / "a.jpg", A[0])
+    touch(folder / "sub" / "d.jpg", D[0])
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 1 and [(r["name"], r["files"]) for r in rows] == [("d.jpg", str(folder / "sub" / "d.jpg"))]
+    add_photos(mac.libraries["photos-2018"], [B])
+    plain = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--format", "csv"])
+    assert "files" not in plain.stdout.splitlines()[0]
+
+
+def test_each_copy_of_a_photo_in_a_folder_has_its_own_path_with_include_duplicates(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    touch(folder / "one" / "d.jpg", D[0])
+    touch(folder / "two" / "d.jpg", D[0])
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--include-duplicates", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert sorted(r["files"] for r in rows) == [str(folder / "one" / "d.jpg"), str(folder / "two" / "d.jpg")]

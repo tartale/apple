@@ -28,9 +28,10 @@ def is_folder(text: str) -> bool:
 
 def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, refresh: bool = False) -> pp.Photos:
     """The photos and videos below folder as a pp.Photos: all visible, none hidden, burst or shared, and with no original
-    missing. say(text) is told the notes of the walk. With refresh the cache is not used, and the result is saved."""
+    missing; `files` gives each one's paths (every copy, in order), which for a library are paths below it. say(text) is told
+    the notes of the walk. With refresh the cache is not used, and the result is saved."""
     path = folder.expanduser()
-    progress, started, files = Progress(), time.monotonic(), Counter()
+    progress, started, files, paths = Progress(), time.monotonic(), Counter(), {}
     real = resolve(path) or path
     cache, key = Cache(read=not refresh), fingerprint("tree", str(real))  # the key `find` uses for the same folder
     previous = cache.get(key)
@@ -45,11 +46,13 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
         if entry.is_directory or entry.status is None or pp.media_of(entry.logical.name) is None:
             continue
         when = datetime.fromtimestamp(int(entry.status.st_mtime), timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        files[(when, str(entry.status.st_size), entry.logical.name)] += 1
+        photo = (when, str(entry.status.st_size), entry.logical.name)
+        files[photo] += 1
+        paths.setdefault(photo, []).append(str(entry.real))
         count += 1
         progress.update(f"Reading {path}: {count:,} files so far")
     if remember:
         cache.put(key, remember)
     reused = counts.get("reused", 0)
     progress.line(f"Read {count:,} photos and videos of {path} ({duration(time.monotonic() - started)})" + (f" [{reused:,} of {reused + counts.get('read', 0):,} folders as cached]" if reused else ""))
-    return pp.Photos(path, files, Counter(), Counter(), {}, set(), Counter(), {}, {})
+    return pp.Photos(path, files, Counter(), Counter(), {photo: sorted(found) for photo, found in paths.items()}, set(), Counter(), {}, {})

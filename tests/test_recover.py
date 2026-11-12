@@ -1282,3 +1282,18 @@ def test_import_of_a_list_whose_originals_were_all_searched_for_and_not_found_sa
     result = import_found(listing)
     assert result.exit_code == 0 and "None of the 2 photos in" in result.output and "nothing to import" in result.output
     assert "Imported 0 of" not in result.output
+
+
+def test_what_a_library_lacks_of_a_folder_is_imported_from_the_diff_of_the_two(mac, monkeypatch, tmp_path):
+    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
+    folder = tmp_path / "backup"
+    make_file(folder / "one.heic")
+    make_file(folder / "sub" / "two.heic", LATER)
+    make_file(folder / "a.jpg", "2018-03-01 10:00:00")  # the library has this one
+    listing = tmp_path / "missing.csv"
+    diffed = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--format", "csv"])
+    listing.write_text(diffed.stdout)
+    opened(monkeypatch, mac.libraries["photos-2018"])
+    result = import_found(listing, "--library", "photos-2018", "--apply", "yes")
+    assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
+    assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]

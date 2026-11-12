@@ -387,7 +387,8 @@ def import_found_command(
         if not any(entry["source"] for entry in listed):  # no source column: nobody has looked for these originals
             raise typer.BadParameter(
                 f"{list_file} lists photos but not where their originals are (it has no source and files columns), as the output of `apple photos "
-                f"missing` or `diff` does: search for them first, `apple photos find {list_file} --folders PATH --format csv > found.csv`, and import found.csv"
+                f"missing`, or of `diff` between two libraries, does: search for them first, `apple photos find {list_file} --folders PATH --format csv > found.csv`, "
+                "and import found.csv; or `diff LIBRARY FOLDER --only right --format csv`, which lists a folder's files with their paths, can be imported as it is"
             )
         typer.echo(f"None of the {count(len(listed), 'photo')} in {list_file} has an original that was found, so there is nothing to import: run `apple photos find` again with other places to search.", err=True)
         return

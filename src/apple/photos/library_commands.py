@@ -363,7 +363,7 @@ def libraries_command(
         typer.echo(f"Version cannot be read: {', '.join(unreadable)}", err=True)
 
 
-DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing", "shared")
+DIFF_FIELDS = ("date", "size", "name", "hidden", "burst", "missing", "shared", "files")
 DEFAULT_FIELDS = ["date", "size", "name"]
 
 
@@ -391,21 +391,27 @@ def parse_fields(text: str) -> list:
     return fields
 
 
-def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool) -> list:
+def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool, folders: Optional[dict] = None) -> list:
     """The photos to show as dicts of side, date, size (int or None), name, hidden, burst and missing (true or false), in
     the order asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden
     items and of its burst members; libraries gives its pp.Photos, which says whether an original is not stored there
-    (found by looking at the files, so only when with_missing), and shared whether the item came from Messages."""
+    (found by looking at the files, so only when with_missing), and shared whether the item came from Messages. folders says
+    which sides are a folder of files: for those, each row also has the path of its file (each copy of a photo its own, in
+    order) as files, a list; for a library it is empty."""
     rows = []
     for side, counted in ((Side.left, only_left), (Side.right, only_right)):
         if which in (None, side):
+            copy_of = Counter()
             for key in counted.elements():
                 when, size, name = key
+                paths = libraries[side.value].files.get(key, []) if folders and folders[side.value] else []
+                files = [paths[min(copy_of[key], len(paths) - 1)]] if paths else []
+                copy_of[key] += 1
                 rows.append({
                     "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
                     "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
                     "missing": libraries[side.value].original_missing(key) if with_missing else False,
-                    "shared": key in libraries[side.value].shared,
+                    "shared": key in libraries[side.value].shared, "files": files,
                 })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
@@ -417,6 +423,8 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
 
 def cell_text(value) -> str:
     """A value as text: true and false for booleans, nothing for a missing value."""
+    if isinstance(value, list):
+        return "|".join(str(item) for item in value)  # the paths of a row, as import reads them
     return "" if value is None else ("true" if value else "false") if isinstance(value, bool) else str(value)
 
 
@@ -506,7 +514,10 @@ def diff_command(
     Either side can be a folder of photo and video files instead of a library: a file is its modification time (taken as its
     capture time, in UTC), size and name, the same triple a library's database gives a photo, so a folder that kept its files'
     times (a backup, a copy) compares exactly, and one whose files were re-saved does not. Subfolders are read, Time Machine's
-    linked folders are followed, and libraries inside the folder and what a disk keeps for itself are skipped.
+    linked folders are followed, and libraries inside the folder and what a disk keeps for itself are skipped. With a folder
+    on either side the output also has a files column, the path of each row's file (empty for a library's photos), so that
+    `diff LIBRARY FOLDER --only right --format csv` lists the folder's files the library lacks, in the form `apple photos import
+    -` reads to import them into the library.
 
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Items Photos
@@ -518,12 +529,13 @@ def diff_command(
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing", "shared"]
+    folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + ([] if exclude_hidden else ["hidden", "burst"]) + ["missing", "shared"] + (["files"] if any(folders.values()) else [])
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
-        sides = [Path(side) if folder_photos.is_folder(side) else find_library(side) for side in (left, right)]  # a name that is not known fails before anything is read
-        data = [folder_photos.folder_photos(side, refresh=refresh) if folder_photos.is_folder(str(side)) else pp.library_photos(side) for side in sides]
+        sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
+        data = [folder_photos.folder_photos(side, refresh=refresh) if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
     except pp.PowerPhotosError as error:
         fail(str(error))
 
@@ -542,7 +554,7 @@ def diff_command(
     else:
         only_left, only_right, both = first - second, second - first, sum((first & second).values())
     if not summary:
-        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns)
+        rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
     if sum(superseded[0].values()) or sum(superseded[1].values()):
