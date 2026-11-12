@@ -159,11 +159,11 @@ def is_true(value) -> bool:
 
 
 def missing_command(
-    default_library: Annotated[
+    library: Annotated[
         Optional[str],
         typer.Option(
-            "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
-            help="The default library: a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from "
+            "--library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
+            help="The library to list: a name from `./apple photos libraries`, or the path of a .photoslibrary. Also read from "
             "APPLE_PHOTOS_DEFAULT_LIBRARY.",
         ),
     ] = None,
@@ -172,7 +172,7 @@ def missing_command(
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with the Messages identifier of a shared photo.")] = DiffFormat.text,
 ) -> None:
-    """List the photos of the default library whose original it does not store. Changes nothing.
+    """List the photos of a library whose original it does not store. Changes nothing.
 
     PowerPhotos cannot list or copy these (the `missing` column of `apple photos diff`): a photo shared with you in
     Messages and never saved, or a hidden item whose file is gone. Save the list (--format csv) and give it to `apple
@@ -180,11 +180,11 @@ def missing_command(
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
-    if default_library is None:
-        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
-    path = Path(default_library) if Path(default_library).is_dir() else find_library(default_library)
+    if library is None:
+        raise typer.BadParameter("--library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
+    path = Path(library) if Path(library).is_dir() else find_library(library)
     progress = Progress()
-    progress.line(f"Reading the photos of {default_library} ...")
+    progress.line(f"Reading the photos of {library} ...")
     try:
         photos = pp.library_photos(path)
     except pp.PowerPhotosError as error:
@@ -223,19 +223,20 @@ def find_command(
             "`missing`; any other column is ignored.",
         ),
     ],
-    default_library: Annotated[
+    library: Annotated[
         Optional[str],
         typer.Option(
-            "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
-            help="The default library, which is never searched even when a folder holds it: the path of a .photoslibrary. "
-            "Needed only where the library is mounted.",
+            "--library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
+            help="The library the list is of, which is never searched even when a folder holds it: the path of a .photoslibrary, or a "
+            "name from `./apple photos libraries` (a name is not looked up, so a path is needed to keep it out of a search). "
+            "Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. Needed only where the library is mounted.",
         ),
     ] = None,
     messages: Annotated[bool, typer.Option("--messages", help="Search Messages' attachments (~/Library/Messages/Attachments; Terminal needs Full Disk Access): the files of photos shared with you, found by the ID in the library.")] = False,
     messages_folder: Annotated[Optional[List[Path]], typer.Option(help="Search another folder of Messages attachments, as --messages; repeat for several.")] = None,
     folders: Annotated[
         Optional[List[Path]],
-        typer.Option(help="Search everything under a path (it may have * ? or [..] in it, to name several folders, such as a Pictures folder in every Time Machine snapshot), however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The default library is never searched. Repeat for several."),
+        typer.Option(help="Search everything under a path (it may have * ? or [..] in it, to name several folders, such as a Pictures folder in every Time Machine snapshot), however the originals are stored: raw files (the iCloud backup, an iPhoto or Aperture library's Masters, a Time Machine backup) are matched by file name and capture time, and the Photos libraries found on the way are read through their database. The library --library names is never searched. Repeat for several."),
     ] = None,
     map_paths: Annotated[
         Optional[List[str]],
@@ -271,7 +272,7 @@ def find_command(
     entries = search_entries(messages, messages_folder, folders)
     if not entries:
         raise typer.BadParameter(f"nothing to search: pass --messages or --folders, or set {SEARCH_VARIABLE}")
-    path = Path(default_library) if default_library and Path(default_library).is_dir() else Path("/nonexistent/default.photoslibrary")
+    path = Path(library) if library and Path(library).is_dir() else Path("/nonexistent/default.photoslibrary")
     if snapshots not in SNAPSHOTS:
         raise typer.BadParameter(f"--snapshots must be one of {', '.join(SNAPSHOTS)}")
     # The translations that make the places reachable on this machine, so that one set of settings
@@ -354,6 +355,10 @@ def import_found_command(
         bool,
         typer.Option("--strict", help="With --only-missing, a photo is there only when its date, size and file name are exactly the file's."),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="With a folder, read it again instead of reusing what an earlier run saved (as `diff` and `find` do), and save the result."),
+    ] = False,
     map_paths: Annotated[
         Optional[List[str]],
         typer.Option("--map", help="OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
@@ -378,8 +383,8 @@ def import_found_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     folder = folder_photos.is_folder(source)
-    if not folder and (only_missing or strict):
-        raise typer.BadParameter("--only-missing and --strict are for a folder: a list says what to import")
+    if not folder and (only_missing or strict or refresh):
+        raise typer.BadParameter("--only-missing, --strict and --refresh are for a folder: a list says what to import")
     if strict and not only_missing:
         raise typer.BadParameter("--strict says how --only-missing tells that the library has a photo")
     dry = is_dry_run(dry_run)
@@ -390,7 +395,7 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, strict)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, strict, refresh)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format)
         return
     import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format)

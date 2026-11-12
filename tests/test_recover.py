@@ -61,7 +61,7 @@ def attachments(tmp_path, monkeypatch, **folders):
 
 
 def missing(*options, default="Source"):
-    return runner.invoke(app, ["photos", "missing", *(["--default-library", default] if default else []), *options])
+    return runner.invoke(app, ["photos", "missing", *(["--library", default] if default else []), *options])
 
 
 def recover(*options, default="Source"):
@@ -295,7 +295,7 @@ def test_a_library_with_no_original_stored_for_a_photo_does_not_count(mac, tmp_p
     assert [r["source"] for r in rows_of(recover("--folders", str(tmp_path / "libraries"), "--format", "csv"))] == ["none", "none"]
 
 
-def test_the_default_library_is_never_searched_and_a_shared_database_is_read_once(mac, tmp_path):
+def test_the_library_of_the_list_is_never_searched_and_a_shared_database_is_read_once(mac, tmp_path):
     first = other_library(tmp_path, [(WHEN, 500, "one.heic")], "first", "libraries")
     second = make_library(tmp_path / "copies", "second", 19607)
     shutil.rmtree(second / "database")
@@ -1361,3 +1361,23 @@ def test_a_library_photos_already_has_open_is_not_opened_again(mac, monkeypatch,
     import_found(found_list(tmp_path, "--folders", str(found_folder(tmp_path))))
     assert asked == []
     assert mac.calls("quit-photos.applescript") == []  # it was the user's to keep open
+
+
+def test_import_from_a_folder_reads_it_from_the_cache_until_refresh_reads_it_again(mac, tmp_path):
+    folder = tmp_path / "backup"
+    target = make_file(folder / "one.heic")
+    options = ["photos", "import", str(folder), "Source", "--dry-run"]
+    first = runner.invoke(app, options)
+    assert "as cached" not in first.output
+    stamp = target.stat().st_mtime
+    target.write_bytes(b"x" * 250)  # written over in place: the folder's own time does not change
+    os.utime(target, (stamp, stamp))
+    assert "1 of 1 folders as cached" in runner.invoke(app, options).output
+    assert "as cached" not in runner.invoke(app, [*options, "--refresh"]).output
+
+
+def test_refresh_is_for_a_folder(mac, tmp_path):
+    listed = tmp_path / "x.csv"
+    listed.write_text("date,name\n")
+    result = runner.invoke(app, ["photos", "import", str(listed), "Source", "--refresh", "--dry-run"])
+    assert result.exit_code != 0 and "are for a folder" in " ".join(result.output.replace("│", " ").split())

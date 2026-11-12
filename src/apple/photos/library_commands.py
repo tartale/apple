@@ -591,12 +591,12 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
-def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, strict: bool = False) -> list:
-    """The rows `import` reads for the photo and video files below folder, one for each photo, with the path of its file: all
+def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, strict: bool = False, refresh: bool = False) -> list:
+    """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, strict or within the
     tolerances)."""
     try:
-        data = [folder_photos.folder_photos(Path(folder))] + ([pp.library_photos(library)] if library else [])
+        data = [folder_photos.folder_photos(Path(folder), refresh=refresh)] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
