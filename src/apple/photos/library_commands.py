@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -18,6 +18,7 @@ from apple.platform import require_macos
 from apple.photos import powerphotos as pp
 from apple.photos import blacklist, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
+from apple.photos.progress import Progress, duration
 
 
 class Media(str, Enum):
@@ -712,19 +713,86 @@ def read_photos(libraries: dict, name: str) -> Optional[Counter]:
     return None if found is None else found.visible + found.hidden
 
 
-def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, read_destination, label: Optional[str] = None, strict: bool = False, read_neighbor=None, blacklisted=None) -> tuple:
+def adjacent_libraries(plan_of, kind: str, year: int, part: split_plan.Part, source_photos: Optional[Counter]) -> list:
+    """The names of the libraries beside a part, on each end the source has a photo within a day of (and none otherwise): the
+    part before it when something is near its start, the part after it when something is near its end. plan_of(kind, year)
+    gives the parts of a year in order."""
+    if source_photos is None:
+        return []
+    near_start, near_end = split_plan.edge_ends(source_photos, part.start, part.end, kind)
+    if not (near_start or near_end):
+        return []
+    ordered = [other for y in (year - 1, year, year + 1) for other in plan_of(kind, y)]
+    at = next((index for index, other in enumerate(ordered) if other.name == part.name), None)
+    if at is None:
+        return []
+    return ([ordered[at - 1].name] if near_start and at > 0 else []) + ([ordered[at + 1].name] if near_end and at + 1 < len(ordered) else [])
+
+
+class Libraries:
+    """The databases of the libraries a run looks at, each read once, and again only after the library was changed. Over a
+    network share a read copies the database, so this is the slow part of a run: preload() reads the ones needed at the start
+    several at a time, with a progress line. before_held() is a library as it was when first read, whatever was done to it
+    since (the libraries either side of one that is being fixed, as split sees them)."""
+
+    WORKERS = 8
+
+    def __init__(self, libraries: dict):
+        self.libraries = libraries
+        self._now: dict = {}
+        self._first: dict = {}
+
+    def _read(self, name: str) -> tuple:
+        found = read_library(self.libraries, name)
+        return found, None if found is None else found.visible + found.hidden
+
+    def preload(self, names: list) -> None:
+        """Reads the libraries (those in PowerPhotos that were not read yet) in parallel."""
+        todo = [name for name in dict.fromkeys(names) if name in self.libraries and name not in self._now]
+        if not todo:
+            return
+        progress, started, done = Progress(), time.monotonic(), 0
+        with ThreadPoolExecutor(max_workers=min(self.WORKERS, len(todo))) as pool:
+            futures = {pool.submit(self._read, name): name for name in todo}
+            for future in as_completed(futures):
+                self._now[futures[future]] = self._first[futures[future]] = future.result()
+                done += 1
+                progress.update(f"Reading the libraries: {done} of {len(todo)} ...")
+        if len(todo) > 1:
+            progress.line(f"Read {len(todo)} library databases ({duration(time.monotonic() - started)})")
+
+    def photos(self, name: str) -> Optional[pp.Photos]:
+        if name not in self._now:
+            self._now[name] = self._first[name] = self._read(name)
+        return self._now[name][0]
+
+    def held(self, name: str) -> Optional[Counter]:
+        """What the library holds now, visible or hidden (None: not in PowerPhotos, or unreadable)."""
+        self.photos(name)
+        return self._now[name][1]
+
+    def before_held(self, name: str) -> Optional[Counter]:
+        self.photos(name)
+        return self._first[name][1]
+
+    def refresh(self, name: str) -> None:
+        """The library was changed: read it again when it is next looked at."""
+        self._now[name] = self._read(name)
+
+
+def check_part(libs: Libraries, part: split_plan.Part, kind: str, year: int, source_data: Optional[pp.Photos], nearby: list, label: Optional[str] = None, strict: bool = False, blacklisted=None) -> tuple:
     """Says whether the library of a part holds only photos of its year and, with a source, all its photos of the part's
     dates; without one, that it holds some photos of the year. Lists what is outside the year and what is missing (see
     split_command, --check). Also lists what is of the other kind (a video in a photos library) and what is of neither.
     Returns (whether it is in order, the items to move to another library, the library's photos or None, the source's photos
     it lacks, the source's photos within a day of the library's dates that no library holds): the items to move are those
-    outside the year, and those of the other kind, which belong in the other kind's library. read_neighbor reads the libraries
-    either side (default: read_destination)."""
+    outside the year, and those of the other kind, which belong in the other kind's library. nearby names the libraries either
+    side (as they were when first read), which matter only when the source has photos within a day of the dates' ends."""
     label = label or part.name
-    if part.name not in libraries:
+    if part.name not in libs.libraries:
         typer.echo(f"{label}: library missing")
         return False, Counter(), None, Counter(), Counter()
-    own = read_library(libraries, part.name)
+    own = libs.photos(part.name)
     if own is None:
         typer.echo(f"{label}: cannot be read from its database")
         return False, Counter(), None, Counter(), Counter()
@@ -735,7 +803,7 @@ def check_part(libraries: dict, part: split_plan.Part, kind: str, year: int, sou
     if source_data is None:
         lacking = uncertain = Counter()
     else:
-        found = split_plan.missing_in_range(source_data.visible, part.start, part.end, kind, read_destination(part.name), [(read_neighbor or read_destination)(name) for name in nearby], strict)
+        found = split_plan.missing_in_range(source_data.visible, part.start, part.end, kind, libs.held(part.name), [libs.before_held(name) for name in nearby], strict)
         lacking, uncertain = found if found is not None else (Counter(), Counter())
     problems = []
     if source_data is None and not split_plan.count_in_range(held, date(year, 1, 1), date(year + 1, 1, 1), kind):
@@ -1073,8 +1141,7 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
     a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
     that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
     library is in order."""
-    cache: dict = {}
-    first_look: dict = {}
+    libs = Libraries(libraries)
     known = {} if ignore_blacklist or source is None else {
         (entry["library"], entry["uuid"]): entry for entry in blacklist_entries() if entry["kind"] == blacklist.UNCOPYABLE
     }
@@ -1084,18 +1151,6 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
         entry = known.get((source, (source_data.uuids.get(key) or [None])[0])) if source_data is not None else None
         return entry["recorded"][:10] if entry else None
 
-    def read_destination(name: str):
-        if name not in cache:
-            cache[name] = read_photos(libraries, name)
-        return cache[name]
-
-    def read_before(name: str):
-        """A library as it was when first looked at: what the libraries either side held before any of them was fixed, so that a
-        photo within a day of the year's ends, which none of them held, is copied into each library it could belong to."""
-        if name not in first_look:
-            first_look[name] = read_photos(libraries, name)
-        return first_look[name]
-
     def parts_of(kind: str, year: int) -> list:
         name = destination_name.format(media=kind, year=year)
         if source_data is not None:
@@ -1103,12 +1158,17 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
         found = [existing for existing in sorted(libraries) if existing == name or re.fullmatch(re.escape(name) + r"-\d+", existing)]
         return [split_plan.Part(existing, date(year, 1, 1), date(year + 1, 1, 1), 0) for existing in found]
 
-    if fix is not None:  # look at every library before any of them is fixed (see read_before)
-        for kind in kinds:
-            for year in range(first_year - 1, last_year + 2):
-                for existing in parts_of(kind, year):
-                    if existing.name in libraries:
-                        read_before(existing.name)
+    def neighbors(kind: str, year: int, part: split_plan.Part) -> list:
+        """The libraries beside a part, which matter only on an end the source has a photo within a day of."""
+        return adjacent_libraries(parts_of, kind, year, part, None if source_data is None else source_data.visible)
+
+    # Only the years asked for are read, and a library either side of one only when something near its ends needs it; all of
+    # them at once, before the first is looked at, so that what the neighbors held is what they held before any was fixed.
+    wanted = [
+        name for kind in kinds for year in range(first_year, last_year + 1) for part in parts_of(kind, year)
+        for name in [part.name, *neighbors(kind, year, part)]
+    ]
+    libs.preload(wanted)
     in_order, nothing = True, []
     for kind in kinds:
         for year in range(first_year, last_year + 1):
@@ -1119,15 +1179,15 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                 if part.name not in libraries and source_data is not None and not split_plan.count_in_range(source_data.visible, part.start, part.end, kind):
                     nothing.append(part.name)  # the source has no photo for it, so it is not needed
                     continue
-                nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
-                ok, outside, own, lacking, uncertain = check_part(libraries, part, kind, year, source_data, nearby, read_destination, strict=strict, read_neighbor=read_before, blacklisted=blacklisted_on)
+                nearby = neighbors(kind, year, part)
+                ok, outside, own, lacking, uncertain = check_part(libs, part, kind, year, source_data, nearby, strict=strict, blacklisted=blacklisted_on)
                 if fix is not None and own is not None:
                     to_copy = lacking + uncertain  # as split copies them: what is lacking, and what is near the ends and in no library
                     changed = copy_missing(libraries, fix["source"], part, kind, to_copy, source_data, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) if to_copy else False
                     changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) or changed
                     if changed:
-                        cache.pop(part.name, None)  # it has changed
-                        ok, _, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)", strict, read_before, blacklisted_on)
+                        libs.refresh(part.name)  # it has changed
+                        ok, _, _, _, _ = check_part(libs, part, kind, year, source_data, nearby, f"{part.name} (after the fix)", strict, blacklisted_on)
                 in_order = ok and in_order
     if nothing:
         typer.echo(f"No library, and none needed: {', '.join(sorted(set(nothing)))}")
@@ -1270,20 +1330,21 @@ def split_command(
                     plans[(kind, year)] = split_plan.plan_year(source_photos, year, kind, name, max_bytes)
                 return plans[(kind, year)]
 
-            cache = {}
+            libs = Libraries(libraries)
 
-            def read_destination(name: str):
-                if name not in cache:
-                    cache[name] = read_photos(libraries, name)
-                return cache[name]
-
-            def nearby_names(kind: str, year: int, own: str) -> list:
-                return [p.name for y in (year - 1, year, year + 1) for p in plan(kind, y) if p.name != own]
+            def nearby_names(kind: str, year: int, part: split_plan.Part) -> list:
+                """The libraries beside a part, which matter only on an end the source has a photo within a day of."""
+                return adjacent_libraries(plan, kind, year, part, source_photos)
 
             work = [part for kind in kinds for year in range(first_year, last_year + 1) for part in plan(kind, year)]
             absent = [part.name for part in work if part.name not in libraries]
             if absent and on_missing == OnMissing.stop and not dry:
                 fail(f"Not in PowerPhotos: {', '.join(absent)}. Create them there, or use --on-missing skip.")
+            if source_photos is not None:  # what each library holds is read once, all at the start, and only for the years asked for
+                libs.preload([
+                    name for kind in kinds for year in range(first_year, last_year + 1) for part in plan(kind, year)
+                    for name in [part.name, *nearby_names(kind, year, part)]
+                ])
             for kind in kinds:
                 if source_data is not None:
                     hidden_here = pp.of_media(source_data.hidden, kind)
@@ -1310,8 +1371,8 @@ def split_command(
                             continue
                         found = None
                         if source_photos is not None:
-                            near = [read_destination(name) for name in nearby_names(kind, year, part.name)]
-                            found = split_plan.missing_in_range(source_photos, part.start, part.end, kind, read_destination(part.name), near, strict)
+                            near = [libs.before_held(name) for name in nearby_names(kind, year, part)]
+                            found = split_plan.missing_in_range(source_photos, part.start, part.end, kind, libs.held(part.name), near, strict)
                             if found is not None and not found[0] and not found[1]:
                                 typer.echo(f"{label}: up to date{note}")
                                 continue

@@ -1862,3 +1862,63 @@ def test_check_without_fix_still_only_notes_a_photo_near_new_year(mac):
     add_photos(mac.libraries["photos-2018"], [A])
     result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
     assert result.exit_code == 0 and "1 of the source's within a day of its dates' ends are in no library" in result.output and mac.calls("copy-ids.applescript") == []
+
+
+def counting_reads(monkeypatch):
+    """The names of the libraries read, in order (the source included)."""
+    real = lc.read_library
+    names = []
+
+    def counted(libraries, name):
+        names.append(name)
+        return real(libraries, name)
+
+    monkeypatch.setattr(lc, "read_library", counted)
+    return names
+
+
+def test_a_check_reads_only_the_year_asked_for_when_nothing_is_near_its_ends(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A])
+    for name in ("photos-2017", "photos-2018", "photos-2019"):
+        if name not in mac.libraries:
+            mac.make(name, 19607)
+        add_photos(mac.libraries[name], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2018"]  # not 2017 or 2019: nothing is within a day of 2018's ends
+
+
+def test_a_library_either_side_is_read_only_for_the_end_a_photo_is_near(mac, monkeypatch):
+    for name in ("photos-2017", "photos-2018", "photos-2019"):
+        if name not in mac.libraries:
+            mac.make(name, 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])  # within a day of the start of 2018 (and the end of 2017)
+    add_photos(mac.libraries["photos-2017"], [NEW_YEAR])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert sorted(names) == ["Source", "photos-2017", "photos-2018"]  # the start's neighbor, not the end's
+
+
+def test_each_library_is_read_once_in_a_run_of_several_years_and_the_reads_are_announced(mac, monkeypatch):
+    for name in ("photos-2017",):
+        mac.make(name, 19607)
+    add_photos(mac.libraries["Source"], [A, ("2017-06-01 10:00:00", 50, "old.jpg")])
+    add_photos(mac.libraries["photos-2017"], [("2017-06-01 10:00:00", 50, "old.jpg")])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2017", "photos-2018"]  # once each
+    assert "Read 2 library databases" in result.output
+
+
+def test_a_fix_reads_a_library_again_only_after_it_was_changed(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = fix("--from", "Source")
+    assert result.exit_code == 0
+    # the source once; photos-2018 at the start, while waiting for the copy (until it arrived) and after it, not once for every look
+    assert names.count("Source") == 1 and names.count("photos-2018") <= 4
