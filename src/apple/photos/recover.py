@@ -42,14 +42,15 @@ def has_terminal() -> bool:
     return sys.stdin.isatty()
 
 
-def open_in_photos(target: Path) -> None:
+def open_in_photos(target: Path) -> bool:
     """Has Photos open target, which is what an import goes into (Photos imports into whichever library it has open): asks
-    Photos to open it when it does not, waits up to OPEN_WAIT_SECONDS for that, and stops if it still is not."""
+    Photos to open it when it does not, waits up to OPEN_WAIT_SECONDS for that, and stops if it still is not. True when it
+    had to ask."""
     def is_open() -> bool:
         return any(library_open.resolve() == target.resolve() for library_open in pp.libraries_open_in_photos())
 
     if is_open():
-        return
+        return False
     typer.echo(f"Opening {target} in Photos ...", err=True)
     pp.open_in_photos(target)
     deadline = time.monotonic() + OPEN_WAIT_SECONDS
@@ -59,6 +60,7 @@ def open_in_photos(target: Path) -> None:
             shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
             fail(f"Photos did not open {target} (open: {shown}). Open it in Photos yourself (hold Option while starting Photos to choose a library, or double-click it), then run this again.")
         time.sleep(1)
+    return True
 
 
 def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]]) -> list:
@@ -482,27 +484,32 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
     errors = len(denied)
     if hits and mode != Apply.no:
         require_macos()
-        open_in_photos(path)
-        go = True
-        if mode == Apply.ask:
-            if not has_terminal():
-                typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
-                go = False
-            else:
-                go = typer.confirm(f"Import {len(hits)} photos into the library Photos has open (it should be {target})?", default=False)
-        if go:
-            progress.line(f"Importing {len(hits)} photos into {target}; Photos shows no progress, so this can take a while ...")
-            try:
-                with pp.one_at_a_time():
-                    try:
-                        done = import_files(hits)
-                        imported += done
-                        already += max(len(hits) - done, 0)  # Photos had these: they were not missing after all
-                    except pp.PowerPhotosError as error:
-                        errors += len(hits)
-                        typer.echo(f"Photos failed to import: {error}", err=True)
-            except pp.Busy as error:
-                fail(str(error))
+        opened_here = open_in_photos(path)
+        try:
+            go = True
+            if mode == Apply.ask:
+                if not has_terminal():
+                    typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
+                    go = False
+                else:
+                    go = typer.confirm(f"Import {len(hits)} photos into the library Photos has open (it should be {target})?", default=False)
+            if go:
+                progress.line(f"Importing {len(hits)} photos into {target}; Photos shows no progress, so this can take a while ...")
+                try:
+                    with pp.one_at_a_time():
+                        try:
+                            done = import_files(hits)
+                            imported += done
+                            already += max(len(hits) - done, 0)  # Photos had these: they were not missing after all
+                        except pp.PowerPhotosError as error:
+                            errors += len(hits)
+                            typer.echo(f"Photos failed to import: {error}", err=True)
+                except pp.Busy as error:
+                    fail(str(error))
+        finally:
+            if opened_here:  # Photos was not showing this library until this command asked it to, so it is put away again
+                progress.line("Closing Photos ...")
+                pp.quit_photos()
     missing = len(rows) - already
     skipped = missing - imported - errors  # no original was found, or the answer was no
     typer.echo(

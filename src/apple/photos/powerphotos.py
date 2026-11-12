@@ -261,6 +261,14 @@ def open_in_photos(library: Path) -> None:
     subprocess.run(["open", "-a", "Photos", str(library)], check=False)
 
 
+def quit_photos() -> None:
+    """Asks Photos to quit; a Photos that is not running, or that will not, is left as it is."""
+    try:
+        run_applescript("quit-photos.applescript")
+    except PowerPhotosError:
+        pass
+
+
 @contextmanager
 def one_at_a_time() -> Iterator[None]:
     """Holds a lock for the whole operation; the system drops it if this process dies. Raises Busy if it is taken."""

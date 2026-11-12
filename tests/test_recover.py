@@ -1369,6 +1369,7 @@ def test_import_asks_photos_to_open_the_library_and_waits_for_it(mac, monkeypatc
     result = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
     assert asked == [mac.libraries["Source"]] and "Opening" in result.output
     assert result.exit_code == 0 and "Imported 2 of 2" in result.output
+    assert len(mac.calls("import-photos.applescript")) == 1 and mac.calls("quit-photos.applescript") == [[]]  # and closed again after
 
 
 def test_a_library_photos_already_has_open_is_not_opened_again(mac, monkeypatch, tmp_path):
@@ -1378,3 +1379,4 @@ def test_a_library_photos_already_has_open_is_not_opened_again(mac, monkeypatch,
     opened(monkeypatch, mac.libraries["Source"])
     import_found(found_list(tmp_path, "--folders", str(found_folder(tmp_path))), "--apply", "yes")
     assert asked == []
+    assert mac.calls("quit-photos.applescript") == []  # it was the user's to keep open
