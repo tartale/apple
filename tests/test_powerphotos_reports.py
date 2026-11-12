@@ -75,3 +75,22 @@ def test_a_report_that_cannot_be_read_is_none(tmp_path):
 def test_no_reports_folder_has_no_reports(tmp_path, monkeypatch):
     monkeypatch.setenv(reports.REPORTS_VARIABLE, str(tmp_path / "missing"))
     assert reports.snapshot() == set() and reports.find(set(), "x") is None
+
+
+def test_the_error_may_be_stored_as_text_as_it_is_in_a_real_report(tmp_path):
+    text = '{"code":10,"errorDescription":"The contents of the library could not be read.","recoverySuggestion":"Open it in Photos."}'
+    path = bundle(tmp_path, "r.ppreport", error=text)  # a str, so sqlite stores text and reads it back as str
+    assert reports.read(path).error == "The contents of the library could not be read. Open it in Photos."
+
+
+def test_a_report_in_an_unexpected_shape_is_none_and_never_an_exception(tmp_path):
+    path = bundle(tmp_path, "odd.ppreport", error=12345)  # an integer where an error should be
+    assert reports.read(path) is None or reports.read(path).error in (None, "12345", "an error")
+    path = tmp_path / "worse.ppreport"
+    path.mkdir()
+    connection = sqlite3.connect(path / "Assets.db")
+    connection.execute("create table reportMedatata (x)")
+    connection.execute("create table assets (x)")
+    connection.commit()
+    connection.close()
+    assert reports.read(path) is None  # the columns are not there

@@ -51,10 +51,11 @@ def find(before: Set[str], library: str) -> Optional[Path]:
 
 
 def error_text(blob) -> Optional[str]:
-    """The operation's error, a JSON object (BWCodableError) in the report: its description and what to do about it."""
+    """The operation's error, a JSON object (BWCodableError) in the report, stored as text or as bytes: its description and what
+    to do about it."""
     if not blob:
         return None
-    raw = bytes(blob).decode("utf-8", errors="replace")
+    raw = blob if isinstance(blob, str) else bytes(blob).decode("utf-8", errors="replace")
     try:
         found = json.loads(raw)
         parts = [found.get("errorDescription"), found.get("recoverySuggestion")]
@@ -95,6 +96,13 @@ def read(report: Path) -> Optional[Report]:
             connection.close()
     except sqlite3.Error:
         return None
+    try:
+        return _report(report, meta, rows)
+    except (TypeError, ValueError, AttributeError, KeyError):  # a report in a shape not expected is no report: it must never stop a copy
+        return None
+
+
+def _report(report: Path, meta, rows) -> Report:
     end, cancelled, error = meta if meta else (None, 0, None)
     failed = {}
     for uuid, result, description in rows:
