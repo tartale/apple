@@ -21,7 +21,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, folder_listing, within
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -348,13 +348,10 @@ def import_found_command(
         typer.Option(
             "--only-missing",
             help="With a folder, import only the files the destination lacks, judged from its database as `copy --only-missing` "
-            "judges a library: a photo of the same file name (case ignored, .jpeg is .jpg) within two hours and 1% of the size is there.",
+            "judges a library (see --diff-mode: by default a photo of the same file name, case ignored, within two hours and 1% of the size is there).",
         ),
     ] = False,
-    strict: Annotated[
-        bool,
-        typer.Option("--strict", help="With --only-missing, a photo is there only when its date, size and file name are exactly the file's."),
-    ] = False,
+    diff_mode: DiffModeOption = "",
     refresh: Annotated[
         bool,
         typer.Option("--refresh", help="With a folder, read it again instead of reusing what an earlier run saved (as `diff` and `find` do), and save the result."),
@@ -378,15 +375,14 @@ def import_found_command(
     is deleted, and nothing is changed with --dry-run (or DRY_RUN=true).
 
     With a folder, --only-missing limits the import to the files the DESTINATION lacks (a file within two hours and 1% of
-    the size of a photo of that name is not lacking; --strict wants it exact); without it every file is imported.
+    the size of a photo of that name is not lacking, as --diff-mode says); without it every file is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     folder = folder_photos.is_folder(source)
-    if not folder and (only_missing or strict or refresh):
-        raise typer.BadParameter("--only-missing, --strict and --refresh are for a folder: a list says what to import")
-    if strict and not only_missing:
-        raise typer.BadParameter("--strict says how --only-missing tells that the library has a photo")
+    if not folder and (only_missing or refresh):
+        raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")
+    match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():
         path = Path(destination).expanduser()
@@ -395,7 +391,7 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, strict, refresh)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format)
         return
     import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format)

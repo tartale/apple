@@ -1323,22 +1323,22 @@ def test_only_missing_judges_with_the_tolerances_and_strict_wants_exact(mac, tmp
     make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)
     loose = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 0" in loose.output
-    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--strict", "--dry-run"])
+    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--diff-mode", "exact", "--dry-run"])
     assert "Imported 0 of 1" in exact.output and "[dry run]" in exact.output
 
 
-def test_only_missing_and_strict_are_for_a_folder_and_strict_needs_only_missing(mac, tmp_path):
+def test_only_missing_and_refresh_are_for_a_folder_and_a_bad_diff_mode_is_a_usage_error(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
     listed = tmp_path / "x.csv"
     listed.write_text("date,name\n")
     for options, text in (
         ([str(listed), "Source", "--only-missing"], "are for a folder"),
-        ([str(listed), "Source", "--strict"], "are for a folder"),
-        ([str(folder), "Source", "--strict"], "--strict says"),
+        ([str(listed), "Source", "--refresh"], "are for a folder"),
+        ([str(folder), "Source", "--diff-mode", "date=near"], "date="),
     ):
         result = runner.invoke(app, ["photos", "import", *options])
-        assert result.exit_code != 0 and text in " ".join(result.output.replace("│", " ").split()), options
+        assert result.exit_code == 2 and text in " ".join(result.output.replace("│", " ").split()), options
 
 
 def test_import_asks_photos_to_open_the_library_and_waits_for_it(mac, monkeypatch, tmp_path):

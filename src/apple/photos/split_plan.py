@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
-from apple.photos import powerphotos as pp
+from apple.photos import matching, powerphotos as pp
 
 UNITS = {"": 1, "b": 1, "kb": 10**3, "mb": 10**6, "gb": 10**9, "tb": 10**12}
 
@@ -70,39 +70,6 @@ def count_in_range(counted: Counter, start: date, end: date, media: str) -> int:
     )
 
 
-TIME_TOLERANCE = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
-SIZE_TOLERANCE = 0.01  # and by a little in size, when the file's metadata was rewritten (a fraction of the size)
-
-
-def same_size(first: str, second: str) -> bool:
-    """Whether two sizes (as the databases give them) are the same file to within SIZE_TOLERANCE; a size that is not known
-    (not a number, or 0, as for a placeholder) does not tell them apart."""
-    if not (first.isdigit() and second.isdigit() and int(first) and int(second)):
-        return True
-    return abs(int(first) - int(second)) <= SIZE_TOLERANCE * max(int(first), int(second))
-
-
-def absent(wanted: Counter, held: Counter, strict: bool = False) -> Counter:
-    """The photos of wanted that held has none of, one for each. A photo is there when held has a photo with its file name
-    (without regard to case, and .jpeg is .jpg), a date within TIME_TOLERANCE of its own and a size within SIZE_TOLERANCE of
-    its own: a copy that was imported again, or whose metadata was rewritten, or that is filed under a shifted time, is
-    the same picture. A photo is missing when nothing like it is in the library, not when the library has fewer copies than
-    the source, and copies are not carried over. With strict, only a photo with its exact date, size and file name is there."""
-    if strict:
-        return Counter({key: 1 for key in wanted if not held[key]})
-    by_name: dict = {}
-    for key in held:
-        by_name.setdefault(pp.normalized_name(key[2]), []).append((datetime.fromisoformat(key[0]), key[1]))
-    missing = Counter()
-    for key in wanted:
-        if held[key]:
-            continue
-        when = datetime.fromisoformat(key[0])
-        if not any(abs(when - other) <= TIME_TOLERANCE and same_size(key[1], size) for other, size in by_name.get(pp.normalized_name(key[2]), [])):
-            missing[key] = 1
-    return missing
-
-
 def edge_ends(source_photos: Counter, start: date, end: date, media: str) -> Tuple[bool, bool]:
     """(whether the source has a photo of the media within a day of start, whether it has one within a day of end): only then
     does the library on that side matter to what a library lacks (see missing_in_range), and need to be read."""
@@ -115,7 +82,7 @@ def edge_ends(source_photos: Counter, start: date, end: date, media: str) -> Tup
 
 
 def missing_in_range(
-    source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]], strict: bool = False
+    source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]], match: matching.Mode = matching.TOLERANT
 ) -> Optional[Tuple[Counter, Counter]]:
     """What a library lacks of the source's photos from start up to end, judged from the databases.
 
@@ -140,7 +107,7 @@ def missing_in_range(
     around = own
     for other in nearby:
         around = around + (other or Counter())
-    return absent(core, own, strict), absent(edge, around, strict)
+    return matching.absent(core, own, match), matching.absent(edge, around, match)
 
 
 
