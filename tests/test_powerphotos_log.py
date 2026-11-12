@@ -56,3 +56,12 @@ def test_uncopyable_photos_are_remembered_per_library_and_forgotten(tmp_path, mo
     assert list(json.loads((tmp_path / "list.json").read_text())) == ["Default Library\tU1"]
     uncopyable.remove("Default Library", "U1")
     assert uncopyable.entries() == {}
+
+
+def test_a_url_with_no_file_name_in_it_names_no_photo_and_does_not_break_the_reading(tmp_path, monkeypatch):
+    cut_off = REAL_ENTRY.replace("IMG_1012.JPG", "").replace("FullSizeRender.jpeg\xc4@>P", "Adjustments.plist")
+    write_log(tmp_path, monkeypatch, cut_off)
+    [failure] = log.failures()  # the first URL ends in a folder, the second is a part of an edited photo
+    assert failure.names == () and failure.code == "3302"
+    write_log(tmp_path, monkeypatch, REAL_ENTRY.split("Got PhotoKit")[0] + 'Got PhotoKit error Error Domain=PHPhotosErrorDomain Code=1 "x" UserInfo={_PHResourceUrlsErrorKey=(\n    "file:///a/b/"\x01')
+    assert log.failures()[0].names == ()

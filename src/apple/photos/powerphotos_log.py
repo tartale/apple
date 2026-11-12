@@ -55,10 +55,12 @@ def failures() -> List[Failure]:
         control = re.search(r"[\x00-\x09\x0b-\x1f]", window)  # the binary framing after the entry's text
         window = window[:control.start()] if control else window
         urls = tuple(URL.findall(window))
-        names = tuple(
-            name for url in urls for name in [unquote(NAME.findall(url)[-1])] if NAME.findall(url) and Path(name).stem.lower() not in PARTS
-        )
-        found.append(Failure(match.group(2), match.group(3), names, urls))
+        names = []
+        for url in urls:
+            named = NAME.findall(url)  # a URL with no file name in it (cut off, or a folder) names no photo
+            if named and Path(unquote(named[-1])).stem.lower() not in PARTS:
+                names.append(unquote(named[-1]))
+        found.append(Failure(match.group(2), match.group(3), tuple(names), urls))
     return found
 
 
