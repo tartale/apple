@@ -16,7 +16,7 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
-from apple.photos import powerphotos_reports, split_plan, uncopyable
+from apple.photos import blacklist, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
 
 
@@ -68,12 +68,12 @@ TimeoutOption = Annotated[
         "the photos have arrived.",
     ),
 ]
-RetryUncopyableOption = Annotated[
+IgnoreBlacklistOption = Annotated[
     bool,
     typer.Option(
-        "--retry-uncopyable",
-        help="Try again the photos recorded as uncopyable (a copy of them failed with an error of its own in PowerPhotos' log), "
-        "which are otherwise left out of copies made by identifier; one that copies is forgotten.",
+        "--ignore-blacklist",
+        help="Try again the photos on the blacklist (a photo goes on it when a copy of it fails with an error of its own in "
+        "PowerPhotos' report), which are otherwise left out of copies made by identifier; one that copies is taken off it.",
     ),
 ]
 OnUpgradeOption = Annotated[
@@ -577,7 +577,7 @@ def copy_command(
     check_duplicates: CheckDuplicatesOption = False,
     strict: StrictOption = False,
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
-    retry_uncopyable: RetryUncopyableOption = False,
+    ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
 ) -> None:
     """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
@@ -635,13 +635,13 @@ def copy_command(
     try:
         with pp.one_at_a_time():
             libraries = known_libraries()
-            if ids is not None:  # copies by identifier leave out the photos recorded as uncopyable
+            if ids is not None:  # copies by identifier leave out the photos on the blacklist
                 known = read_library(libraries, source)
                 key_of = {} if known is None else {uuids[0]: key for key, uuids in known.uuids.items()}
-                kept = without_uncopyable(source, {listed: key_of[listed] for listed in ids if listed in key_of}, retry_uncopyable)
+                kept = without_blacklisted(source, {listed: key_of[listed] for listed in ids if listed in key_of}, ignore_blacklist)
                 ids = [listed for listed in ids if listed not in key_of or listed in kept]
                 if not ids:
-                    typer.echo(f"{destination}: no files copied (everything missing is left out as uncopyable)")
+                    typer.echo(f"{destination}: no files copied (everything missing is left out, blacklisted)")
                     return
             expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, names, ids, strict)
             before_log = powerphotos_reports.snapshot()
@@ -665,7 +665,7 @@ def copy_command(
                 listed = {name.lower() for name in result.unlisted}
                 expected = Counter({key: 1 for key in expected if key[2].lower() not in listed})  # PowerPhotos could not copy these
                 waited = wait_for_copy(libraries, destination, expected, strict, timeout, before_log, uuid_of)
-                settle_copy(destination, source, expected, waited, uuid_of, strict, retry_uncopyable)
+                settle_copy(destination, source, expected, waited, uuid_of, strict, ignore_blacklist)
     except pp.Busy as error:
         fail(str(error))
     except CopyFailed:
@@ -811,23 +811,30 @@ def wait_for_library(libraries: dict, library: str, done, what: str, timeout: fl
         time.sleep(POLL_SECONDS)
 
 
-def without_uncopyable(source: str, key_of: dict, retry: bool) -> dict:
-    """key_of (a photo's Photos identifier -> its key) without the photos recorded as uncopyable from source, which are said,
-    unless retry."""
-    if retry:
+def blacklist_entries() -> list:
+    try:
+        return blacklist.entries()
+    except blacklist.BlacklistError as error:
+        fail(str(error))
+
+
+def without_blacklisted(source: str, key_of: dict, ignore: bool) -> dict:
+    """key_of (a photo's Photos identifier -> its key) without the photos on the blacklist for copies from source, which are
+    said, unless ignore (--ignore-blacklist)."""
+    if ignore:
         return key_of
-    known = uncopyable.entries()
+    known = {(entry["library"], entry["uuid"]): entry for entry in blacklist_entries() if entry["kind"] == blacklist.UNCOPYABLE}
     kept, skipped = {}, []
     for uuid, key in key_of.items():
-        entry = known.get(uncopyable.key(source, uuid))
+        entry = known.get((source, uuid))
         if entry:
             skipped.append((key, entry))
         else:
             kept[uuid] = key
     if skipped:
-        typer.echo(f"    {count(len(skipped), 'photo')} left out, recorded as uncopyable (--retry-uncopyable tries them again):")
-        for key, entry in sorted(skipped):
-            typer.echo(f"      {key[0]} {key[2]} ({entry['reason']}; recorded {entry['recorded'][:10]})")
+        typer.echo(f"    {count(len(skipped), 'photo')} left out, blacklisted (--ignore-blacklist tries them again):")
+        for key, entry in sorted(skipped, key=lambda item: item[0]):
+            typer.echo(f"      {key[0]} {key[2]} ({entry['kind']}: {entry['reason']}; recorded {entry['recorded'][:10]})")
     return kept
 
 
@@ -869,9 +876,9 @@ def wait_for_copy(libraries: dict, library: str, expected: Counter, strict: bool
     return Waited(held, seen["failed"], seen["error"])
 
 
-def settle_copy(library: str, source: str, expected: Counter, waited: Waited, uuids: dict, strict: bool, retry: bool) -> None:
+def settle_copy(library: str, source: str, expected: Counter, waited: Waited, uuids: dict, strict: bool, ignore: bool) -> None:
     """After a copy was waited for (wait_for_copy): says what stopped it if PowerPhotos reports an error for the operation
-    and stops; otherwise says which photos PowerPhotos reports a failure for and records them as uncopyable (they will be
+    and stops; otherwise says which photos PowerPhotos reports a failure for and blacklists them as uncopyable (they will be
     left out of later copies), forgets a retried photo that copied, and, if photos that were not reported failed did not
     arrive either, says so and stops (report_copy_outcome)."""
     if waited.error:
@@ -883,14 +890,20 @@ def settle_copy(library: str, source: str, expected: Counter, waited: Waited, uu
         reason = why if len(why) <= 300 else why[:297] + "..."
         typer.echo(
             f"    PowerPhotos could not copy {key[0]} {key[2]} ({reason})"
-            + ("; it is left out from now on (--retry-uncopyable tries it again)" if uuid else "")
+            + ("; it is blacklisted and left out from now on (--ignore-blacklist tries it again)" if uuid else "")
         )
         if uuid:
-            uncopyable.add(source, uuid, key[2], key[0], reason)
-    if retry:
+            try:
+                blacklist.add(blacklist.UNCOPYABLE, source, uuid, key[2], key[0], reason)
+            except blacklist.BlacklistError as error:
+                fail(str(error))
+    if ignore:
         for key in expected:
             if key not in absent and uuids.get(key):
-                uncopyable.remove(source, uuids[key])
+                try:
+                    blacklist.remove(blacklist.UNCOPYABLE, source, uuids[key])
+                except blacklist.BlacklistError as error:
+                    fail(str(error))
     report_copy_outcome(library, len(expected) - len(waited.failed), len(expected) - len(absent))
 
 
@@ -939,7 +952,7 @@ def report_copy_outcome(library: str, requested: int, arrived: int) -> None:
     raise CopyFailed(library)
 
 
-def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, retry: bool = False) -> bool:
+def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str, lacking: Counter, source_data: pp.Photos, on_upgrade: OnUpgrade, dry: bool, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False) -> bool:
     """--fix with a source: copies the source's photos of the library's dates that it lacks into it (without PowerPhotos'
     duplicate check, since the databases say what it lacks), named by their Photos identifiers, and waits for them to
     arrive. Photos with no stored original are left out and said, and so are items PowerPhotos lists no photo for (hidden);
@@ -954,7 +967,7 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
         else:
             typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
     report_missing(no_original, source)
-    key_of = without_uncopyable(source, key_of, retry)
+    key_of = without_blacklisted(source, key_of, ignore_blacklist)
     if not key_of:
         return False
     if dry:
@@ -970,11 +983,11 @@ def copy_missing(libraries: dict, source: str, part: split_plan.Part, kind: str,
     uuid_by_key = {key: uuid for uuid, key in key_of.items()}
     waited = wait_for_copy(libraries, part.name, wanted, strict, timeout, before, uuid_by_key)
     typer.echo(f"    {part.name}: asked PowerPhotos to copy {count(len(key_of), 'item')} from {source}")
-    settle_copy(part.name, source, wanted, waited, uuid_by_key, strict, retry)
+    settle_copy(part.name, source, wanted, waited, uuid_by_key, strict, ignore_blacklist)
     return True
 
 
-def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, retry: bool = False) -> bool:
+def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Counter, own: pp.Photos, parts_of, on_upgrade: OnUpgrade, dry: bool, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False) -> bool:
     """--fix: moves the items outside the year of a library into the library of their own year. The right library ends with
     one copy of each (a photo it lacks, judged as the check judges it, so a copy that differs by an hour or a little in size
     is there, is copied once, from its Photos identifier, without PowerPhotos' duplicate check; copies of a photo are not
@@ -1019,7 +1032,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
         copyable = [key for key in lacking if key not in stuck]
         for key in stuck:
             typer.echo(f"      not copied to {target}, so it stays in {part.name}: {key[0]} {key[2]} (its original is not stored in {part.name})")
-        copyable = list(without_uncopyable(part.name, {identifiers[key][0]: key for key in copyable}, retry).values())  # one copy each: duplicates are not carried over
+        copyable = list(without_blacklisted(part.name, {identifiers[key][0]: key for key in copyable}, ignore_blacklist).values())  # one copy each: duplicates are not carried over
         to_copy = [identifiers[key][0] for key in copyable]
         before_log = powerphotos_reports.snapshot()
         if to_copy:
@@ -1039,7 +1052,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
             if key not in confirmed:
                 typer.echo(f"      NOT confirmed in {target}, so it stays in {part.name}: {key[0]} {key[2]}")
         if copyable:
-            settle_copy(target, part.name, arriving, waited, uuid_by_key, strict, retry)
+            settle_copy(target, part.name, arriving, waited, uuid_by_key, strict, ignore_blacklist)
         confirmed_everywhere += [(key, identifiers[key]) for key in confirmed]
     if not confirmed_everywhere:
         return False
@@ -1054,7 +1067,7 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     return deleted > 0
 
 
-def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, retry: bool = False) -> bool:
+def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, strict: bool = False, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False) -> bool:
     """--check: for each year and kind, the libraries photos would be split into (those the source's photos need, or without
     a source those that exist: the name, or name-1, name-2 ...), each checked by check_part. A year with no library
     that needs none (the source has nothing in it) or, without a source, has none, is named at the end. True when every
@@ -1086,8 +1099,8 @@ def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, d
                 nearby = [p.name for y in (year - 1, year, year + 1) for p in parts_of(kind, y) if p.name != part.name]
                 ok, outside, own, lacking = check_part(libraries, part, kind, year, source_data, nearby, read_destination, strict=strict)
                 if fix is not None and own is not None:
-                    changed = copy_missing(libraries, fix["source"], part, kind, lacking, source_data, fix["on_upgrade"], fix["dry"], strict, timeout, retry) if lacking else False
-                    changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"], strict, timeout, retry) or changed
+                    changed = copy_missing(libraries, fix["source"], part, kind, lacking, source_data, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) if lacking else False
+                    changed = bool(outside) and fix_strays(libraries, part, kind, outside, own, parts_of, fix["on_upgrade"], fix["dry"], strict, timeout, ignore_blacklist) or changed
                     if changed:
                         cache.pop(part.name, None)  # it has changed
                         ok, _, _, _ = check_part(libraries, part, kind, year, source_data, nearby, read_destination, f"{part.name} (after the fix)", strict)
@@ -1122,7 +1135,7 @@ def split_command(
     check_duplicates: CheckDuplicatesOption = False,
     strict: StrictOption = False,
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
-    retry_uncopyable: RetryUncopyableOption = False,
+    ignore_blacklist: IgnoreBlacklistOption = False,
     on_missing: Annotated[
         OnMissing,
         typer.Option(help="When a destination library is not in PowerPhotos: stop before copying anything, or skip it and go on."),
@@ -1212,7 +1225,7 @@ def split_command(
                 if source and source_data is None:
                     fail(f"The photos of {source} cannot be read from its database, so what is missing cannot be worked out.")
                 in_order = check_years(libraries, kinds, first_year, last_year, destination_name, source_data, max_bytes,
-                                       {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict, timeout, retry_uncopyable)
+                                       {"on_upgrade": on_upgrade, "dry": dry, "source": source} if fix else None, strict, timeout, ignore_blacklist)
                 if not in_order:
                     raise typer.Exit(1)
                 return
@@ -1300,7 +1313,7 @@ def split_command(
                                     keys_of[ids[-1]] = key
                                 else:
                                     typer.echo(f"    not copied: {key[0]} {key[2]} (the database of {source} gives it no identifier)")
-                            keys_of = without_uncopyable(source, keys_of, retry_uncopyable)
+                            keys_of = without_blacklisted(source, keys_of, ignore_blacklist)
                             ids = [listed for listed in ids if listed in keys_of]
                             if not ids:
                                 typer.echo(f"{label}: nothing to copy{note}")
@@ -1322,7 +1335,7 @@ def split_command(
                         report_unlisted(result.unlisted, source)
                         if expected and result.sent is not None:
                             waited = wait_for_copy(libraries, part.name, expected, strict, timeout, before_log, uuid_of)
-                            settle_copy(part.name, source, expected, waited, uuid_of, strict, retry_uncopyable)
+                            settle_copy(part.name, source, expected, waited, uuid_of, strict, ignore_blacklist)
     except pp.Busy as error:
         fail(str(error))
     except CopyFailed as stopped:

@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, NamedTuple, Optional, Set
 
-REPORTS_VARIABLE = "APPLE_PHOTOS_POWERPHOTOS_REPORTS"
+REPORTS_VARIABLE = "APPLE_PHOTOS_POWERPHOTOS_REPORTS_DIR"
 DEFAULT_REPORTS = "~/Library/Application Support/com.fatcatsoftware.PowerPhotos/Reports"
 
 SKIPPED = 2  # IPAssetResult: not processed (its resources are missing or it is unsupported)

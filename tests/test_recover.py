@@ -104,7 +104,7 @@ def opened(monkeypatch, *libraries):
 @pytest.fixture(autouse=True)
 def private_cache(tmp_path, monkeypatch):
     """The cache of indexed places goes to a folder of the test's own, never to the real one."""
-    monkeypatch.setattr(cache_module, "CACHE_ROOT", tmp_path / "recover-cache")
+    monkeypatch.setenv(cache_module.FILE_VARIABLE, str(tmp_path / "recover-cache" / "cache.sqlite"))
 
 
 @pytest.fixture(autouse=True)

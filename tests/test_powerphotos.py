@@ -1067,9 +1067,9 @@ def test_split_needs_from_unless_it_only_checks(mac):
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch, tmp_path):
     """--fix looks at a library being copied into every few seconds: do not really wait. PowerPhotos' reports and the list of
-    uncopyable photos are the test's own, never the real ones."""
-    monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_REPORTS", str(tmp_path / "Reports"))
-    monkeypatch.setenv("APPLE_PHOTOS_UNCOPYABLE", str(tmp_path / "uncopyable.json"))
+    the blacklist are the test's own, never the real ones."""
+    monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_REPORTS_DIR", str(tmp_path / "Reports"))
+    monkeypatch.setenv("APPLE_PHOTOS_BLACKLIST_FILE", str(tmp_path / "blacklist.json"))
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
     monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
 
@@ -1099,7 +1099,7 @@ def trashing_updates_the_database(monkeypatch, mac):
 def write_report(destination, results=None, error=None, finished=True, operation_log=None):
     """The report PowerPhotos writes for a copy (a .ppreport bundle with Assets.db, as its AGENTS.md documents).
     results: {photo identifier: (IPAssetResult, description)}; error: the operation's error as JSON text."""
-    reports = Path(os.environ["APPLE_PHOTOS_POWERPHOTOS_REPORTS"])
+    reports = Path(os.environ["APPLE_PHOTOS_POWERPHOTOS_REPORTS_DIR"])
     bundle = reports / f"2026-11-12-{len(list(reports.glob('*.ppreport')) if reports.exists() else []):06d} Copy {len(results or {})} photos to library \u201c{destination}\u201d.ppreport"
     bundle.mkdir(parents=True)
     connection = sqlite3.connect(bundle / "Assets.db")
@@ -1112,6 +1112,11 @@ def write_report(destination, results=None, error=None, finished=True, operation
     connection.close()
     if operation_log is not None:
         (bundle / "operation.log").write_text(operation_log, encoding="utf-8")
+
+
+def blacklisted():
+    """The entries of the blacklist file the test run wrote."""
+    return json.loads(Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).read_text())["entries"]
 
 
 IMPORT_FAILED = 'Photos failed to import the photo \u201c{name}\u201d: uuid {uuid}/L0/001 (Error Domain=PHPhotosErrorDomain Code=3302 "Invalid resource (Invalid resource (code 3302))")'
@@ -1675,10 +1680,10 @@ def test_a_photo_powerphotos_reports_a_failed_import_for_is_recorded_as_uncopyab
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg (Photos failed to import the photo \u201cd.jpg\u201d: uuid UUID3/L0/001" in result.output and "Code=3302" in result.output
-    assert "it is left out from now on" in result.output and "Stopped:" not in result.output  # a logged failure of one photo does not stop the run
+    assert "it is blacklisted and left out from now on" in result.output and "Stopped:" not in result.output  # a logged failure of one photo does not stop the run
     assert "none of the" not in result.output and "did not arrive" not in result.output
-    recorded = json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())
-    assert [(entry["name"], entry["date"]) for entry in recorded.values()] == [("d.jpg", "2018-03-04 09:00:00")] and list(recorded) == ["Source\tUUID3"]
+    recorded = blacklisted()
+    assert [(entry["library"], entry["uuid"], entry["name"], entry["date"], entry["kind"]) for entry in recorded] == [("Source", "UUID3", "d.jpg", "2018-03-04 09:00:00", "uncopyable")]
     assert "(after the fix): 1 missing" in result.output and result.exit_code == 1  # it is still missing, but nothing is left to try
 
 
@@ -1690,18 +1695,19 @@ def test_an_uncopyable_photo_is_left_out_of_later_copies_and_listed(mac, monkeyp
     before = len(mac.calls("copy-ids.applescript"))
     again = fix("--from", "Source")
     assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
-    assert "1 photo left out, recorded as uncopyable (--retry-uncopyable tries them again)" in again.output
-    assert "2018-03-04 09:00:00 d.jpg (Photos failed to import the photo" in again.output and "; recorded " in again.output and "Stopped:" not in again.output
+    assert "1 photo left out, blacklisted (--ignore-blacklist tries them again)" in again.output
+    assert "2018-03-04 09:00:00 d.jpg (uncopyable: Photos failed to import the photo" in again.output and "; recorded " in again.output and "Stopped:" not in again.output
 
 
-def test_retry_uncopyable_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
+def test_ignore_blacklist_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A, B])
-    Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).write_text(json.dumps({"Source\tUUID3": {"name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "PhotoKit error 3302: Invalid resource", "recorded": "2026-11-12T10:00:00"}}))
+    Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).write_text(json.dumps({"version": 1, "entries": [
+        {"kind": "uncopyable", "library": "Source", "uuid": "UUID3", "name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "Photos failed to import it", "recorded": "2026-11-12T10:00:00"}]}))
     copying_updates_the_database(monkeypatch, mac)  # this time it copies
-    result = fix("--from", "Source", "--retry-uncopyable")
+    result = fix("--from", "Source", "--ignore-blacklist")
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3"], "false"]] and "left out, recorded" not in result.output
-    assert json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text()) == {} and result.exit_code == 0
+    assert blacklisted() == [] and result.exit_code == 0
 
 
 def test_photos_that_do_not_arrive_with_no_logged_failure_still_stop_the_run(mac, monkeypatch):
@@ -1710,7 +1716,7 @@ def test_photos_that_do_not_arrive_with_no_logged_failure_still_stop_the_run(mac
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
     assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
-    assert not Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).exists()  # nothing is recorded without evidence
+    assert not Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).exists()  # nothing is recorded without evidence
 
 
 def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkeypatch):
@@ -1721,7 +1727,7 @@ def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkey
     first = runner.invoke(app, options)
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
     second = runner.invoke(app, options)
-    assert "no files copied (everything missing is left out as uncopyable)" in second.output and "d.jpg (Photos failed to import the photo" in second.output
+    assert "no files copied (everything missing is left out, blacklisted)" in second.output and "d.jpg (uncopyable: Photos failed to import the photo" in second.output
     assert len(mac.calls("copy-ids.applescript")) == 1
 
 
@@ -1732,7 +1738,7 @@ def test_the_default_split_records_and_skips_an_uncopyable_photo(mac, monkeypatc
     first = split()
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and "Stopped:" not in first.output
     again = split()
-    assert "recorded as uncopyable" in again.output and len(mac.calls("copy-ids.applescript")) == 1
+    assert "blacklisted (--ignore-blacklist tries them again)" in again.output and len(mac.calls("copy-ids.applescript")) == 1
 
 
 def test_a_stray_that_failed_to_copy_stays_where_it_is_and_is_recorded(mac, monkeypatch):
@@ -1743,7 +1749,7 @@ def test_a_stray_that_failed_to_copy_stays_where_it_is_and_is_recorded(mac, monk
     add_photos(mac.libraries["photos-2017"], [])
     result = fix()
     assert "PowerPhotos could not copy 2017-06-01 10:00:00 old.jpg" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018" in result.output
-    assert mac.calls("trash-ids.applescript") == [] and list(json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())) == ["photos-2018\tUUID2"]
+    assert mac.calls("trash-ids.applescript") == [] and [(entry["library"], entry["uuid"]) for entry in blacklisted()] == [("photos-2018", "UUID2")]
     assert "Stopped:" not in result.output
 
 
@@ -1757,7 +1763,7 @@ def test_an_error_that_ended_the_whole_copy_is_shown_and_stops_the_run_at_once(m
     result = fix("--from", "Source")
     assert "PowerPhotos could not copy into photos-2018: The contents of the library \u201cphotos-2018\u201d could not be read. Please try opening this library in Photos" in result.output
     assert "Stopped: the copy into photos-2018 did not complete" in result.output and result.exit_code == 1
-    assert waits == [] and not Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).exists()  # no waiting for a copy that has ended, and nothing recorded
+    assert waits == [] and not Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).exists()  # no waiting for a copy that has ended, and nothing recorded
 
 
 def test_an_error_shown_in_the_operation_log_ends_the_copy_too(mac, monkeypatch):
@@ -1789,8 +1795,8 @@ def test_a_failed_photo_is_matched_by_its_photos_identifier_and_not_by_its_file_
     add_photos(mac.libraries["Source"], [A, ("2018-03-02 11:00:00", 100, "twin.jpg"), ("2018-03-04 09:00:00", 100, "twin.jpg")])
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
-    recorded = json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())
-    assert list(recorded) == ["Source\tUUID2"] and recorded["Source\tUUID2"]["date"] == "2018-03-02 11:00:00" and "Stopped:" not in result.output
+    recorded = blacklisted()
+    assert [(entry["uuid"], entry["date"]) for entry in recorded] == [("UUID2", "2018-03-02 11:00:00")] and "Stopped:" not in result.output
 
 
 def test_without_a_report_a_copy_that_arrived_is_fine(mac, monkeypatch):

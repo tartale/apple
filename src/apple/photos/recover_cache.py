@@ -14,8 +14,13 @@ import zlib
 from pathlib import Path
 from typing import Any, Optional
 
-CACHE_ROOT = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "apple" / "recover"
+FILE_VARIABLE = "APPLE_PHOTOS_CACHE_FILE"
 VERSION = 1  # raise it when what is indexed, or how, changes: an older entry is then never used
+
+
+def cache_file() -> Path:
+    """Where the cache is: ~/.cache/apple/photos/cache.sqlite, or the file APPLE_PHOTOS_CACHE_FILE names."""
+    return Path(os.environ.get(FILE_VARIABLE) or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "apple" / "photos" / "cache.sqlite").expanduser()
 
 
 def fingerprint(*parts: Any) -> str:
@@ -27,7 +32,7 @@ class Cache:
     """get and put by key. A cache that cannot be opened or read behaves as an empty one: it is only ever an optimisation."""
 
     def __init__(self, path: Optional[Path] = None, read: bool = True):
-        self.path = path or CACHE_ROOT / "index.sqlite"
+        self.path = path or cache_file()
         self.read = read  # False: entries are not used, but new ones are saved (a refresh)
         self._db: Optional[sqlite3.Connection] = None
 
