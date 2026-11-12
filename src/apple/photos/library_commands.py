@@ -101,14 +101,23 @@ def known_libraries() -> dict:
 
 def need(libraries: dict, name: str) -> Path:
     if name not in libraries:
-        fail(f"No library named {name} in PowerPhotos. Libraries: {', '.join(sorted(libraries))}")
+        fail(f"No library named {name} in PowerPhotos (`./apple photos libraries` lists them).")
     return libraries[name]
 
 
+def looks_like_a_path(text: str) -> bool:
+    """Whether text is written as a path (it has a / in it, or starts with ~ or .) and so cannot be a library's name."""
+    return "/" in text or text.startswith(("~", "."))
+
+
 def find_library(name_or_path: str) -> Path:
-    """A library given as the path of a .photoslibrary, or by its name in PowerPhotos (macOS only)."""
-    if Path(name_or_path).is_dir():
-        return Path(name_or_path)
+    """A library given as the path of a .photoslibrary, or by its name in PowerPhotos (macOS only). Something written as a
+    path that does not exist is an error, not a name to look up."""
+    path = Path(name_or_path).expanduser()
+    if path.is_dir():
+        return path
+    if looks_like_a_path(name_or_path):
+        fail(f"{name_or_path} does not exist.")
     require_macos()
     return need(known_libraries(), name_or_path)
 

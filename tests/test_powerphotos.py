@@ -108,10 +108,11 @@ def test_copy_with_no_range_passes_dashes_and_all(mac):
     assert mac.calls("copy-photos.applescript") == [["Source", "photos-2018", "-", "-", "all"]]
 
 
-def test_an_unknown_library_lists_the_known_ones(mac):
+def test_an_unknown_library_is_named_and_the_known_ones_are_not_listed(mac):
     result = runner.invoke(app, ["photos", "copy", "--from", "Nope", "--to", "photos-2018"])
     assert result.exit_code == 1
-    assert "No library named Nope" in result.output and "photos-2019" in result.output
+    assert "No library named Nope in PowerPhotos" in result.output and "photos-2019" not in result.output and "photos-2018" not in result.output.split("Nope")[1]
+    assert "./apple photos libraries" in result.output  # where to see them
     assert mac.calls("copy-photos.applescript") == []
 
 
@@ -2004,3 +2005,19 @@ def test_a_changed_folder_is_listed_again_and_a_cached_size_is_used_for_the_file
     touch(folder / "b.jpg", B[0], size=100)  # a new file changes the directory's time: it is listed again
     again = runner.invoke(app, options)
     assert again.exit_code == 0 and shown(again) == []
+
+
+def test_a_target_written_as_a_path_that_does_not_exist_is_not_looked_up_as_a_library_name(mac, monkeypatch, tmp_path):
+    looked_up = []
+    real = lc.need
+    monkeypatch.setattr(lc, "need", lambda libraries, name: looked_up.append(name) or real(libraries, name))
+    for missing in (str(tmp_path / "gone.photoslibrary"), "./missing", "~/no-such-folder", "sub/dir", "../elsewhere"):
+        for sides in ((missing, "Source"), ("Source", missing)):
+            result = runner.invoke(app, ["photos", "diff", *sides])
+            assert result.exit_code == 1 and f"{missing} does not exist." in result.output, (missing, sides)
+            assert "No library named" not in result.output and missing not in looked_up  # only "Source" was ever looked up
+
+
+def test_a_plain_name_that_is_not_a_library_is_still_an_unknown_library(mac):
+    result = runner.invoke(app, ["photos", "diff", "Nope", "Source"])
+    assert result.exit_code == 1 and "No library named Nope in PowerPhotos" in result.output and "does not exist" not in result.output
