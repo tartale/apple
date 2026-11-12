@@ -1297,3 +1297,31 @@ def test_what_a_library_lacks_of_a_folder_is_imported_from_the_diff_of_the_two(m
     result = import_found(listing, "--library", "photos-2018", "--apply", "yes")
     assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
+
+
+def test_copy_only_missing_from_a_folder_imports_the_files_the_library_lacks(mac, monkeypatch, tmp_path):
+    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
+    folder = tmp_path / "backup"
+    make_file(folder / "one.heic")
+    make_file(folder / "sub" / "two.heic", LATER)
+    make_file(folder / "a.jpg", "2018-03-01 10:00:00")  # the library has this one
+    opened(monkeypatch, mac.libraries["Source"])
+    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source", "--only-missing"])
+    assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
+    assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
+    assert mac.calls("copy-ids.applescript") == []
+
+
+def test_copy_from_a_folder_with_nothing_missing_imports_nothing(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
+    folder = tmp_path / "backup"
+    make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)  # within the size tolerance
+    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source", "--only-missing"])
+    assert result.exit_code == 0 and "nothing in" in result.output and mac.calls("import-photos.applescript") == []
+
+
+def test_a_folder_is_a_source_only_for_only_missing(mac, tmp_path):
+    folder = tmp_path / "backup"
+    make_file(folder / "a.jpg")
+    result = runner.invoke(app, ["photos", "copy", "--from", str(folder), "--to", "Source"])
+    assert result.exit_code != 0 and "only with --only-missing" in result.output

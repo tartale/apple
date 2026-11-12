@@ -38,7 +38,7 @@ class OnUpgrade(str, Enum):
     stop = "stop"
 
 
-SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`.")]
+SourceOption = Annotated[str, typer.Option("--from", help="Source library, as named by `./apple photos libraries`; with --only-missing also a folder of photo and video files, whose files the destination lacks are imported into it (Photos must have the destination open).")]
 CheckDuplicatesOption = Annotated[
     bool,
     typer.Option(
@@ -591,6 +591,31 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
+def import_missing_from_folder(folder: str, destination: str, since: Optional[datetime], until: Optional[datetime], media: Media, strict: bool) -> None:
+    """Import into destination the photos of a folder of files that it lacks, judged as `copy --only-missing` judges a library
+    (`strict` or within the tolerances), one file for each. They go in through Photos' own import, which needs Photos to have
+    the destination open."""
+    from apple.photos import recover  # recover imports this module
+    try:
+        path = find_library(destination)
+        data = [folder_photos.folder_photos(Path(folder)), pp.library_photos(path)]
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+    selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
+    absent = split_plan.absent(selected[0], selected[1], strict)
+    rows = diff_rows(absent, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
+                     {"left": data[0], "right": data[1]}, False, {"left": True, "right": False})
+    listed = [
+        {"name": row["name"], "date": row["date"], "hidden": False, "shared": False, "identifier": "", "source": "folder",
+         "root": folder, "library": "", "files": row["files"]}
+        for row in rows
+    ]
+    if not listed:
+        typer.echo(f"{destination}: no files copied (nothing in {folder} is missing from it)")
+        return
+    recover.import_listed(listed, folder, destination, path, recover.Apply.yes, [], since, until, media, DiffFormat.text)
+
+
 def copy_command(
     source: SourceOption,
     destination: Annotated[str, typer.Option("--to", help="Destination library; it must already exist in PowerPhotos.")],
@@ -631,6 +656,13 @@ def copy_command(
         raise typer.BadParameter("--strict is for --only-missing: it says how the photos the destination lacks are told")
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
+    if folder_photos.is_folder(source):
+        if not only_missing:
+            raise typer.BadParameter("a folder can be the source only with --only-missing: its files are imported into the destination, not copied by PowerPhotos")
+        if check_duplicates:
+            raise typer.BadParameter("--check-duplicates is PowerPhotos' comparison, which a folder's files do not go through")
+        import_missing_from_folder(source, destination, since, until, media, strict)
+        return
     names, hidden, no_original = None, {}, {}
     ids = None
     if only_missing:

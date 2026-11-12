@@ -379,18 +379,23 @@ def import_found_command(
         path = find_library(target)
     else:
         path = Path("/nonexistent/default.photoslibrary")
-    mapping = parse_map(map_paths)
+    import_listed(load_list(list_file), list_file, target, path, mode, parse_map(map_paths), since, until, media, format)
+
+
+def import_listed(listed: List[dict], list_name: str, target: Optional[str], path: Path, mode: Apply, mapping: List[tuple],
+                  since: Optional[datetime], until: Optional[datetime], media: Media, format: DiffFormat) -> None:
+    """Import the originals the listed rows (from read_list) say where to find, as import does, into the library target (at
+    path) when mode says so: what `import` and `copy --only-missing` from a folder share. list_name is what the rows came from."""
     progress = Progress()
     rows, hits, unreachable, denied = [], [], {}, []
-    listed = load_list(list_file)
     if listed and not any(entry["files"] for entry in listed):
         if not any(entry["source"] for entry in listed):  # no source column: nobody has looked for these originals
             raise typer.BadParameter(
-                f"{list_file} lists photos but not where their originals are (it has no source and files columns), as the output of `apple photos "
-                f"missing`, or of `diff` between two libraries, does: search for them first, `apple photos find {list_file} --folders PATH --format csv > found.csv`, "
+                f"{list_name} lists photos but not where their originals are (it has no source and files columns), as the output of `apple photos "
+                f"missing`, or of `diff` between two libraries, does: search for them first, `apple photos find {list_name} --folders PATH --format csv > found.csv`, "
                 "and import found.csv; or `diff LIBRARY FOLDER --only right --format csv`, which lists a folder's files with their paths, can be imported as it is"
             )
-        typer.echo(f"None of the {count(len(listed), 'photo')} in {list_file} has an original that was found, so there is nothing to import: run `apple photos find` again with other places to search.", err=True)
+        typer.echo(f"None of the {count(len(listed), 'photo')} in {list_name} has an original that was found, so there is nothing to import: run `apple photos find` again with other places to search.", err=True)
         return
     for entry in listed:
         key = (entry["date"], "0", entry["name"])
