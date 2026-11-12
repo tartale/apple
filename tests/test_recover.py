@@ -108,6 +108,11 @@ def private_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def photos_does_not_wait(monkeypatch):
+    monkeypatch.setattr(recover_module, "OPEN_WAIT_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
     for name in ("APPLE_PHOTOS_RECOVER_SEARCH", "APPLE_PHOTOS_RECOVER_MAPPINGS", "APPLE_PHOTOS_DEFAULT_LIBRARY", "DRY_RUN"):
         monkeypatch.delenv(name, raising=False)
@@ -673,10 +678,10 @@ def test_apply_refuses_unless_photos_has_the_default_library_open(mac, monkeypat
     folder = found_folder(tmp_path)
     monkeypatch.setenv("FAKE_LSOF", "")
     stopped = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
-    assert stopped.exit_code == 1 and "Photos does not have" in stopped.output and "Photos is not running" in stopped.output
+    assert stopped.exit_code == 1 and "Photos did not open" in stopped.output and "Photos is not running" in stopped.output
     opened(monkeypatch, mac.libraries["photos-2018"], "/Users/x/Library/Photos/Libraries/Syndication.photoslibrary")
     other = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
-    assert other.exit_code == 1 and "Photos does not have" in other.output and "photos-2018.photoslibrary" in other.output
+    assert other.exit_code == 1 and "Photos did not open" in other.output and "photos-2018.photoslibrary" in other.output
     assert mac.calls("import-photos.applescript") == []
 
 
@@ -1243,7 +1248,7 @@ def test_import_into_another_library_refuses_while_photos_has_a_different_one_op
     opened(monkeypatch, mac.libraries["Source"])  # the default is open, but the one asked for is not
     result = import_found(listing, "--library", "photos-2018", "--apply", "yes")
     words = " ".join(result.output.replace("│", " ").split())
-    assert result.exit_code == 1 and "Photos does not have" in words and "photos-2018.photoslibrary open" in words and "hold Option while starting Photos" in words
+    assert result.exit_code == 1 and "Photos did not open" in words and "photos-2018.photoslibrary" in words and "hold Option while starting Photos" in words
     assert mac.calls("import-photos.applescript") == []
 
 
@@ -1353,3 +1358,23 @@ def test_import_takes_a_list_or_a_folder_and_only_missing_needs_the_folder_and_a
     listed = tmp_path / "x.csv"
     listed.write_text("date,name\n")
     assert "are for --from" in runner.invoke(app, ["photos", "import", str(listed), "--only-missing"]).output
+
+
+def test_import_asks_photos_to_open_the_library_and_waits_for_it(mac, monkeypatch, tmp_path):
+    placeholders(mac)
+    folder = found_folder(tmp_path)
+    monkeypatch.setenv("FAKE_LSOF", "")
+    asked = []
+    monkeypatch.setattr(pp, "open_in_photos", lambda library: (asked.append(library), opened(monkeypatch, library)))
+    result = import_found(found_list(tmp_path, "--folders", str(folder)), "--apply", "yes")
+    assert asked == [mac.libraries["Source"]] and "Opening" in result.output
+    assert result.exit_code == 0 and "Imported 2 of 2" in result.output
+
+
+def test_a_library_photos_already_has_open_is_not_opened_again(mac, monkeypatch, tmp_path):
+    placeholders(mac)
+    asked = []
+    monkeypatch.setattr(pp, "open_in_photos", lambda library: asked.append(library))
+    opened(monkeypatch, mac.libraries["Source"])
+    import_found(found_list(tmp_path, "--folders", str(found_folder(tmp_path))), "--apply", "yes")
+    assert asked == []

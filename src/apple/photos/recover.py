@@ -29,6 +29,9 @@ SEARCH_VARIABLE = "APPLE_PHOTOS_RECOVER_SEARCH"
 MAP_VARIABLE = "APPLE_PHOTOS_RECOVER_MAPPINGS"
 
 
+OPEN_WAIT_SECONDS = 60  # how long Photos is given to open a library before an import gives up
+
+
 class Apply(str, Enum):
     yes = "yes"
     no = "no"
@@ -39,12 +42,23 @@ def has_terminal() -> bool:
     return sys.stdin.isatty()
 
 
-def check_open_in_photos(target: Path) -> None:
-    """Stops unless Photos has target open: Photos imports into whichever library it has open."""
-    opened = pp.libraries_open_in_photos()
-    if not any(library_open.resolve() == target.resolve() for library_open in opened):
-        shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
-        fail(f"Photos does not have {target} open (open: {shown}). Open it in Photos (hold Option while starting Photos to choose a library, or double-click it), then run this again.")
+def open_in_photos(target: Path) -> None:
+    """Has Photos open target, which is what an import goes into (Photos imports into whichever library it has open): asks
+    Photos to open it when it does not, waits up to OPEN_WAIT_SECONDS for that, and stops if it still is not."""
+    def is_open() -> bool:
+        return any(library_open.resolve() == target.resolve() for library_open in pp.libraries_open_in_photos())
+
+    if is_open():
+        return
+    typer.echo(f"Opening {target} in Photos ...", err=True)
+    pp.open_in_photos(target)
+    deadline = time.monotonic() + OPEN_WAIT_SECONDS
+    while not is_open():
+        if time.monotonic() >= deadline:
+            opened = pp.libraries_open_in_photos()
+            shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
+            fail(f"Photos did not open {target} (open: {shown}). Open it in Photos yourself (hold Option while starting Photos to choose a library, or double-click it), then run this again.")
+        time.sleep(1)
 
 
 def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]]) -> list:
@@ -468,7 +482,7 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
     errors = len(denied)
     if hits and mode != Apply.no:
         require_macos()
-        check_open_in_photos(path)
+        open_in_photos(path)
         go = True
         if mode == Apply.ask:
             if not has_terminal():
