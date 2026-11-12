@@ -16,7 +16,7 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
-from apple.photos import blacklist, powerphotos_reports, split_plan
+from apple.photos import blacklist, folder_photos, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 
@@ -462,8 +462,8 @@ def ignoring_date(first: Counter, second: Counter) -> tuple:
 
 
 def diff_command(
-    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary.")],
-    right: Annotated[str, typer.Argument(help="Second library, named the same way.")],
+    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary; or a folder of photo and video files.")],
+    right: Annotated[str, typer.Argument(help="Second library or folder, named the same way.")],
     summary: Annotated[bool, typer.Option("--summary", help="Print only the counts.")] = False,
     only: Annotated[Optional[Side], typer.Option(help="Show only the photos that are in just the left, or just the right, library; the side column is left out.")] = None,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with a side column (left or right) unless --only is given.")] = DiffFormat.text,
@@ -490,6 +490,11 @@ def diff_command(
 ) -> None:
     """Show which photos and videos are in one library and not the other.
 
+    Either side can be a folder of photo and video files instead of a library: a file is its modification time (taken as its
+    capture time, in UTC), size and name, the same triple a library's database gives a photo, so a folder that kept its files'
+    times (a backup, a copy) compares exactly, and one whose files were re-saved does not. Subfolders are read, Time Machine's
+    linked folders are followed, and libraries inside the folder and what a disk keeps for itself are skipped.
+
     Reads the libraries' databases directly, so it is fast, and needs PowerPhotos only to look up names (a path to a
     .photoslibrary works anywhere). A photo is its date, size and file name; photos in the trash are ignored. Items Photos
     keeps out of view (hidden: mostly burst members) are compared too and marked in the hidden and burst columns, though
@@ -504,8 +509,8 @@ def diff_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     try:
-        left_path, right_path = find_library(left), find_library(right)
-        data = [pp.library_photos(left_path), pp.library_photos(right_path)]
+        sides = [Path(side) if folder_photos.is_folder(side) else find_library(side) for side in (left, right)]  # a name that is not known fails before anything is read
+        data = [folder_photos.folder_photos(side) if folder_photos.is_folder(str(side)) else pp.library_photos(side) for side in sides]
     except pp.PowerPhotosError as error:
         fail(str(error))
 

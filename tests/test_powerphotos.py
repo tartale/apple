@@ -1,11 +1,13 @@
+import csv
 import fcntl
+import io
 import json
 import os
 import plistlib
 import re
 import sqlite3
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1922,3 +1924,55 @@ def test_a_fix_reads_a_library_again_only_after_it_was_changed(mac, monkeypatch)
     assert result.exit_code == 0
     # the source once; photos-2018 at the start, while waiting for the copy (until it arrived) and after it, not once for every look
     assert names.count("Source") == 1 and names.count("photos-2018") <= 4
+
+
+def touch(path, when, size=100):
+    """A file whose modification time is the capture time (UTC) and whose size is as given, as a backup keeps it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    stamp = datetime.strptime(when, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_diff_compares_a_library_with_a_folder_of_files(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B, C])
+    folder = tmp_path / "backup"
+    touch(folder / "a.jpg", A[0])  # the same photo as A
+    touch(folder / "sub" / "c.mov", C[0])  # in a subfolder
+    touch(folder / "d.jpg", D[0])  # only in the folder
+    touch(folder / "notes.txt", A[0])  # not a photo
+    touch(folder / "@eaDir" / "a.jpg", "2020-01-01 00:00:00")  # what a NAS keeps for itself
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
+    assert result.exit_code == 1 and shown(result) == ["<  2018-03-02 11:00:00  100  b.jpg", ">  2018-03-04 09:00:00  100  d.jpg"]
+    assert f"Only in Source: 1. Only in {folder}: 1. In both: 2." in result.output
+
+
+def test_a_folder_can_be_the_left_side_and_a_difference_in_size_or_time_is_a_difference(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A, B])
+    folder = tmp_path / "pics"
+    touch(folder / "a.jpg", A[0], size=101)  # another size
+    touch(folder / "b.jpg", "2018-03-02 12:00:00")  # an hour later: the time of a re-saved file
+    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv"])
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 1 and sorted((r["side"], r["name"]) for r in rows) == [("left", "a.jpg"), ("left", "b.jpg"), ("right", "a.jpg"), ("right", "b.jpg")]
+
+
+def test_a_library_is_still_a_library_and_a_folder_with_one_in_it_does_not_read_it(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "archive"
+    touch(folder / "a.jpg", A[0])
+    other = make_library(folder, "inner", 19607)
+    add_photos(other, [B])  # a library inside the folder: its photos are not the folder's files
+    path_of_library = runner.invoke(app, ["photos", "diff", str(mac.libraries["Source"]), str(folder), "--fields", "date,size,name"])
+    assert path_of_library.exit_code == 0 and "In both: 1" in path_of_library.output  # a.jpg only; the library's b.jpg is not counted
+
+
+def test_the_media_option_and_dates_limit_a_folder_too(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "f"
+    touch(folder / "a.jpg", A[0])
+    touch(folder / "c.mov", C[0])
+    touch(folder / "old.jpg", "2010-01-01 00:00:00")
+    only_photos = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--media", "photos", "--since", "2018-01-01", "--fields", "date,size,name"])
+    assert only_photos.exit_code == 0 and "In both: 1" in only_photos.output
