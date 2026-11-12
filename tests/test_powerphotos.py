@@ -1,5 +1,6 @@
 import fcntl
 import json
+import os
 import plistlib
 import re
 import sqlite3
@@ -1064,8 +1065,11 @@ def test_split_needs_from_unless_it_only_checks(mac):
 
 
 @pytest.fixture(autouse=True)
-def no_waiting(monkeypatch):
-    """--fix looks at a library being copied into every few seconds: do not really wait."""
+def no_waiting(monkeypatch, tmp_path):
+    """--fix looks at a library being copied into every few seconds: do not really wait. PowerPhotos' log and the list of
+    uncopyable photos are the test's own, never the real ones."""
+    monkeypatch.setenv("APPLE_PHOTOS_POWERPHOTOS_LOG", str(tmp_path / "PowerPhotos.buffer"))
+    monkeypatch.setenv("APPLE_PHOTOS_UNCOPYABLE", str(tmp_path / "uncopyable.json"))
     monkeypatch.setattr(lc, "POLL_SECONDS", 0)
     monkeypatch.setattr(lc, "SECONDS_PER_MINUTE", 1)  # so that --timeout N is N looks at an unchanged library
 
@@ -1092,8 +1096,23 @@ def trashing_updates_the_database(monkeypatch, mac):
     monkeypatch.setattr(lc, "trash_ids", trash)
 
 
-def copying_updates_the_database(monkeypatch, mac, arrives=None):
-    """The fake PowerPhotos copies nothing, so put the copied photos into the destination's database. arrives: the names that arrive (default: all)."""
+def log_failure(name, code="3302", message="Invalid resource (code 3302)"):
+    """What PowerPhotos writes to its log when it cannot import a photo, framed in binary as in the real file."""
+    entry = (
+        "\x00" * 12 + "\x01\xf2\xd7\xa3\x01Got PhotoKit error Error Domain=PHPhotosErrorDomain Code=" + code + ' "' + message + '" '
+        "UserInfo={_PHResourceUrlsErrorKey=(\n"
+        '    "file:///Volumes/home/Pictures/photos-2018.photoslibrary/private/com.fatcatsoftware.PowerPhotos/assetresourcecache/Batch/'
+        + f'{name.upper()}-BATCH/{name}",\n'
+        '    "file:///Volumes/home/Pictures/photos-2018.photoslibrary/private/com.fatcatsoftware.PowerPhotos/assetresourcecache/Batch/FF2E/FullSizeRender.jpeg\xc4@>P"\x01\x00\x00\xdb\x01'
+        + "\x00" * 8
+    )
+    with open(os.environ["APPLE_PHOTOS_POWERPHOTOS_LOG"], "ab") as log:
+        log.write(entry.encode("latin-1"))
+
+
+def copying_updates_the_database(monkeypatch, mac, arrives=None, fails=()):
+    """The fake PowerPhotos copies nothing, so put the copied photos into the destination's database. arrives: the names that
+    arrive (default: all). fails: names it logs a failed import for, which do not arrive."""
     real = lc.copy_one
 
     def copy(libraries, source, destination, since, before, media, mode, names=None, check_duplicates=True, ids=None):
@@ -1102,6 +1121,9 @@ def copying_updates_the_database(monkeypatch, mac, arrives=None):
         have = list((key[0], key[1] and int(key[1]), key[2]) for key in held.visible.elements())
         photos = pp.library_photos(mac.libraries[source])
         for key in photos.visible.elements():
+            if key[2] in fails and (ids is None or any(uuid in ids for uuid in photos.uuids.get(key, []))):
+                log_failure(key[2])
+                continue
             if ids is not None:
                 copied = any(uuid in ids for uuid in photos.uuids.get(key, []))
             elif names is not None:
@@ -1630,3 +1652,81 @@ def test_the_default_timeout_is_fifteen_minutes_and_split_has_the_option_too(mac
     add_photos(mac.libraries["photos-2018"], [A])
     runner.invoke(app, ["photos", "split", "--from", "Source", "--media", "photos", "--years", "2018", "--timeout", "4"])
     assert len(looks) == 4
+
+
+def test_a_photo_powerphotos_logs_a_failed_import_for_is_recorded_as_uncopyable_and_the_run_goes_on(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg (PhotoKit error 3302: Invalid resource (code 3302))" in result.output
+    assert "it is left out from now on" in result.output and "Stopped:" not in result.output  # a logged failure of one photo does not stop the run
+    assert "none of the" not in result.output and "did not arrive" not in result.output
+    recorded = json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())
+    assert [(entry["name"], entry["date"]) for entry in recorded.values()] == [("d.jpg", "2018-03-04 09:00:00")] and list(recorded) == ["Source\tUUID3"]
+    assert "(after the fix): 1 missing" in result.output and result.exit_code == 1  # it is still missing, but nothing is left to try
+
+
+def test_an_uncopyable_photo_is_left_out_of_later_copies_and_listed(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    fix("--from", "Source")
+    before = len(mac.calls("copy-ids.applescript"))
+    again = fix("--from", "Source")
+    assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
+    assert "1 photo left out, recorded as uncopyable (--retry-uncopyable tries them again)" in again.output
+    assert "2018-03-04 09:00:00 d.jpg (PhotoKit error 3302: Invalid resource (code 3302); recorded " in again.output and "Stopped:" not in again.output
+
+
+def test_retry_uncopyable_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A, B])
+    Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).write_text(json.dumps({"Source\tUUID3": {"name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "PhotoKit error 3302: Invalid resource", "recorded": "2026-11-12T10:00:00"}}))
+    copying_updates_the_database(monkeypatch, mac)  # this time it copies
+    result = fix("--from", "Source", "--retry-uncopyable")
+    assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID3"], "false"]] and "left out, recorded" not in result.output
+    assert json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text()) == {} and result.exit_code == 0
+
+
+def test_photos_that_do_not_arrive_with_no_logged_failure_still_stop_the_run(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, arrives={"b.jpg"})  # d.jpg does not arrive, and PowerPhotos logs nothing
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix("--from", "Source")
+    assert "1 of the 2 photos did not arrive in photos-2018" in result.output and "Stopped:" in result.output
+    assert not Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).exists()  # nothing is recorded without evidence
+
+
+def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    options = ["photos", "copy", "--from", "Source", "--to", "photos-2018", "--only-missing"]
+    first = runner.invoke(app, options)
+    assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
+    second = runner.invoke(app, options)
+    assert "no files copied (everything missing is left out as uncopyable)" in second.output and "d.jpg (PhotoKit error 3302" in second.output
+    assert len(mac.calls("copy-ids.applescript")) == 1
+
+
+def test_the_default_split_records_and_skips_an_uncopyable_photo(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
+    add_photos(mac.libraries["Source"], [A, B, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    first = split()
+    assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and "Stopped:" not in first.output
+    again = split()
+    assert "recorded as uncopyable" in again.output and len(mac.calls("copy-ids.applescript")) == 1
+
+
+def test_a_stray_that_failed_to_copy_stays_where_it_is_and_is_recorded(mac, monkeypatch):
+    trashing_updates_the_database(monkeypatch, mac)
+    copying_updates_the_database(monkeypatch, mac, fails={"old.jpg"})
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert "PowerPhotos could not copy 2017-06-01 10:00:00 old.jpg" in result.output and "NOT confirmed in photos-2017, so it stays in photos-2018" in result.output
+    assert mac.calls("trash-ids.applescript") == [] and list(json.loads(Path(os.environ["APPLE_PHOTOS_UNCOPYABLE"]).read_text())) == ["photos-2018\tUUID2"]
+    assert "Stopped:" not in result.output
