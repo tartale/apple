@@ -1225,3 +1225,41 @@ def test_a_cached_directory_listing_keeps_each_files_size(tmp_path):
     cached = {entry.real.name: (entry.status.st_size, entry.status.st_mtime) for entry in rs.walk(tmp_path / "pics", listings=remember, remember={}, counts=counts) if not entry.is_directory}
     assert counts == {"reused": 2} and cached == {"a.jpg": (321, unix(WHEN)), "b.mov": (77, unix(LATER))}  # from the cache: the sizes are still there
     assert cache_module.VERSION >= 2  # an entry saved before sizes were kept is never used
+
+
+def test_import_can_go_into_a_library_that_is_not_the_default_when_photos_has_it_open(mac, monkeypatch, tmp_path):
+    placeholders(mac)
+    folder = found_folder(tmp_path)
+    listing = found_list(tmp_path, "--folders", str(folder))
+    opened(monkeypatch, mac.libraries["photos-2018"])
+    result = import_found(listing, "--library", "photos-2018", "--apply", "yes")  # the default, Source, is not the one
+    assert result.exit_code == 0 and "Importing 2 photos into photos-2018" in result.output and "Imported 2 of 2 missing files" in result.output
+    assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "two.heic")]]]
+
+
+def test_import_into_another_library_refuses_while_photos_has_a_different_one_open(mac, monkeypatch, tmp_path):
+    placeholders(mac)
+    listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
+    opened(monkeypatch, mac.libraries["Source"])  # the default is open, but the one asked for is not
+    result = import_found(listing, "--library", "photos-2018", "--apply", "yes")
+    words = " ".join(result.output.replace("│", " ").split())
+    assert result.exit_code == 1 and "Photos does not have" in words and "photos-2018.photoslibrary open" in words and "hold Option while starting Photos" in words
+    assert mac.calls("import-photos.applescript") == []
+
+
+def test_import_into_a_library_given_by_path_needs_no_default_library(mac, monkeypatch, tmp_path):
+    placeholders(mac)
+    folder = found_folder(tmp_path)
+    listing = found_list(tmp_path, "--folders", str(folder))
+    opened(monkeypatch, mac.libraries["photos-2019"])
+    result = import_found(listing, "--library", str(mac.libraries["photos-2019"]), "--apply", "yes", default=None)
+    assert result.exit_code == 0 and "Importing 2 photos into" in result.output and len(mac.calls("import-photos.applescript")) == 1
+
+
+def test_import_with_neither_library_nor_default_says_which_to_give(mac, tmp_path):
+    placeholders(mac)
+    listing = found_list(tmp_path, "--folders", str(found_folder(tmp_path)))
+    result = import_found(listing, "--apply", "yes", default=None)
+    words = " ".join(result.output.replace("│", " ").split())
+    assert result.exit_code == 2 and "--library or --default-library is needed" in words
+

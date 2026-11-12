@@ -44,7 +44,7 @@ def check_open_in_photos(target: Path) -> None:
     opened = pp.libraries_open_in_photos()
     if not any(library_open.resolve() == target.resolve() for library_open in opened):
         shown = ", ".join(str(path) for path in opened) or "none, Photos is not running"
-        fail(f"Photos does not have {target} open (open: {shown}). Open it in Photos, then run this again.")
+        fail(f"Photos does not have {target} open (open: {shown}). Open it in Photos (hold Option while starting Photos to choose a library, or double-click it), then run this again.")
 
 
 def search_entries(messages: bool, messages_folder: Optional[List[Path]], folders: Optional[List[Path]]) -> list:
@@ -332,8 +332,16 @@ def import_found_command(
         Optional[str],
         typer.Option(
             "--default-library", envvar="APPLE_PHOTOS_DEFAULT_LIBRARY",
-            help="The library to import into, the only one: a name from `./apple photos libraries`, or the path of a "
+            help="The library to import into unless --library names another: a name from `./apple photos libraries`, or the path of a "
             ".photoslibrary. Also read from APPLE_PHOTOS_DEFAULT_LIBRARY. Photos must have it open.",
+        ),
+    ] = None,
+    library: Annotated[
+        Optional[str],
+        typer.Option(
+            "--library",
+            help="Import into this library instead of the default library: a name from `./apple photos libraries`, or the path of a "
+            ".photoslibrary. Photos imports into whichever library it has open, so it must have this one open.",
         ),
     ] = None,
     map_paths: Annotated[
@@ -356,17 +364,19 @@ def import_found_command(
     are on this machine, and with --apply yes (or ask) imports them into the library that Photos has open, so open the
     library in Photos first. The import makes a new, ordinary photo; the placeholder stays, but `diff` no longer counts
     it once the copy is there. Nothing is deleted, and nothing is changed unless --apply says so (--dry-run, or
-    DRY_RUN=true, always wins). Photos are imported only into the default library, and only while Photos has it open.
+    DRY_RUN=true, always wins). Photos go into the default library, or the one --library names, and only while Photos has
+    exactly that library open: with another one open nothing is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     mode = Apply.no if is_dry_run(dry_run) else apply
-    if default_library is None and mode != Apply.no:
-        raise typer.BadParameter("--default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY) to import")
-    if default_library and Path(default_library).is_dir():
-        path = Path(default_library)
-    elif default_library and mode != Apply.no:
-        path = find_library(default_library)
+    target = library or default_library  # the library to import into
+    if target is None and mode != Apply.no:
+        raise typer.BadParameter("--library or --default-library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY) to import")
+    if target and Path(target).expanduser().is_dir():
+        path = Path(target).expanduser()
+    elif target and mode != Apply.no:
+        path = find_library(target)
     else:
         path = Path("/nonexistent/default.photoslibrary")
     mapping = parse_map(map_paths)
@@ -411,9 +421,9 @@ def import_found_command(
                 typer.echo("Nothing was imported: --apply ask needs a terminal.", err=True)
                 go = False
             else:
-                go = typer.confirm(f"Import {len(hits)} photos into the library Photos has open (it should be {default_library})?", default=False)
+                go = typer.confirm(f"Import {len(hits)} photos into the library Photos has open (it should be {target})?", default=False)
         if go:
-            progress.line(f"Importing {len(hits)} photos into {default_library}; Photos shows no progress, so this can take a while ...")
+            progress.line(f"Importing {len(hits)} photos into {target}; Photos shows no progress, so this can take a while ...")
             try:
                 with pp.one_at_a_time():
                     try:
