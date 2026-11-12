@@ -103,6 +103,17 @@ def absent(wanted: Counter, held: Counter, strict: bool = False) -> Counter:
     return missing
 
 
+def edge_ends(source_photos: Counter, start: date, end: date, media: str) -> Tuple[bool, bool]:
+    """(whether the source has a photo of the media within a day of start, whether it has one within a day of end): only then
+    does the library on that side matter to what a library lacks (see missing_in_range), and need to be read."""
+    one_day = timedelta(days=1)
+    near = [
+        any(low <= key[0][:10] < high for key in pp.of_media(source_photos, media))
+        for low, high in (((start - one_day).isoformat(), (start + one_day).isoformat()), ((end - one_day).isoformat(), (end + one_day).isoformat()))
+    ]
+    return near[0], near[1]
+
+
 def missing_in_range(
     source_photos: Counter, start: date, end: date, media: str, own: Optional[Counter], nearby: Sequence[Optional[Counter]], strict: bool = False
 ) -> Optional[Tuple[Counter, Counter]]:

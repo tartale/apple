@@ -5,6 +5,7 @@ import plistlib
 import re
 import sqlite3
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -1687,16 +1688,28 @@ def test_a_photo_powerphotos_reports_a_failed_import_for_is_recorded_as_uncopyab
     assert "(after the fix): 1 missing" in result.output and result.exit_code == 1  # it is still missing, but nothing is left to try
 
 
-def test_an_uncopyable_photo_is_left_out_of_later_copies_and_listed(mac, monkeypatch):
+def test_an_uncopyable_photo_is_left_out_of_later_copies_and_tagged_on_its_missing_line(mac, monkeypatch):
     copying_updates_the_database(monkeypatch, mac, fails={"d.jpg"})
     add_photos(mac.libraries["Source"], [A, B, D])
     add_photos(mac.libraries["photos-2018"], [A])
-    fix("--from", "Source")
+    first = fix("--from", "Source")
+    assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in first.output  # not blacklisted yet when it is first looked at
     before = len(mac.calls("copy-ids.applescript"))
     again = fix("--from", "Source")
     assert len(mac.calls("copy-ids.applescript")) == before  # b arrived, d is left out: nothing to ask PowerPhotos for
-    assert "1 photo left out, blacklisted (--ignore-blacklist tries them again)" in again.output
-    assert "2018-03-04 09:00:00 d.jpg (uncopyable: Photos failed to import the photo" in again.output and "; recorded " in again.output and "Stopped:" not in again.output
+    assert f"    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on {date.today().isoformat()}]" in again.output
+    assert "Photos failed to import" not in again.output and "left out, blacklisted" not in again.output and "Stopped:" not in again.output  # the error is not printed again
+
+
+def test_ignore_blacklist_shows_the_plain_missing_line_and_copies_it_again(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A, D])
+    add_photos(mac.libraries["photos-2018"], [A])
+    Path(os.environ["APPLE_PHOTOS_BLACKLIST_FILE"]).write_text(json.dumps({"version": 1, "entries": [
+        {"kind": "uncopyable", "library": "Source", "uuid": "UUID2", "name": "d.jpg", "date": "2018-03-04 09:00:00", "reason": "r", "recorded": "2026-11-11T10:00:00"}]}))
+    tagged = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert "    missing: 2018-03-04 09:00:00 d.jpg [blacklisted on 2026-11-11]" in tagged.output
+    plain = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018", "--ignore-blacklist"])
+    assert "    missing: 2018-03-04 09:00:00 d.jpg\n" in plain.output and "blacklisted" not in plain.output
 
 
 def test_ignore_blacklist_tries_a_listed_photo_again_and_forgets_it_when_it_copies(mac, monkeypatch):
@@ -1727,7 +1740,7 @@ def test_copy_only_missing_records_and_skips_an_uncopyable_photo_too(mac, monkey
     first = runner.invoke(app, options)
     assert "PowerPhotos could not copy 2018-03-04 09:00:00 d.jpg" in first.output and first.exit_code == 0
     second = runner.invoke(app, options)
-    assert "no files copied (everything missing is left out, blacklisted)" in second.output and "d.jpg (uncopyable: Photos failed to import the photo" in second.output
+    assert "no files copied (everything missing is left out, blacklisted)" in second.output and "Photos failed to import" not in second.output
     assert len(mac.calls("copy-ids.applescript")) == 1
 
 
@@ -1812,3 +1825,100 @@ def test_without_a_report_a_copy_that_did_not_arrive_is_said_and_nothing_says_wh
     add_photos(mac.libraries["photos-2018"], [A])
     result = fix("--from", "Source")
     assert "none of the 1 photo arrived in photos-2018" in result.output and "Stopped:" in result.output
+
+
+NEW_YEAR = ("2018-01-01 05:00:00", 100, "ny.jpg")  # within a day of the end of 2017 and of the start of 2018
+
+
+def fix_years(*options):
+    return runner.invoke(app, ["photos", "split", "--fix", "--from", "Source", "--media", "photos", "--years", "2017-2018", *options])
+
+
+def test_fix_copies_a_photo_near_new_year_that_no_library_holds_into_each_library_it_could_belong_to(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix_years()
+    assert [(call[0], call[1], call[2]) for call in mac.calls("copy-ids.applescript")] == [("Source", "photos-2017", ["UUID2"]), ("Source", "photos-2018", ["UUID2"])]  # in both, as split does
+    assert result.exit_code == 0 and "photos-2017 (after the fix): in order" in result.output and "photos-2018 (after the fix): in order" in result.output
+
+
+def test_fix_does_not_copy_a_photo_near_new_year_that_the_library_either_side_holds(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [NEW_YEAR])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = fix_years()
+    assert mac.calls("copy-ids.applescript") == [] and result.exit_code == 0
+
+
+def test_check_without_fix_still_only_notes_a_photo_near_new_year(mac):
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])
+    add_photos(mac.libraries["photos-2017"], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and "1 of the source's within a day of its dates' ends are in no library" in result.output and mac.calls("copy-ids.applescript") == []
+
+
+def counting_reads(monkeypatch):
+    """The names of the libraries read, in order (the source included)."""
+    real = lc.read_library
+    names = []
+
+    def counted(libraries, name):
+        names.append(name)
+        return real(libraries, name)
+
+    monkeypatch.setattr(lc, "read_library", counted)
+    return names
+
+
+def test_a_check_reads_only_the_year_asked_for_when_nothing_is_near_its_ends(mac, monkeypatch):
+    add_photos(mac.libraries["Source"], [A])
+    for name in ("photos-2017", "photos-2018", "photos-2019"):
+        if name not in mac.libraries:
+            mac.make(name, 19607)
+        add_photos(mac.libraries[name], [])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2018"]  # not 2017 or 2019: nothing is within a day of 2018's ends
+
+
+def test_a_library_either_side_is_read_only_for_the_end_a_photo_is_near(mac, monkeypatch):
+    for name in ("photos-2017", "photos-2018", "photos-2019"):
+        if name not in mac.libraries:
+            mac.make(name, 19607)
+    add_photos(mac.libraries["Source"], [A, NEW_YEAR])  # within a day of the start of 2018 (and the end of 2017)
+    add_photos(mac.libraries["photos-2017"], [NEW_YEAR])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2018"])
+    assert sorted(names) == ["Source", "photos-2017", "photos-2018"]  # the start's neighbor, not the end's
+
+
+def test_each_library_is_read_once_in_a_run_of_several_years_and_the_reads_are_announced(mac, monkeypatch):
+    for name in ("photos-2017",):
+        mac.make(name, 19607)
+    add_photos(mac.libraries["Source"], [A, ("2017-06-01 10:00:00", 50, "old.jpg")])
+    add_photos(mac.libraries["photos-2017"], [("2017-06-01 10:00:00", 50, "old.jpg")])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = runner.invoke(app, ["photos", "split", "--check", "--from", "Source", "--media", "photos", "--years", "2017-2018"])
+    assert result.exit_code == 0 and sorted(names) == ["Source", "photos-2017", "photos-2018"]  # once each
+    assert "Read 2 library databases" in result.output
+
+
+def test_a_fix_reads_a_library_again_only_after_it_was_changed(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    add_photos(mac.libraries["Source"], [A, B])
+    add_photos(mac.libraries["photos-2018"], [A])
+    names = counting_reads(monkeypatch)
+    result = fix("--from", "Source")
+    assert result.exit_code == 0
+    # the source once; photos-2018 at the start, while waiting for the copy (until it arrived) and after it, not once for every look
+    assert names.count("Source") == 1 and names.count("photos-2018") <= 4
