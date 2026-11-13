@@ -185,8 +185,8 @@ def test_a_gap_is_told_in_two_units():
 
 
 def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified():
-    assert m.TOLERANT.date_source == "exif" and m.EXACT.date_source == "exif"
-    assert m.parse("date=modified").date_source == "modified" and m.parse("date=exif").date_source == "exif"
-    assert m.parse("date=modified,date=within=1h") == m.Mode(date_source="modified", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
-    assert m.parse("date=modified,exact").date_source == "exif"  # a whole mode starts over
-    assert m.parse("filename=regex=a,b,date=modified").pattern == "a,b"  # a comma before date= ends a regex too
+    assert m.TOLERANT.date_source == "modified" and m.EXACT.date_source == "modified" and m.parse("").date_source == "modified"
+    assert m.parse("date=exif").date_source == "exif" and m.parse("date=modified").date_source == "modified"
+    assert m.parse("date=exif,date=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
+    assert m.parse("date=exif,exact").date_source == "modified"  # a whole mode starts over
+    assert m.parse("filename=regex=a,b,date=exif").pattern == "a,b"  # a comma before date= ends a regex too

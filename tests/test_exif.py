@@ -74,9 +74,9 @@ def test_a_folder_file_is_dated_by_its_exif_time_not_its_modification_time(mac, 
     add_photos(mac.libraries["Source"], [("2005-09-30 06:51:40", 100, "IMAG0044.JPG")])  # what Photos filed it under
     folder = tmp_path / "backup"
     jpeg_taken(folder / "IMAG0044.JPG", "2005:09:30 00:51:40", unix("2006-09-30 06:51:40"))  # the backup says a year later
-    same = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
+    same = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--diff-mode", "date=exif"])
     assert same.exit_code == 0 and "In both: 1." in same.output
-    by_mtime = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--diff-mode", "date=modified"])
+    by_mtime = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])  # the modification time is the default
     assert by_mtime.exit_code == 1 and "Only in Source: 1. Only in " in by_mtime.output
 
 
@@ -84,9 +84,9 @@ def test_import_only_missing_does_not_import_a_file_the_library_has_under_its_ex
     add_photos(mac.libraries["Source"], [("2005-09-30 06:51:40", 100, "IMAG0044.JPG")])
     folder = tmp_path / "backup"
     jpeg_taken(folder / "IMAG0044.JPG", "2005:09:30 00:51:40", unix("2006-09-30 06:51:40"))
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "date=exif"])
     assert "Imported 0 of 0" in result.output
-    again = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "date=modified"])
+    again = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 1" in again.output  # by the modification time alone it looks missing
 
 
@@ -97,7 +97,7 @@ def test_the_capture_time_is_cached_until_the_file_changes(mac, tmp_path, monkey
     reads = []
     real = exif.capture_time
     monkeypatch.setattr(exif, "capture_time", lambda file: reads.append(str(file)) or real(file))
-    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"]
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--diff-mode", "date=exif"]
     runner.invoke(app, options)
     runner.invoke(app, options)
     assert reads == [str(path)]  # the second run used the cache
@@ -115,5 +115,15 @@ def test_a_video_and_a_file_with_no_exif_keep_their_modification_time(mac, tmp_p
         (folder / name).parent.mkdir(parents=True, exist_ok=True)
         (folder / name).write_bytes(b"x" * 100)
         os.utime(folder / name, (unix(when), unix(when)))
-    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--diff-mode", "date=exif"])
     assert result.exit_code == 0
+
+
+def test_the_default_does_not_open_the_files(mac, tmp_path, monkeypatch):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    jpeg_taken(folder / "a.jpg", "2005:09:30 00:51:40", unix("2006-09-30 06:51:40"))
+    reads = []
+    monkeypatch.setattr(exif, "capture_time", lambda file: reads.append(str(file)))
+    runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
+    assert reads == []
