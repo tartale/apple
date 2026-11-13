@@ -18,13 +18,14 @@ def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
     mode = m.parse("exact,filename=prefix=8,date=within=1d,filesize=within=2.5%")
     assert (mode.filename, mode.prefix, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("prefix", 8, "within", timedelta(days=1), "within", 0.025)
     assert m.parse("filename=exact") == m.Mode(filename="exact")
+    assert m.parse("extension=ignore").extension == "ignore" and m.parse("exact,extension=full").extension == "full"
     assert m.parse("date=ignore,exact") == m.EXACT  # a whole mode after a field starts over
     assert m.parse("date=within=90m").date_within == timedelta(minutes=90)
     assert m.parse("filesize=within=512bytes").size_bytes == 512 and m.parse("filesize=within=1byte").size_bytes == 1 and m.parse("filesize=within=20b").size_bytes == 20
     assert m.parse("filesize=within=512bytes,filesize=within=2%").size_bytes is None  # the last one wins
 
 
-@pytest.mark.parametrize("text", ["filename", "filename=prefix", "filename=prefix=0", "filename=prefix=x", "filename=sideways", "date=within",
+@pytest.mark.parametrize("text", ["filename", "filename=prefix", "filename=prefix=0", "filename=prefix=x", "filename=sideways", "extension", "extension=any", "date=within",
                                   "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=true", "strict"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
@@ -112,7 +113,7 @@ def test_what_is_not_a_regex_is_an_error(text):
 def test_a_regex_compares_what_it_matches_in_the_name_case_ignored():
     held = Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_a.jpg"): 1})
     mode = m.parse(r"filename=regex=^(\d{8}_\d{6})")
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_b.HEIC"): 1}), held, mode)  # what follows the time is not compared
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_b.JPG"): 1}), held, mode)  # what follows the time is not compared
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100001_a.jpg"): 1}), held, mode)  # another second
     ignoring_case = m.parse(r"filename=regex=(img_\d+)")
     other = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
@@ -128,3 +129,24 @@ def test_a_regex_uses_the_whole_match_without_a_group_and_the_whole_name_for_a_n
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "beach.jpg"): 1}), unmatched, mode)
     optional = m.parse("filename=regex=(zz)?a")  # the group takes no part in these names: the whole match is compared
     assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "ab.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "ac.jpg"): 1}), optional)
+
+
+def test_the_name_is_compared_without_its_extension_and_the_extension_on_its_own():
+    held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.HEIC"): 1})
+    heic_as_jpg = Counter({("2018-03-01 10:00:00", "1000", "img_1234.jpg"): 1})
+    assert m.absent(heic_as_jpg, held)  # another extension is another photo, by default
+    assert not m.absent(heic_as_jpg, held, m.parse("extension=ignore"))
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_9999.heic"): 1}), held, m.parse("extension=ignore"))  # the name still counts
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234.heic"): 1}), held)  # case ignored by default
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234.heic"): 1}), held, m.parse("extension=exact"))
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.heic"): 1}), held, m.EXACT)
+    jpeg = Counter({("2018-03-01 10:00:00", "1000", "a.JPEG"): 1})
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), jpeg)  # .jpeg is .jpg
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), jpeg, m.parse("extension=exact"))
+
+
+def test_filename_modes_look_at_the_name_without_its_extension():
+    held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, m.parse("filename=prefix=8"))
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "IMG_12.jpg"): 1}), m.parse("filename=prefix=8"))  # IMG_12 has 6 characters, not 8
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "a.jpg.jpg"): 1}), m.parse("filename=regex=^(.*)$"))  # the last extension only
