@@ -617,14 +617,14 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     wanted = matching.absent(selected[0], selected[1], match) if library else Counter(dict.fromkeys(selected[0], 1))
-    if explain and library:
-        explain_unmatched(wanted, selected[1], match, library_name)
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
     kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match)
     if len(kept) < len(wanted):
         typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
     wanted = Counter({photo: 1 for photo in kept})
+    if explain and library:  # of the photos that are left, not of the ones left out as the same photo
+        explain_unmatched(wanted, selected[1], match, library_name)
     rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
     return [

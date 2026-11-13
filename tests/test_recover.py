@@ -1458,3 +1458,13 @@ def test_diff_and_copy_only_missing_explain_too(mac, tmp_path):
     assert "Why 2 photos did not match a photo of photos-2018" in copied.output and "closest: a_copy.jpg" in copied.output
     plain = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--explain", "--dry-run"])
     assert plain.exit_code == 2
+
+
+def test_explain_is_of_the_files_left_after_the_ones_that_are_the_same_photo_are_left_out(mac):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:36", 100, "IMAG0043.JPG")])
+    folder = mac.libraries["Source"].parent / "backup"
+    make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")
+    make_file(folder / "IMAG0044_ASLNFDmS.JPG", "2018-03-05 10:00:00")  # a copy under a longer name
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", r"filename=regex=^(IMAG\d+)"])
+    assert "1 left out as the same photo as another" in result.output
+    assert "Why 1 photo did not match" in result.output and "ASLN" not in result.output.split("Why 1 photo")[1].split("date  ")[0]
