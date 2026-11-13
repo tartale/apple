@@ -235,3 +235,70 @@ def dedupe(photos, mode: Mode = TOLERANT) -> List[Photo]:
             index.add(photo)
             kept.append(photo)
     return kept
+
+
+@dataclass(frozen=True)
+class Closest:
+    """The photo of a library that is most like another, and in what the two differ under the mode."""
+    photo: Photo
+    differs: Tuple[str, ...]
+
+
+def span(seconds: float) -> str:
+    """A length of time in words, its two largest units: 3d 4h, 2h 5m, 40s."""
+    days, rest = divmod(int(round(seconds)), 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    units = [f"{number}{unit}" for number, unit in ((days, "d"), (hours, "h"), (minutes, "m"), (secs, "s")) if number]
+    return " ".join(units[:2]) or "0s"
+
+
+def differences(mode: Mode, photo: Photo, other: Photo) -> Tuple[Tuple[str, ...], float, int]:
+    """(what differs between two photos under the mode, in words; their gap in seconds; their gap in bytes)."""
+    stem, extension = name_key(mode, photo[2])
+    other_stem, other_extension = name_key(mode, other[2])
+    gap = abs((datetime.fromisoformat(photo[0]) - datetime.fromisoformat(other[0])).total_seconds())
+    both = photo[1].isdigit() and other[1].isdigit() and int(photo[1]) and int(other[1])
+    bytes_apart = abs(int(photo[1]) - int(other[1])) if both else 0
+    found = []
+    if stem != other_stem:
+        found.append("name")
+    if extension != other_extension:
+        found.append("extension")
+    if mode.date != "ignore" and (gap > 0 if mode.date == "exact" else gap > mode.date_within.total_seconds()):
+        found.append(f"date by {span(gap)}")
+    if not same_size(mode, photo[1], other[1]):
+        percent = bytes_apart / max(int(photo[1]), int(other[1])) * 100 if both else 0
+        found.append(f"size by {bytes_apart:,} bytes ({percent:.1f}%)" if both else "size")
+    return tuple(found), gap, bytes_apart
+
+
+class Finder:
+    """Finds, for a photo that nothing in a library matches, the photo that is closest to it: the one that differs in the fewest
+    of name, extension, date and size, and then in date and size the least."""
+
+    def __init__(self, mode: Mode, held) -> None:
+        self.mode = mode
+        self.by_stem: Dict[str, List[Photo]] = {}
+        self.by_size: Dict[str, List[Photo]] = {}
+        dated = []
+        for photo in held:
+            self.by_stem.setdefault(os.path.splitext(photo[2])[0].lower(), []).append(photo)
+            self.by_size.setdefault(photo[1], []).append(photo)
+            dated.append((datetime.fromisoformat(photo[0]), photo))
+        dated.sort(key=lambda item: item[0])
+        self.dates = [at for at, _ in dated]
+        self.dated = [photo for _, photo in dated]
+
+    def closest(self, photo: Photo) -> Optional[Closest]:
+        when, day = datetime.fromisoformat(photo[0]), timedelta(days=1)
+        candidates = set(self.by_stem.get(os.path.splitext(photo[2])[0].lower(), []))
+        candidates.update(self.by_size.get(photo[1], []) if photo[1].isdigit() and int(photo[1]) else [])
+        candidates.update(self.dated[bisect_left(self.dates, when - day):bisect_right(self.dates, when + day)])
+        best = None
+        for other in candidates:
+            found, gap, bytes_apart = differences(self.mode, photo, other)
+            score = (len(found), gap, bytes_apart, other)
+            if best is None or score < best[0]:
+                best = (score, Closest(other, found))
+        return best[1] if best else None

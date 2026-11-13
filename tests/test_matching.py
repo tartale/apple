@@ -150,3 +150,35 @@ def test_filename_modes_look_at_the_name_without_its_extension():
     assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, m.parse("filename=prefix=8"))
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "IMG_12.jpg"): 1}), m.parse("filename=prefix=8"))  # IMG_12 has 6 characters, not 8
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "a.jpg.jpg"): 1}), m.parse("filename=regex=^(.*)$"))  # the last extension only
+
+
+def finder(*photos, mode=m.TOLERANT):
+    return m.Finder(mode, list(photos))
+
+
+def test_the_closest_photo_is_the_one_that_differs_in_the_fewest_parts():
+    held = [("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 10:00:00", "5000", "other.jpg"), ("2019-01-01 00:00:00", "1000", "a.jpg")]
+    wanted = ("2018-03-01 10:00:00", "2000", "a.jpg")
+    near = finder(*held).closest(wanted)
+    assert near.photo == held[0] and near.differs == ("size by 1,000 bytes (50.0%)",)
+
+
+def test_what_differs_is_said_in_words_for_each_part():
+    held = ("2018-03-01 10:00:00", "1000", "IMG_1.jpg")
+    near = finder(held).closest(("2018-03-04 14:30:00", "1000", "IMG_2.heic"))
+    assert near.differs == ("name", "extension", "date by 3d 4h")  # the two largest units
+    assert finder(held).closest(("2018-03-01 10:00:30", "1000", "IMG_1.jpg")).differs == ()  # a match: nothing differs
+
+
+def test_the_same_date_and_size_under_another_name_is_found_though_nothing_shares_the_name():
+    held = ("2018-03-01 10:00:00", "1000", "IMG_1.jpg")
+    near = finder(held, ("2020-01-01 00:00:00", "5", "z.jpg")).closest(("2018-03-01 10:00:00", "1000", "IMG_1_copy.jpg"))
+    assert near.photo == held and near.differs == ("name",)
+
+
+def test_nothing_in_the_library_means_no_closest_photo():
+    assert finder().closest(("2018-03-01 10:00:00", "1000", "a.jpg")) is None
+
+
+def test_a_gap_is_told_in_two_units():
+    assert [m.span(s) for s in (0, 40, 3725, 90000, 345600)] == ["0s", "40s", "1h 2m", "1d 1h", "4d"]

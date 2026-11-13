@@ -1419,3 +1419,33 @@ def test_import_from_a_folder_takes_one_of_the_files_that_are_the_same_photo_und
     opened(monkeypatch, mac.libraries["Source"])
     runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", mode])
     assert mac.calls("import-photos.applescript") == [[[str(folder / "IMAG0044.JPG"), str(folder / "IMAG0047.JPG")]]]
+
+
+def test_explain_says_why_a_file_is_not_matched_in_the_library(mac):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 100, "IMAG0044.JPG")])
+    folder = mac.libraries["Source"].parent / "backup"
+    make_file(folder / "IMAG0044_copy.JPG")  # the same date and size, another name
+    make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00", 500)  # the same name, a different size
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    words = result.output
+    assert "Why 2 photos did not match a photo of Source" in words
+    assert "IMAG0044_copy.JPG" in words and "differs: name" in words and "may call this a duplicate" in words
+    assert "differs: size by 400 bytes (80.0%)" in words
+
+
+def test_explain_is_for_only_missing(mac, tmp_path):
+    folder = tmp_path / "backup"
+    make_file(folder / "a.jpg")
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
+    assert result.exit_code == 2 and "--explain is for --only-missing" in " ".join(result.output.replace("│", " ").split())
+
+
+def test_diff_and_copy_only_missing_explain_too(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 100, "a.jpg"), ("2018-03-06 10:00:00", 100, "b.jpg")])
+    add_photos(mac.libraries["photos-2018"], [("2018-03-05 10:00:00", 100, "a_copy.jpg")])
+    diffed = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--explain"])
+    assert "did not match a photo of photos-2018" in diffed.output and "closest: a_copy.jpg" in diffed.output and "did not match a photo of Source" in diffed.output
+    copied = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--explain", "--dry-run"])
+    assert "Why 2 photos did not match a photo of photos-2018" in copied.output and "closest: a_copy.jpg" in copied.output
+    plain = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--explain", "--dry-run"])
+    assert plain.exit_code == 2

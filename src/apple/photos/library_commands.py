@@ -48,6 +48,14 @@ CheckDuplicatesOption = Annotated[
     ),
 ]
 DiffModeOption = Annotated[str, typer.Option("--diff-mode", envvar="APPLE_PHOTOS_DIFF_MODE", help=matching.HELP)]
+ExplainOption = Annotated[
+    bool,
+    typer.Option(
+        "--explain",
+        help="For each photo that is reported as having no match, say on stderr which photo of the other library is closest to it "
+        "and what differs under --diff-mode: why it is not a match.",
+    ),
+]
 POLL_SECONDS = 5  # how often a library being copied into is looked at
 SECONDS_PER_MINUTE = 60
 DEFAULT_TIMEOUT = 15.0  # minutes a library may stay unchanged, while a copy into it is waited for, before the copy is given up on
@@ -465,6 +473,7 @@ def diff_command(
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
     diff_mode: DiffModeOption = "",
+    explain: ExplainOption = False,
     include_duplicates: Annotated[
         bool,
         typer.Option("--include-duplicates", help="Count every copy of a photo (the same date, size and file name) a library holds, so a photo held twice in one library and once in the other is a difference. By default a photo is counted once."),
@@ -520,6 +529,9 @@ def diff_command(
     if not include_duplicates:
         first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
     only_left, only_right, both = matching.pair(first, second, match)
+    if explain:
+        explain_unmatched(only_left, second, match, right)
+        explain_unmatched(only_right, first, match, left)
     if not summary:
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
@@ -540,6 +552,25 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
+def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str) -> None:
+    """Says on stderr, for each photo of unmatched, which photo of others (the library or folder called name) is closest to it and
+    what differs: what is wrong with the match, as far as the mode can tell."""
+    if not unmatched:
+        return
+    finder = matching.Finder(mode, list(others))
+    typer.echo(f"Why {count(len(unmatched), 'photo')} did not match a photo of {name} (the closest one, and what differs under the mode):", err=True)
+    for photo in sorted(unmatched):
+        typer.echo(f"  {photo[2]}  {photo[0]}  {photo[1]}", err=True)
+        near = finder.closest(photo)
+        if near is None:
+            typer.echo("      nothing like it", err=True)
+            continue
+        typer.echo(f"      closest: {near.photo[2]}  {near.photo[0]}  {near.photo[1]}", err=True)
+        typer.echo(f"      differs: {', '.join(near.differs) or 'nothing the mode looks at'}", err=True)
+        if near.differs and all(part in ("name", "extension") for part in near.differs):
+            typer.echo("      the date and size are the same under another name: Photos compares the content, so it may call this a duplicate", err=True)
+
+
 def parse_mode(text: str) -> matching.Mode:
     """The mode --diff-mode (or APPLE_PHOTOS_DIFF_MODE) says, as a usage error when it is not one."""
     try:
@@ -548,7 +579,7 @@ def parse_mode(text: str) -> matching.Mode:
         raise typer.BadParameter(str(error))
 
 
-def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT) -> list:
+def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False) -> list:
     """The records of `diff LEFT RIGHT --only left` for the dates and media given, read from the databases."""
     try:
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
@@ -558,6 +589,8 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
     missing = matching.absent(selected[0], selected[1], match)
+    if explain:
+        explain_unmatched(missing, selected[1], match, right)
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
     ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
@@ -566,7 +599,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
-def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False) -> list:
+def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library") -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
@@ -576,6 +609,8 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     wanted = matching.absent(selected[0], selected[1], match) if library else Counter(dict.fromkeys(selected[0], 1))
+    if explain and library:
+        explain_unmatched(wanted, selected[1], match, library_name)
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
     kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match)
@@ -607,6 +642,7 @@ def copy_command(
     ] = False,
     check_duplicates: CheckDuplicatesOption = False,
     diff_mode: DiffModeOption = "",
+    explain: ExplainOption = False,
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
     ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
@@ -631,12 +667,14 @@ def copy_command(
     if only_missing and list_file is not None:
         raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
     match = parse_mode(diff_mode)
+    if explain and not only_missing:
+        raise typer.BadParameter("--explain is for --only-missing: it says why each photo missing from the destination is not matched there")
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
     ids = None
     if only_missing:
-        rows = only_in_left(source, destination, since, until, media, match)
+        rows = only_in_left(source, destination, since, until, media, match, explain)
         names, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too
