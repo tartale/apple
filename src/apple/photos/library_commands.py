@@ -568,13 +568,20 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
 
 def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False) -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
-    of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode)."""
+    of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
+    files that are the same photo under the mode, one."""
     try:
         data = [folder_photos.folder_photos(Path(folder), refresh=refresh)] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     wanted = matching.absent(selected[0], selected[1], match) if library else Counter(dict.fromkeys(selected[0], 1))
+    # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
+    # a copy that a service gave a longer name)
+    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match)
+    if len(kept) < len(wanted):
+        typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
+    wanted = Counter({photo: 1 for photo in kept})
     rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
     return [

@@ -1401,3 +1401,21 @@ def test_missing_keeps_a_shared_photo_s_messages_identifier_when_it_leaves_out_i
     add_photos(mac.libraries["Source"], [(WHEN, 0, "one.heic", "shared"), ("2018-03-05 10:30:00", 0, "one.heic", "shared")])
     kept = rows_of(missing("--format", "csv"))
     assert len(kept) == 1 and kept[0]["identifier"]
+
+
+def test_import_from_a_folder_takes_one_of_the_files_that_are_the_same_photo_under_the_diff_mode(mac, monkeypatch, tmp_path):
+    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "other.jpg")])
+    folder = tmp_path / "backup"
+    make_file(folder / "IMAG0044.JPG")
+    make_file(folder / "IMAG0044_ASLNFDmSOi1j8HVs5UVlqKvxeRlA.JPG")  # a copy a service gave a longer name
+    make_file(folder / "IMAG0047.JPG", LATER)
+    both = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
+    assert "Imported 0 of 3" in both.output  # these names differ, so by default they are three photos
+    mode = "filename=regex=^(IMAG\\d+)"
+    for options in (["--only-missing"], []):
+        result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", mode, "--dry-run", *options])
+        assert "Imported 0 of 2" in result.output and "1 left out as the same photo as another" in result.output, options
+        assert "ASLN" not in result.stdout and "IMAG0044.JPG" in result.stdout
+    opened(monkeypatch, mac.libraries["Source"])
+    runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", mode])
+    assert mac.calls("import-photos.applescript") == [[[str(folder / "IMAG0044.JPG"), str(folder / "IMAG0047.JPG")]]]
