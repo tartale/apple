@@ -292,6 +292,15 @@ class Finder:
         self.dates = [at for at, _ in dated]
         self.dated = [photo for _, photo in dated]
 
+    def same_name(self, photo: Photo, limit: int = 3) -> List[Closest]:
+        """The photos with the same name as this one (case and extension ignored) however their dates and sizes differ, the
+        nearest in date first."""
+        found = []
+        for other in self.by_stem.get(os.path.splitext(photo[2])[0].lower(), []):
+            differs, gap, bytes_apart = differences(self.mode, photo, other)
+            found.append((gap, bytes_apart, other, Closest(other, differs, gap, bytes_apart)))
+        return [item[3] for item in sorted(found, key=lambda item: item[:3])[:limit]]
+
     def closest(self, photo: Photo) -> Optional[Closest]:
         when, day = datetime.fromisoformat(photo[0]), timedelta(days=1)
         candidates = set(self.by_stem.get(os.path.splitext(photo[2])[0].lower(), []))

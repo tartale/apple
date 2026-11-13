@@ -79,7 +79,7 @@ def libraries() -> Dict[str, Path]:
     return dict(entries)
 
 
-def photos_query(db: sqlite3.Connection) -> str:
+def photos_query(db: sqlite3.Connection, trashed: bool = False) -> str:
     """The query for a library's photos. Older Photos databases lack some columns (a burst is marked by ZAVALANCHEUUID
     where ZAVALANCHEKIND does not exist yet), so each is used only when it is there."""
     asset = {row[1] for row in db.execute("pragma table_info(ZASSET)")}
@@ -92,7 +92,7 @@ def photos_query(db: sqlite3.Connection) -> str:
         select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
                {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED, {uuid}
         from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
-        where a.ZTRASHEDSTATE = 0
+        where a.ZTRASHEDSTATE {"!=" if trashed else "="} 0
     """
 
 
@@ -181,7 +181,8 @@ class Photos(NamedTuple):
     folder in Messages. superseded counts the stand-ins left out of visible and hidden: shared placeholders, and hidden items whose original file is gone, that
     the library also has a real visible photo for with the same file name taken within two days (an imported copy). The
     picture is there, and the stand-in can never be saved. uuids maps each key to the Photos identifiers of its items (the
-    start of the id PowerPhotos gives a photo, `<uuid>/L0/001`), the one exact way to name a photo."""
+    start of the id PowerPhotos gives a photo, `<uuid>/L0/001`), the one exact way to name a photo. trashed counts the items
+    in Recently Deleted, which the rest leaves out: Photos still knows them when it looks for a duplicate."""
     library: Path
     visible: Counter
     hidden: Counter
@@ -191,6 +192,7 @@ class Photos(NamedTuple):
     superseded: Counter
     identifiers: dict
     uuids: dict
+    trashed: Counter = Counter()
 
     def original_missing(self, key: tuple) -> bool:
         """True when the item's original file is not stored in the library (Photos keeps a placeholder for photos whose
@@ -206,7 +208,7 @@ def library_photos(library: Path) -> Photos:
     """Reads a library's photos from its database; PowerPhotos is not involved. Raises PowerPhotosError when the
     database cannot be read."""
     try:
-        rows = read_database(library, lambda db: db.execute(photos_query(db)).fetchall())
+        rows, trash = read_database(library, lambda db: (db.execute(photos_query(db)).fetchall(), db.execute(photos_query(db, True)).fetchall()))
     except (OSError, *READ_ERRORS) as error:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
     visible, hidden, bursts, files, shared, superseded, identifiers = Counter(), Counter(), Counter(), {}, set(), Counter(), {}
@@ -235,7 +237,8 @@ def library_photos(library: Path) -> Photos:
             identifiers[key] = is_shared
         if directory is not None and stored_as:
             files.setdefault(key, []).append(f"originals/{directory}/{stored_as}")
-    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers, uuids)
+    trashed = Counter((when, str(size), name) for when, size, name, *_ in trash)
+    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers, uuids, trashed)
 
 
 def photos(library: Path) -> Counter:

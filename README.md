@@ -49,7 +49,7 @@ Every command that decides whether two photos are the same photo (`diff`, `missi
 
 For example `exact,filename=prefix=8`, `date=within=1d` or `filename=regex=^(\d{8}_\d{6})` (names that start with the same camera date and time). Quote a pattern in the shell. `diff` pairs each photo with at most one photo of the other side, so extra copies are the ones left over (a photo counted once however many copies it has, unless `--include-duplicates`); the commands that copy or import ask only whether the destination has any photo that matches.
 
-`--explain` (on `diff`, `copy --only-missing` and `import --only-missing`) says on stderr why a photo has no match: for each one, the closest photo of the other library (or folder) and what differs under the mode (`name`, `extension`, `date by 3d 4h`, `size by 1,000 bytes (50.0%)`). When only the name differs, the date and size are the same under another name, which Photos' own duplicate check (it compares the content) may call a duplicate.
+`--explain` (on `diff`, `copy --only-missing` and `import --only-missing`) says on stderr why a photo has no match: for each one, the closest photo of the other library (or folder) and what differs under the mode (`name`, `extension`, `date by 3d 4h`, `size by 1,000 bytes (50.0%)`). It also lists the photos of the same name however much they differ (`same name: … (differs: date by 14d 23h, size by 600 bytes (85.7%))`, or `no photo of that name`) and the ones in Recently Deleted, which `diff` and `import` leave out but Photos looks at when it checks for a duplicate. When only the name differs and the date and size are exactly the same, which Photos' own duplicate check (it compares the content) may call a duplicate.
 
 ## Development
 

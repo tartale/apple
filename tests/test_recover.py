@@ -1468,3 +1468,28 @@ def test_explain_is_of_the_files_left_after_the_ones_that_are_the_same_photo_are
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", r"filename=regex=^(IMAG\d+)"])
     assert "1 left out as the same photo as another" in result.output
     assert "Why 1 photo did not match" in result.output and "ASLN" not in result.output.split("Why 1 photo")[1].split("date  ")[0]
+
+
+def explained(mac, in_library, files, *options):
+    add_photos(mac.libraries["Source"], in_library)
+    folder = mac.libraries["Source"].parent / "backup"
+    for name, when, size in files:
+        make_file(folder / name, when, size)
+    return runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", *options]).output
+
+
+def test_explain_shows_a_photo_of_the_same_name_though_it_is_not_the_closest(mac):
+    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-20 09:00:00", 700, "IMAG0044.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
+    assert "closest: IMAG0043.JPG" in output
+    assert "same name: IMAG0044.JPG  2018-03-20 09:00:00  700  (differs: date by 14d 23h, size by 600 bytes (85.7%))" in output
+
+
+def test_explain_says_when_the_library_has_no_photo_of_that_name(mac):
+    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
+    assert "no photo of that name in Source" in output
+
+
+def test_explain_shows_what_is_in_recently_deleted(mac):
+    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-05 10:00:00", 100, "IMAG0044.JPG", "trashed")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
+    assert "in Recently Deleted: IMAG0044.JPG  2018-03-05 10:00:00  100  (differs: nothing the mode looks at: Photos may count this one)" in output
+    assert "no photo of that name in Source" in output  # the live library has none: only the trash does

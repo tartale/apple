@@ -530,8 +530,8 @@ def diff_command(
         first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
     only_left, only_right, both = matching.pair(first, second, match)
     if explain:
-        explain_unmatched(only_left, second, match, right)
-        explain_unmatched(only_right, first, match, left)
+        explain_unmatched(only_left, second, match, right, data[1].trashed)
+        explain_unmatched(only_right, first, match, left, data[0].trashed)
     if not summary:
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
@@ -552,31 +552,41 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
-def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str) -> None:
+def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None) -> None:
     """Says on stderr, for each photo of unmatched, which photo of others (the library or folder called name) is closest to it and
-    what differs: what is wrong with the match, as far as the mode can tell."""
+    what differs: what is wrong with the match, as far as the mode can tell. Also the photos of the same name, however much
+    they differ, and those in Recently Deleted (trashed), which Photos looks at when it looks for a duplicate."""
     if not unmatched:
         return
     finder = matching.Finder(mode, list(others))
+    trash = matching.Finder(mode, list(trashed)) if trashed else None
     typer.echo(f"Why {count(len(unmatched), 'photo')} did not match a photo of {name} (the closest one, and what differs under the mode):", err=True)
     for photo in sorted(unmatched):
         typer.echo(f"  {photo[2]}  {photo[0]}  {photo[1]}", err=True)
         near = finder.closest(photo)
         if near is None:
             typer.echo("      nothing like it", err=True)
-            continue
-        typer.echo(f"      closest: {near.photo[2]}  {near.photo[0]}  {near.photo[1]}", err=True)
-        typer.echo(f"      differs: {', '.join(near.differs) or 'nothing the mode looks at'}", err=True)
-        alike = [
-            part for part, differs in (
-                ("date " + ("the same" if not near.gap else f"{matching.span(near.gap)} apart"), any(d.startswith("date") for d in near.differs)),
-                ("size " + ("the same" if not near.bytes_apart else f"{near.bytes_apart:,} bytes apart"), any(d.startswith("size") for d in near.differs)),
-            ) if not differs
-        ]
-        if alike:
-            typer.echo(f"      within the mode: {', '.join(alike)}", err=True)
-        if near.differs and all(part in ("name", "extension") for part in near.differs) and not near.gap and not near.bytes_apart:
-            typer.echo("      the same date and size under another name: Photos compares the content, so it may call this a duplicate", err=True)
+        else:
+            typer.echo(f"      closest: {near.photo[2]}  {near.photo[0]}  {near.photo[1]}", err=True)
+            typer.echo(f"      differs: {', '.join(near.differs) or 'nothing the mode looks at'}", err=True)
+            alike = [
+                part for part, differs in (
+                    ("date " + ("the same" if not near.gap else f"{matching.span(near.gap)} apart"), any(d.startswith("date") for d in near.differs)),
+                    ("size " + ("the same" if not near.bytes_apart else f"{near.bytes_apart:,} bytes apart"), any(d.startswith("size") for d in near.differs)),
+                ) if not differs
+            ]
+            if alike:
+                typer.echo(f"      within the mode: {', '.join(alike)}", err=True)
+            if near.differs and all(part in ("name", "extension") for part in near.differs) and not near.gap and not near.bytes_apart:
+                typer.echo("      the same date and size under another name: Photos compares the content, so it may call this a duplicate", err=True)
+        same = finder.same_name(photo)
+        for item in same:
+            if not near or item.photo != near.photo:
+                typer.echo(f"      same name: {item.photo[2]}  {item.photo[0]}  {item.photo[1]}  (differs: {', '.join(item.differs) or 'nothing the mode looks at'})", err=True)
+        if not same:
+            typer.echo(f"      no photo of that name in {name}", err=True)
+        for item in (trash.same_name(photo) if trash else []):
+            typer.echo(f"      in Recently Deleted: {item.photo[2]}  {item.photo[0]}  {item.photo[1]}  (differs: {', '.join(item.differs) or 'nothing the mode looks at: Photos may count this one'})", err=True)
 
 
 def parse_mode(text: str) -> matching.Mode:
@@ -598,7 +608,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
     missing = matching.absent(selected[0], selected[1], match)
     if explain:
-        explain_unmatched(missing, selected[1], match, right)
+        explain_unmatched(missing, selected[1], match, right, data[1].trashed)
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
     ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
@@ -624,7 +634,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
     wanted = Counter({photo: 1 for photo in kept})
     if explain and library:  # of the photos that are left, not of the ones left out as the same photo
-        explain_unmatched(wanted, selected[1], match, library_name)
+        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed)
     rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
     return [
