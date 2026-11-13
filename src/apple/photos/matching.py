@@ -13,6 +13,9 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
     extension=full           the extension without regard to case, and .jpeg is .jpg (the default)
     extension=exact          the extension character for character
     extension=ignore         any extension: IMG_1234.HEIC and IMG_1234.JPG are one photo
+    date=exif                a file in a folder is dated by the capture time in its own metadata (EXIF), as Photos dates it on
+                             import, with its modification time only where it has none (the default)
+    date=modified            a file in a folder is dated by its modification time alone
     date=within=2h           within a time (a number and s, m, h or d; 2h is the default)
     date=exact | date=ignore
     filesize=within=1%       within a share of the size (1% is the default), or a number of bytes: filesize=within=512bytes
@@ -42,6 +45,7 @@ UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 class Mode:
     filename: str = "full"  # exact, full, prefix, regex or ignore (of the name without its extension)
     extension: str = "full"  # exact, full or ignore
+    date_source: str = "exif"  # exif or modified: where a folder's files get their date (a library's photos have Photos' own)
     prefix: int = 0  # for prefix: how many characters of the name must agree
     pattern: str = ""  # for regex: the regular expression
     date: str = "within"  # exact, within or ignore
@@ -57,9 +61,9 @@ PRESETS = {"tolerant": TOLERANT, "exact": EXACT}
 HELP = (
     "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore|prefix=N|regex=PATTERN "
     "(of the name without its extension; full ignores case; regex compares what the pattern, or its first group, matches), "
-    "extension=full|exact|ignore (full ignores case, and .jpeg is .jpg), date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
+    "extension=full|exact|ignore (full ignores case, and .jpeg is .jpg), date=exif|modified (where a file in a folder gets its date: its EXIF capture time, as Photos does, or its modification time) or date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
     "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
-    "`exact,filename=prefix=8`. The default is tolerant: filename=full,extension=full,date=within=2h,filesize=within=1%. Also read from "
+    "`exact,filename=prefix=8`. The default is tolerant: filename=full,extension=full,date=exif,date=within=2h,filesize=within=1%. Also read from "
     "APPLE_PHOTOS_DIFF_MODE."
 )
 
@@ -98,12 +102,14 @@ def parse(text: str) -> Mode:
                 raise ValueError(f"extension={value!r}: use full, exact or ignore")
         elif field == "date":
             kind, _, amount = value.partition("=")
-            if kind in ("exact", "ignore") and not amount:
+            if kind in ("exif", "modified") and not amount:
+                mode = replace(mode, date_source=kind)
+            elif kind in ("exact", "ignore") and not amount:
                 mode = replace(mode, date=kind)
             elif kind == "within" and (found := re.fullmatch(r"(\d+(?:\.\d+)?)([smhd])", amount)):
                 mode = replace(mode, date="within", date_within=timedelta(seconds=float(found.group(1)) * UNITS[found.group(2)]))
             else:
-                raise ValueError(f"date={value!r}: use exact, ignore or within=DURATION (a number and s, m, h or d, such as 2h)")
+                raise ValueError(f"date={value!r}: use exif, modified, exact, ignore or within=DURATION (a number and s, m, h or d, such as 2h)")
         elif field == "filesize":
             kind, _, amount = value.partition("=")
             if kind in ("exact", "ignore") and not amount:

@@ -514,7 +514,7 @@ def diff_command(
     match = parse_mode(diff_mode)
     try:
         sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
-        data = [folder_photos.folder_photos(side, refresh=refresh) if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
+        data = [folder_photos.folder_photos(side, refresh=refresh, exif=match.date_source == "exif") if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
     except pp.PowerPhotosError as error:
         fail(str(error))
 
@@ -646,7 +646,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
     try:
-        data = [folder_photos.folder_photos(Path(folder), refresh=refresh)] + ([pp.library_photos(library)] if library else [])
+        data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif")] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]

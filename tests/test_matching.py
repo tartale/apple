@@ -26,7 +26,7 @@ def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
 
 
 @pytest.mark.parametrize("text", ["filename", "filename=prefix", "filename=prefix=0", "filename=prefix=x", "filename=sideways", "extension", "extension=any", "date=within",
-                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=true", "strict"])
+                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date=sometimes", "strict"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
         m.parse(text)
@@ -182,3 +182,11 @@ def test_nothing_in_the_library_means_no_closest_photo():
 
 def test_a_gap_is_told_in_two_units():
     assert [m.span(s) for s in (0, 40, 3725, 90000, 345600)] == ["0s", "40s", "1h 2m", "1d 1h", "4d"]
+
+
+def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified():
+    assert m.TOLERANT.date_source == "exif" and m.EXACT.date_source == "exif"
+    assert m.parse("date=modified").date_source == "modified" and m.parse("date=exif").date_source == "exif"
+    assert m.parse("date=modified,date=within=1h") == m.Mode(date_source="modified", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
+    assert m.parse("date=modified,exact").date_source == "exif"  # a whole mode starts over
+    assert m.parse("filename=regex=a,b,date=modified").pattern == "a,b"  # a comma before date= ends a regex too
