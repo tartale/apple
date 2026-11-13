@@ -95,3 +95,36 @@ def test_a_size_can_differ_by_a_number_of_bytes_whatever_the_size():
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000051", "a.jpg"): 1}), held, mode)
     assert m.absent(Counter({("2018-03-01 10:00:00", "151", "b.jpg"): 1}), held, mode)  # 51 bytes off a hundred: over the 50
     assert not m.absent(Counter({("2018-03-01 10:00:00", "150", "b.jpg"): 1}), held, mode)  # 50 bytes off a hundred: 50%, but within the 50 bytes
+
+
+def test_a_regex_can_hold_commas_and_ends_at_the_next_part():
+    mode = m.parse(r"filename=regex=^(img_\d{1,4}),date=exact")
+    assert (mode.filename, mode.pattern, mode.date) == ("regex", r"^(img_\d{1,4})", "exact")
+    assert m.parse("exact,filename=regex=a=b").pattern == "a=b"  # an = inside is part of the pattern
+
+
+@pytest.mark.parametrize("text", ["filename=regex", "filename=regex=", "filename=regex=(unclosed"])
+def test_what_is_not_a_regex_is_an_error(text):
+    with pytest.raises(ValueError):
+        m.parse(text)
+
+
+def test_a_regex_compares_what_it_matches_in_the_name_case_ignored():
+    held = Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_a.jpg"): 1})
+    mode = m.parse(r"filename=regex=^(\d{8}_\d{6})")
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_b.HEIC"): 1}), held, mode)  # what follows the time is not compared
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100001_a.jpg"): 1}), held, mode)  # another second
+    ignoring_case = m.parse(r"filename=regex=(img_\d+)")
+    other = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234_edited.JPG"): 1}), other, ignoring_case)
+
+
+def test_a_regex_uses_the_whole_match_without_a_group_and_the_whole_name_for_a_name_it_does_not_match():
+    held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
+    mode = m.parse(r"filename=regex=IMG_\d+")
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, mode)
+    unmatched = Counter({("2018-03-01 10:00:00", "1000", "holiday.jpg"): 1})
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "HOLIDAY.JPG"): 1}), unmatched, mode)  # read as full reads it
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "beach.jpg"): 1}), unmatched, mode)
+    optional = m.parse("filename=regex=(zz)?a")  # the group takes no part in these names: the whole match is compared
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "ab.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "ac.jpg"): 1}), optional)

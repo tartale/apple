@@ -6,6 +6,9 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
     filename=full            the whole name, without regard to case, and .jpeg is .jpg (the default)
     filename=exact           the whole name, character for character
     filename=prefix=N        the first N characters of the name, as `full` reads it
+    filename=regex=PATTERN   what the regular expression matches in the name (its first group, if it has one), case ignored:
+                             regex=^(\\d{8}_\\d{6}) is the date and time a camera put in front of a name; a name it does not match
+                             is read as `full` reads it
     filename=ignore          any name
     date=within=2h           within a time (a number and s, m, h or d; 2h is the default)
     date=exact | date=ignore
@@ -18,6 +21,7 @@ and `tolerant` (the default) name whole modes, and a field after them changes ju
 does not tell photos apart.
 """
 import re
+from functools import lru_cache
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -32,8 +36,9 @@ UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 @dataclass(frozen=True)
 class Mode:
-    filename: str = "full"  # exact, full, prefix or ignore
+    filename: str = "full"  # exact, full, prefix, regex or ignore
     prefix: int = 0  # for prefix: how many characters of the name must agree
+    pattern: str = ""  # for regex: the regular expression
     date: str = "within"  # exact, within or ignore
     date_within: timedelta = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
     filesize: str = "within"  # exact, within or ignore
@@ -45,18 +50,21 @@ TOLERANT = Mode()
 EXACT = Mode(filename="exact", date="exact", filesize="exact")
 PRESETS = {"tolerant": TOLERANT, "exact": EXACT}
 HELP = (
-    "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore|prefix=N "
-    "(full ignores case, and .jpeg is .jpg), date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
+    "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore|prefix=N|regex=PATTERN "
+    "(full ignores case, and .jpeg is .jpg; regex compares what the pattern, or its first group, matches in the name), date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
     "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
     "`exact,filename=prefix=8`. The default is tolerant: filename=full,date=within=2h,filesize=within=1%. Also read from "
     "APPLE_PHOTOS_DIFF_MODE."
 )
 
 
+PARTS = re.compile(r",(?=\s*(?:filename=|date=|filesize=|exact\b|tolerant\b))")  # a comma ends a part only before the next part: a regex may hold commas
+
+
 def parse(text: str) -> Mode:
     """The Mode a --diff-mode text says; ValueError, with what is wrong with it, when it is not one. Nothing is the default."""
     mode = TOLERANT
-    for item in (part.strip() for part in text.split(",")):
+    for item in (part.strip() for part in PARTS.split(text)):
         if not item:
             continue
         if item in PRESETS:
@@ -69,8 +77,14 @@ def parse(text: str) -> Mode:
                 mode = replace(mode, filename=kind)
             elif kind == "prefix" and count.isdigit() and int(count) > 0:
                 mode = replace(mode, filename="prefix", prefix=int(count))
+            elif kind == "regex" and count:
+                try:
+                    re.compile(count)
+                except re.error as error:
+                    raise ValueError(f"filename=regex={count}: not a regular expression ({error})")
+                mode = replace(mode, filename="regex", pattern=count)
             else:
-                raise ValueError(f"filename={value!r}: use full, exact, ignore or prefix=N (N characters, at least 1)")
+                raise ValueError(f"filename={value!r}: use full, exact, ignore, prefix=N (N characters, at least 1) or regex=PATTERN")
         elif field == "date":
             kind, _, amount = value.partition("=")
             if kind in ("exact", "ignore") and not amount:
@@ -94,6 +108,11 @@ def parse(text: str) -> Mode:
     return mode
 
 
+@lru_cache(maxsize=None)
+def compiled(pattern: str):
+    return re.compile(pattern, re.IGNORECASE)
+
+
 def name_key(mode: Mode, name: str) -> str:
     """What of a file name must agree."""
     if mode.filename == "exact":
@@ -101,6 +120,11 @@ def name_key(mode: Mode, name: str) -> str:
     if mode.filename == "ignore":
         return ""
     normalized = pp.normalized_name(name)
+    if mode.filename == "regex":
+        found = compiled(mode.pattern).search(name)
+        if not found:
+            return normalized
+        return (found.group(1) if found.re.groups and found.group(1) is not None else found.group(0)).lower()
     return normalized[:mode.prefix] if mode.filename == "prefix" else normalized
 
 

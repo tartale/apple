@@ -41,12 +41,12 @@ Every command that decides whether two photos are the same photo (`diff`, `copy 
 
 | Part | Values |
 | --- | --- |
-| `filename=` | `full` (the whole name, case ignored, `.jpeg` is `.jpg`; the default), `exact` (as written), `prefix=N` (the first N characters, as `full` reads them), `ignore` |
+| `filename=` | `full` (the whole name, case ignored, `.jpeg` is `.jpg`; the default), `exact` (as written), `prefix=N` (the first N characters, as `full` reads them), `regex=PATTERN` (what the regular expression finds in the name, its first group if it has one, case ignored; a name it does not match is read as `full` reads it; the pattern may hold commas and `=`, and ends at the next `filename=`, `date=`, `filesize=`, `exact` or `tolerant`), `ignore` |
 | `date=` | `within=2h` (the default; a number and `s`, `m`, `h` or `d`), `exact`, `ignore` |
 | `filesize=` | `within=1%` (the default), `within=512bytes` (a number of bytes whatever the size; `b` and `byte` also work), `exact`, `ignore`; a size that is not known (0, as for a placeholder) never tells photos apart unless `exact` |
 | whole modes | `tolerant` (the default: `filename=full,date=within=2h,filesize=within=1%`) and `exact` (all three exact, the name as written) |
 
-For example `exact,filename=prefix=8` or `date=within=1d`. `diff` pairs each photo with at most one photo of the other side, so extra copies are the ones left over (a photo counted once however many copies it has, unless `--include-duplicates`); the commands that copy or import ask only whether the destination has any photo that matches.
+For example `exact,filename=prefix=8`, `date=within=1d` or `filename=regex=^(\d{8}_\d{6})` (names that start with the same camera date and time). Quote a pattern in the shell. `diff` pairs each photo with at most one photo of the other side, so extra copies are the ones left over (a photo counted once however many copies it has, unless `--include-duplicates`); the commands that copy or import ask only whether the destination has any photo that matches.
 
 ## Development
 

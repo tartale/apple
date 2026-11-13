@@ -831,6 +831,14 @@ def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(
     assert bad.exit_code == 2 and "prefix=N" in " ".join(bad.output.replace("│", " ").split())
 
 
+def test_diff_mode_filename_regex_matches_what_the_pattern_finds_in_the_names(mac):
+    edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
+    assert diff(mac, [A], [edited], "--diff-mode", r"filename=regex=^(\w)").exit_code == 0
+    assert diff(mac, [A], [("2018-03-01 10:00:00", 100, "b-edited.jpg")], "--diff-mode", r"filename=regex=^(\w)").exit_code == 1
+    bad = diff(mac, [A], [edited], "--diff-mode", "filename=regex=(")
+    assert bad.exit_code == 2 and "not a regular expression" in " ".join(bad.output.replace("│", " ").split())
+
+
 def test_diff_mode_filename_prefix_matches_names_that_start_alike(mac):
     edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
     assert diff(mac, [A], [edited]).exit_code == 1
