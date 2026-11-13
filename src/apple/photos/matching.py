@@ -179,6 +179,13 @@ class Index:
             items.sort(key=lambda item: item[0])
             self.groups[where] = (items, [at for at, _ in items])
 
+    def add(self, photo: Photo) -> None:
+        when = datetime.fromisoformat(photo[0])
+        items, dates = self.groups.setdefault(bucket(self.mode, photo), ([], []))
+        at = bisect_right(dates, when)
+        dates.insert(at, when)
+        items.insert(at, (when, photo))
+
     def matches(self, photo: Photo) -> List[Photo]:
         """The indexed photos that are the same photo as this one, nearest in date first."""
         items, dates = self.groups.get(bucket(self.mode, photo), ([], []))
@@ -217,3 +224,14 @@ def pair(first: Counter, second: Counter, mode: Mode = TOLERANT) -> Tuple[Counte
                 unused[partner] -= 1
                 pairs += 1
     return only_first, +unused, pairs
+
+
+def dedupe(photos, mode: Mode = TOLERANT) -> List[Photo]:
+    """The photos with each photo that is the same photo as an earlier one under the mode left out: of photos that match, the
+    first in the order given is kept."""
+    index, kept = Index(mode, []), []
+    for photo in photos:
+        if not index.matches(photo):
+            index.add(photo)
+            kept.append(photo)
+    return kept

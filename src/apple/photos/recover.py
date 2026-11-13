@@ -16,7 +16,7 @@ from typing import Annotated, List, Optional
 
 import typer
 
-from apple.photos import folder_photos
+from apple.photos import folder_photos, matching
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
@@ -171,17 +171,22 @@ def missing_command(
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with the Messages identifier of a shared photo.")] = DiffFormat.text,
+    diff_mode: DiffModeOption = "",
 ) -> None:
     """List the photos of a library whose original it does not store. Changes nothing.
 
     PowerPhotos cannot list or copy these (the `missing` column of `apple photos diff`): a photo shared with you in
     Messages and never saved, or a hidden item whose file is gone. Save the list (--format csv) and give it to `apple
     photos find` to search for the originals, on this machine or another.
+
+    A photo that is the same photo as another in the list, under --diff-mode (by default the same file name and extension,
+    a date within two hours and a size within 1%), is listed once, and how many were left out is said.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     if library is None:
         raise typer.BadParameter("--library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
+    match = parse_mode(diff_mode)
     path = Path(library) if Path(library).is_dir() else find_library(library)
     progress = Progress()
     progress.line(f"Reading the photos of {library} ...")
@@ -193,9 +198,12 @@ def missing_command(
     for counted in (photos.visible, photos.hidden):
         for key in pp.of_media(within(counted, since, until), media.value):
             wanted[key] = key in photos.hidden
+    lacking = [key for key in sorted(wanted) if photos.original_missing(key)]
+    # of photos that are the same photo, the first is kept, and one with a Messages identifier comes first
+    kept = matching.dedupe(sorted(lacking, key=lambda key: (not photos.identifiers.get(key), key)), match)
     rows = [
         {"date": key[0], "name": key[2], "hidden": wanted[key], "shared": key in photos.shared, "identifier": photos.identifiers.get(key, "")}
-        for key in sorted(wanted) if photos.original_missing(key)
+        for key in sorted(kept)
     ]
     columns = ["date", "name", "hidden", "shared", "identifier"]
     if format == DiffFormat.json:
@@ -210,7 +218,7 @@ def missing_command(
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns) - 1)]
         for cell in cells:
             typer.echo("  ".join(text.ljust(width) for text, width in zip(cell, widths)).rstrip())
-    typer.echo(f"{count(len(rows), 'missing file')}", err=True)
+    typer.echo(f"{count(len(rows), 'missing file')}" + (f" ({len(lacking) - len(rows)} left out as the same photo as another, see --diff-mode)" if len(lacking) > len(rows) else ""), err=True)
 
 
 def find_command(

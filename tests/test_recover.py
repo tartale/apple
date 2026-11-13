@@ -1381,3 +1381,23 @@ def test_refresh_is_for_a_folder(mac, tmp_path):
     listed.write_text("date,name\n")
     result = runner.invoke(app, ["photos", "import", str(listed), "Source", "--refresh", "--dry-run"])
     assert result.exit_code != 0 and "are for a folder" in " ".join(result.output.replace("│", " ").split())
+
+
+def test_missing_lists_a_photo_once_however_its_copies_differ_under_the_diff_mode(mac):
+    add_photos(mac.libraries["Source"], [
+        (WHEN, 0, "one.heic", "shared"), ("2018-03-05 11:00:00", 0, "ONE.heic", "shared"),  # an hour later, another case
+        (LATER, 0, "one.heic", "shared"),  # a day on: another photo
+        (WHEN, 0, "two.heic", "shared"),
+    ])
+    result = missing("--format", "csv")
+    assert [(r["date"], r["name"]) for r in rows_of(result)] == [(WHEN, "one.heic"), (WHEN, "two.heic"), (LATER, "one.heic")]
+    assert "3 missing files (1 left out as the same photo as another" in result.output
+    exact = missing("--format", "csv", "--diff-mode", "exact")
+    assert len(rows_of(exact)) == 4 and "left out" not in exact.output
+    assert len(rows_of(missing("--format", "csv", "--diff-mode", "date=within=3d"))) == 2  # the day on is the same photo too
+
+
+def test_missing_keeps_a_shared_photo_s_messages_identifier_when_it_leaves_out_its_copy(mac):
+    add_photos(mac.libraries["Source"], [(WHEN, 0, "one.heic", "shared"), ("2018-03-05 10:30:00", 0, "one.heic", "shared")])
+    kept = rows_of(missing("--format", "csv"))
+    assert len(kept) == 1 and kept[0]["identifier"]
