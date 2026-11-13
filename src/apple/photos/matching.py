@@ -242,6 +242,8 @@ class Closest:
     """The photo of a library that is most like another, and in what the two differ under the mode."""
     photo: Photo
     differs: Tuple[str, ...]
+    gap: float = 0  # seconds between the two photos' dates
+    bytes_apart: int = 0  # bytes between their sizes
 
 
 def span(seconds: float) -> str:
@@ -300,5 +302,5 @@ class Finder:
             found, gap, bytes_apart = differences(self.mode, photo, other)
             score = (len(found), gap, bytes_apart, other)
             if best is None or score < best[0]:
-                best = (score, Closest(other, found))
+                best = (score, Closest(other, found, gap, bytes_apart))
         return best[1] if best else None

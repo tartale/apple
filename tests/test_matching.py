@@ -160,7 +160,7 @@ def test_the_closest_photo_is_the_one_that_differs_in_the_fewest_parts():
     held = [("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 10:00:00", "5000", "other.jpg"), ("2019-01-01 00:00:00", "1000", "a.jpg")]
     wanted = ("2018-03-01 10:00:00", "2000", "a.jpg")
     near = finder(*held).closest(wanted)
-    assert near.photo == held[0] and near.differs == ("size by 1,000 bytes (50.0%)",)
+    assert near.photo == held[0] and near.differs == ("size by 1,000 bytes (50.0%)",) and near.gap == 0 and near.bytes_apart == 1000
 
 
 def test_what_differs_is_said_in_words_for_each_part():

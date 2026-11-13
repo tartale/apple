@@ -567,8 +567,16 @@ def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, 
             continue
         typer.echo(f"      closest: {near.photo[2]}  {near.photo[0]}  {near.photo[1]}", err=True)
         typer.echo(f"      differs: {', '.join(near.differs) or 'nothing the mode looks at'}", err=True)
-        if near.differs and all(part in ("name", "extension") for part in near.differs):
-            typer.echo("      the date and size are the same under another name: Photos compares the content, so it may call this a duplicate", err=True)
+        alike = [
+            part for part, differs in (
+                ("date " + ("the same" if not near.gap else f"{matching.span(near.gap)} apart"), any(d.startswith("date") for d in near.differs)),
+                ("size " + ("the same" if not near.bytes_apart else f"{near.bytes_apart:,} bytes apart"), any(d.startswith("size") for d in near.differs)),
+            ) if not differs
+        ]
+        if alike:
+            typer.echo(f"      within the mode: {', '.join(alike)}", err=True)
+        if near.differs and all(part in ("name", "extension") for part in near.differs) and not near.gap and not near.bytes_apart:
+            typer.echo("      the same date and size under another name: Photos compares the content, so it may call this a duplicate", err=True)
 
 
 def parse_mode(text: str) -> matching.Mode:

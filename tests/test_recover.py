@@ -1429,8 +1429,17 @@ def test_explain_says_why_a_file_is_not_matched_in_the_library(mac):
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
     words = result.output
     assert "Why 2 photos did not match a photo of Source" in words
-    assert "IMAG0044_copy.JPG" in words and "differs: name" in words and "may call this a duplicate" in words
-    assert "differs: size by 400 bytes (80.0%)" in words
+    assert "IMAG0044_copy.JPG" in words and "differs: name" in words and "within the mode: date the same, size the same" in words and "may call this a duplicate" in words
+    assert "differs: size by 400 bytes (80.0%)" in words and "within the mode: date the same" in words
+
+
+def test_explain_does_not_call_it_a_duplicate_when_the_date_is_only_within_the_tolerance(mac):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:36", 100, "IMAG0043.JPG")])
+    folder = mac.libraries["Source"].parent / "backup"
+    make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")  # the next shot, 36 seconds on, with the same size
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    assert "closest: IMAG0043.JPG" in result.output and "differs: name" in result.output
+    assert "within the mode: date 36s apart, size the same" in result.output and "duplicate" not in result.output
 
 
 def test_explain_is_for_only_missing(mac, tmp_path):
