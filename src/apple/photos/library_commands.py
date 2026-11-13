@@ -552,6 +552,30 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
+IgnoreTrashOption = Annotated[
+    bool,
+    typer.Option(
+        "--ignore-trash",
+        help="With --only-missing, do not count what the destination holds in Recently Deleted as there. By default a photo that "
+        "matches one there is left out, as Photos itself would call it a duplicate; with this it is listed, imported or copied.",
+    ),
+]
+
+
+def lacking_from(wanted: Counter, held: Counter, library: pp.Photos, since: Optional[datetime], until: Optional[datetime],
+                 media: Media, match: matching.Mode, ignore_trash: bool) -> Counter:
+    """The photos of wanted that the library (whose live photos, in range, are held) has none of; unless ignore_trash, one
+    that matches a photo in its Recently Deleted is there too, and how many that left out is said."""
+    live = matching.absent(wanted, held, match)
+    if ignore_trash:
+        return live
+    trash = pp.of_media(within(library.trashed, since, until), media.value)
+    missing = matching.absent(live, held + trash, match)
+    if len(missing) < len(live):
+        typer.echo(f"{len(live) - len(missing)} left out as the destination has them in Recently Deleted (--ignore-trash lists them)", err=True)
+    return missing
+
+
 def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None) -> None:
     """Says on stderr, for each photo of unmatched, which photo of others (the library or folder called name) is closest to it and
     what differs: what is wrong with the match, as far as the mode can tell. Also the photos of the same name, however much
@@ -597,7 +621,7 @@ def parse_mode(text: str) -> matching.Mode:
         raise typer.BadParameter(str(error))
 
 
-def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False) -> list:
+def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False, ignore_trash: bool = False) -> list:
     """The records of `diff LEFT RIGHT --only left` for the dates and media given, read from the databases."""
     try:
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
@@ -606,7 +630,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
-    missing = matching.absent(selected[0], selected[1], match)
+    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash)
     if explain:
         explain_unmatched(missing, selected[1], match, right, data[1].trashed)
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
@@ -617,7 +641,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
-def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library") -> list:
+def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library", ignore_trash: bool = False) -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
@@ -626,7 +650,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
-    wanted = matching.absent(selected[0], selected[1], match) if library else Counter(dict.fromkeys(selected[0], 1))
+    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash) if library else Counter(dict.fromkeys(selected[0], 1))
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
     kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match)
@@ -661,6 +685,7 @@ def copy_command(
     check_duplicates: CheckDuplicatesOption = False,
     diff_mode: DiffModeOption = "",
     explain: ExplainOption = False,
+    ignore_trash: IgnoreTrashOption = False,
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
     ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
@@ -685,14 +710,14 @@ def copy_command(
     if only_missing and list_file is not None:
         raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
     match = parse_mode(diff_mode)
-    if explain and not only_missing:
-        raise typer.BadParameter("--explain is for --only-missing: it says why each photo missing from the destination is not matched there")
+    if (explain or ignore_trash) and not only_missing:
+        raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the photos missing from the destination")
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
     ids = None
     if only_missing:
-        rows = only_in_left(source, destination, since, until, media, match, explain)
+        rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash)
         names, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too

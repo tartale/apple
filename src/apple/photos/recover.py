@@ -21,7 +21,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -361,6 +361,7 @@ def import_found_command(
     ] = False,
     diff_mode: DiffModeOption = "",
     explain: ExplainOption = False,
+    ignore_trash: IgnoreTrashOption = False,
     refresh: Annotated[
         bool,
         typer.Option("--refresh", help="With a folder, read it again instead of reusing what an earlier run saved (as `diff` and `find` do), and save the result."),
@@ -391,8 +392,8 @@ def import_found_command(
     folder = folder_photos.is_folder(source)
     if not folder and (only_missing or refresh):
         raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")
-    if explain and not only_missing:
-        raise typer.BadParameter("--explain is for --only-missing: it says why each file the destination lacks is not matched there")
+    if (explain or ignore_trash) and not only_missing:
+        raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the files the destination lacks")
     match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():
@@ -402,7 +403,7 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format)
         return
     import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format)

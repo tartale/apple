@@ -1446,7 +1446,7 @@ def test_explain_is_for_only_missing(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
-    assert result.exit_code == 2 and "--explain is for --only-missing" in " ".join(result.output.replace("│", " ").split())
+    assert result.exit_code == 2 and "--explain and --ignore-trash are for --only-missing" in " ".join(result.output.replace("│", " ").split())
 
 
 def test_diff_and_copy_only_missing_explain_too(mac, tmp_path):
@@ -1490,6 +1490,25 @@ def test_explain_says_when_the_library_has_no_photo_of_that_name(mac):
 
 
 def test_explain_shows_what_is_in_recently_deleted(mac):
-    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-05 10:00:00", 100, "IMAG0044.JPG", "trashed")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
+    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-05 10:00:00", 100, "IMAG0044.JPG", "trashed")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)], "--ignore-trash")
     assert "in Recently Deleted: IMAG0044.JPG  2018-03-05 10:00:00  100  (differs: nothing the mode looks at: Photos may count this one)" in output
     assert "no photo of that name in Source" in output  # the live library has none: only the trash does
+
+
+def test_what_the_destination_holds_in_recently_deleted_is_not_listed_unless_ignore_trash(mac):
+    in_library = [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-05 10:00:00", 100, "IMAG0044.JPG", "trashed")]
+    files = [("IMAG0044.JPG", "2018-03-05 10:00:00", 100), ("IMAG0045.JPG", "2018-03-06 10:00:00", 100)]
+    output = explained(mac, in_library, files)
+    assert "1 left out as the destination has them in Recently Deleted" in output and "Imported 0 of 1" in output
+    listed = explained(mac, in_library, [], "--ignore-trash")
+    assert "Imported 0 of 2" in listed and "left out" not in listed
+
+
+def test_copy_only_missing_leaves_out_what_the_destination_has_in_recently_deleted(mac):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 100, "a.jpg"), ("2018-03-06 10:00:00", 100, "b.jpg")])
+    add_photos(mac.libraries["photos-2018"], [("2018-03-05 10:00:00", 100, "a.jpg", "trashed")])
+    args = ["photos", "copy", "Source", "photos-2018", "--only-missing", "--dry-run"]
+    default = runner.invoke(app, args)
+    assert "would copy 1 photos of Source that it lacks" in default.output and "1 left out as the destination has them in Recently Deleted" in default.output
+    assert "would copy 2 photos" in runner.invoke(app, [*args, "--ignore-trash"]).output
+    assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--ignore-trash", "--dry-run"]).exit_code == 2
