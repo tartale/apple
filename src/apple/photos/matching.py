@@ -275,9 +275,16 @@ def differences(mode: Mode, photo: Photo, other: Photo) -> Tuple[Tuple[str, ...]
     return tuple(found), gap, bytes_apart
 
 
+def stem_key(mode: Mode, name: str) -> str:
+    """What makes two names the same name for the finder: the name without its extension as the mode reads it (so a regex or a
+    prefix applies), or, when the mode ignores names, as written without regard to case."""
+    return os.path.splitext(name)[0].lower() if mode.filename == "ignore" else name_key(mode, name)[0]
+
+
 class Finder:
-    """Finds, for a photo that nothing in a library matches, the photo that is closest to it: the one that differs in the fewest
-    of name, extension, date and size, and then in date and size the least."""
+    """Finds, for a photo that nothing in a library matches, the photo that is closest to it: of the photos with the same name
+    under the mode, if there are any, else of all, the one that differs in the fewest of name, extension, date and size, and
+    then in date and size the least."""
 
     def __init__(self, mode: Mode, held) -> None:
         self.mode = mode
@@ -285,7 +292,7 @@ class Finder:
         self.by_size: Dict[str, List[Photo]] = {}
         dated = []
         for photo in held:
-            self.by_stem.setdefault(os.path.splitext(photo[2])[0].lower(), []).append(photo)
+            self.by_stem.setdefault(stem_key(mode, photo[2]), []).append(photo)
             self.by_size.setdefault(photo[1], []).append(photo)
             dated.append((datetime.fromisoformat(photo[0]), photo))
         dated.sort(key=lambda item: item[0])
@@ -293,19 +300,20 @@ class Finder:
         self.dated = [photo for _, photo in dated]
 
     def same_name(self, photo: Photo, limit: int = 3) -> List[Closest]:
-        """The photos with the same name as this one (case and extension ignored) however their dates and sizes differ, the
-        nearest in date first."""
+        """The photos with the same name as this one under the mode (a regex or prefix applies; the extension is not
+        compared) however their dates and sizes differ, the nearest in date first."""
         found = []
-        for other in self.by_stem.get(os.path.splitext(photo[2])[0].lower(), []):
+        for other in self.by_stem.get(stem_key(self.mode, photo[2]), []):
             differs, gap, bytes_apart = differences(self.mode, photo, other)
             found.append((gap, bytes_apart, other, Closest(other, differs, gap, bytes_apart)))
         return [item[3] for item in sorted(found, key=lambda item: item[:3])[:limit]]
 
     def closest(self, photo: Photo) -> Optional[Closest]:
         when, day = datetime.fromisoformat(photo[0]), timedelta(days=1)
-        candidates = set(self.by_stem.get(os.path.splitext(photo[2])[0].lower(), []))
-        candidates.update(self.by_size.get(photo[1], []) if photo[1].isdigit() and int(photo[1]) else [])
-        candidates.update(self.dated[bisect_left(self.dates, when - day):bisect_right(self.dates, when + day)])
+        candidates = set(self.by_stem.get(stem_key(self.mode, photo[2]), []))
+        if not candidates:  # nothing of that name: whatever is alike in size or date
+            candidates.update(self.by_size.get(photo[1], []) if photo[1].isdigit() and int(photo[1]) else [])
+            candidates.update(self.dated[bisect_left(self.dates, when - day):bisect_right(self.dates, when + day)])
         best = None
         for other in candidates:
             found, gap, bytes_apart = differences(self.mode, photo, other)

@@ -1478,10 +1478,19 @@ def explained(mac, in_library, files, *options):
     return runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", *options]).output
 
 
-def test_explain_shows_a_photo_of_the_same_name_though_it_is_not_the_closest(mac):
+def test_explain_prefers_the_photo_of_the_same_name_to_a_neighbour_that_is_nearer(mac):
     output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-20 09:00:00", 700, "IMAG0044.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
-    assert "closest: IMAG0043.JPG" in output
-    assert "same name: IMAG0044.JPG  2018-03-20 09:00:00  700  (differs: date by 14d 23h, size by 600 bytes (85.7%))" in output
+    assert "closest: IMAG0044.JPG  2018-03-20 09:00:00  700" in output
+    assert "differs: date by 14d 23h, size by 600 bytes (85.7%)" in output and "IMAG0043" not in output
+    assert "no photo of that name" not in output
+
+
+def test_explain_reads_the_name_as_the_mode_does(mac):
+    mode = r"filename=regex=^(IMAG\d+)"
+    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2017-03-05 10:00:00", 100, "IMAG0044_ASLNFDmS.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)], "--diff-mode", mode)
+    assert "closest: IMAG0044_ASLNFDmS.JPG  2017-03-05 10:00:00  100" in output and "differs: date by 365d" in output
+    assert "no photo of that name" not in output
+
 
 
 def test_explain_says_when_the_library_has_no_photo_of_that_name(mac):
