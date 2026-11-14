@@ -16,12 +16,12 @@ from typing import Annotated, List, Optional
 
 import typer
 
-from apple.photos import folder_photos
+from apple.photos import folder_photos, matching
 from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, Media, cell_text, count, fail, find_library, folder_listing, within
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -171,17 +171,22 @@ def missing_command(
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
     format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per photo, with the Messages identifier of a shared photo.")] = DiffFormat.text,
+    diff_mode: DiffModeOption = "",
 ) -> None:
     """List the photos of a library whose original it does not store. Changes nothing.
 
     PowerPhotos cannot list or copy these (the `missing` column of `apple photos diff`): a photo shared with you in
     Messages and never saved, or a hidden item whose file is gone. Save the list (--format csv) and give it to `apple
     photos find` to search for the originals, on this machine or another.
+
+    A photo that is the same photo as another in the list, under --diff-mode (by default the same file name and extension,
+    a date within two hours and a size within 1%), is listed once, and how many were left out is said.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     if library is None:
         raise typer.BadParameter("--library is needed (or APPLE_PHOTOS_DEFAULT_LIBRARY)")
+    match = parse_mode(diff_mode)
     path = Path(library) if Path(library).is_dir() else find_library(library)
     progress = Progress()
     progress.line(f"Reading the photos of {library} ...")
@@ -193,9 +198,12 @@ def missing_command(
     for counted in (photos.visible, photos.hidden):
         for key in pp.of_media(within(counted, since, until), media.value):
             wanted[key] = key in photos.hidden
+    lacking = [key for key in sorted(wanted) if photos.original_missing(key)]
+    # of photos that are the same photo, the first is kept, and one with a Messages identifier comes first
+    kept = matching.dedupe(sorted(lacking, key=lambda key: (not photos.identifiers.get(key), key)), match)
     rows = [
         {"date": key[0], "name": key[2], "hidden": wanted[key], "shared": key in photos.shared, "identifier": photos.identifiers.get(key, "")}
-        for key in sorted(wanted) if photos.original_missing(key)
+        for key in sorted(kept)
     ]
     columns = ["date", "name", "hidden", "shared", "identifier"]
     if format == DiffFormat.json:
@@ -210,7 +218,7 @@ def missing_command(
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns) - 1)]
         for cell in cells:
             typer.echo("  ".join(text.ljust(width) for text, width in zip(cell, widths)).rstrip())
-    typer.echo(f"{count(len(rows), 'missing file')}", err=True)
+    typer.echo(f"{count(len(rows), 'missing file')}" + (f" ({len(lacking) - len(rows)} left out as the same photo as another, see --diff-mode)" if len(lacking) > len(rows) else ""), err=True)
 
 
 def find_command(
@@ -348,13 +356,12 @@ def import_found_command(
         typer.Option(
             "--only-missing",
             help="With a folder, import only the files the destination lacks, judged from its database as `copy --only-missing` "
-            "judges a library: a photo of the same file name (case ignored, .jpeg is .jpg) within two hours and 1% of the size is there.",
+            "judges a library (see --diff-mode: by default a photo of the same file name, case ignored, within two hours and 1% of the size is there).",
         ),
     ] = False,
-    strict: Annotated[
-        bool,
-        typer.Option("--strict", help="With --only-missing, a photo is there only when its date, size and file name are exactly the file's."),
-    ] = False,
+    diff_mode: DiffModeOption = "",
+    explain: ExplainOption = False,
+    ignore_trash: IgnoreTrashOption = False,
     refresh: Annotated[
         bool,
         typer.Option("--refresh", help="With a folder, read it again instead of reusing what an earlier run saved (as `diff` and `find` do), and save the result."),
@@ -378,15 +385,16 @@ def import_found_command(
     is deleted, and nothing is changed with --dry-run (or DRY_RUN=true).
 
     With a folder, --only-missing limits the import to the files the DESTINATION lacks (a file within two hours and 1% of
-    the size of a photo of that name is not lacking; --strict wants it exact); without it every file is imported.
+    the size of a photo of that name is not lacking, as --diff-mode says); without it every file is imported.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     folder = folder_photos.is_folder(source)
-    if not folder and (only_missing or strict or refresh):
-        raise typer.BadParameter("--only-missing, --strict and --refresh are for a folder: a list says what to import")
-    if strict and not only_missing:
-        raise typer.BadParameter("--strict says how --only-missing tells that the library has a photo")
+    if not folder and (only_missing or refresh):
+        raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")
+    if (explain or ignore_trash) and not only_missing:
+        raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the files the destination lacks")
+    match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():
         path = Path(destination).expanduser()
@@ -395,7 +403,7 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, strict, refresh)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format)
         return
     import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format)

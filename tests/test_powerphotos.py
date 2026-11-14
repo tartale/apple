@@ -803,15 +803,46 @@ def test_diff_default_columns_are_true_or_false_flags_after_the_name(mac):
     assert columns[0] == "side,date,size,name,missing,shared" and len(columns) == 3  # a.jpg and the placeholder; the hidden ones are left out
 
 
-def test_diff_ignore_date_matches_the_same_clip_imported_with_a_shifted_time(mac):
-    shifted = ("2018-03-01 11:00:00", 100, "a.jpg")
+def test_diff_mode_date_ignore_matches_the_same_clip_imported_with_a_shifted_time(mac):
+    shifted = ("2018-03-05 11:00:00", 100, "a.jpg")
     assert diff(mac, [A], [shifted]).exit_code == 1
-    result = diff(mac, [A], [shifted], "--ignore-date")
+    result = diff(mac, [A], [shifted], "--diff-mode", "date=ignore")
     assert result.exit_code == 0 and "In both: 1." in result.output
-    twice = diff(mac, [A], [A, shifted], "--ignore-date")  # the destination holds the clip twice: one extra
-    assert twice.exit_code == 1 and shown(twice) == [">  2018-03-01 11:00:00  100  a.jpg"]
-    different = diff(mac, [A], [("2018-03-01 11:00:00", 999, "a.jpg")], "--ignore-date")
+    twice = diff(mac, [A], [A, shifted], "--diff-mode", "date=ignore")  # the destination holds the clip twice: one extra
+    assert twice.exit_code == 1 and shown(twice) == [">  2018-03-05 11:00:00  100  a.jpg"]
+    different = diff(mac, [A], [("2018-03-05 11:00:00", 999, "a.jpg")], "--diff-mode", "date=ignore")
     assert different.exit_code == 1  # a different size is a different photo
+
+
+def test_diff_is_tolerant_by_default_and_exact_on_request(mac):
+    near = ("2018-03-01 11:00:00", 100, "A.JPEG")  # an hour later, in capitals, and a .jpeg
+    assert diff(mac, [A], [near]).exit_code == 0
+    exact = diff(mac, [A], [near], "--diff-mode", "exact")
+    assert exact.exit_code == 1 and "Only in Source: 1. Only in photos-2018: 1." in exact.output
+
+
+def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(mac, monkeypatch):
+    near = ("2018-03-01 11:00:00", 100, "a.jpg")
+    monkeypatch.setenv("APPLE_PHOTOS_DIFF_MODE", "exact")
+    assert diff(mac, [A], [near]).exit_code == 1
+    assert diff(mac, [A], [near], "--diff-mode", "tolerant").exit_code == 0  # the option wins
+    monkeypatch.delenv("APPLE_PHOTOS_DIFF_MODE")
+    bad = diff(mac, [A], [near], "--diff-mode", "filename=prefix=0")
+    assert bad.exit_code == 2 and "prefix=N" in " ".join(bad.output.replace("│", " ").split())
+
+
+def test_diff_mode_filename_regex_matches_what_the_pattern_finds_in_the_names(mac):
+    edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
+    assert diff(mac, [A], [edited], "--diff-mode", r"filename=regex=^(\w)").exit_code == 0
+    assert diff(mac, [A], [("2018-03-01 10:00:00", 100, "b-edited.jpg")], "--diff-mode", r"filename=regex=^(\w)").exit_code == 1
+    bad = diff(mac, [A], [edited], "--diff-mode", "filename=regex=(")
+    assert bad.exit_code == 2 and "not a regular expression" in " ".join(bad.output.replace("│", " ").split())
+
+
+def test_diff_mode_filename_prefix_matches_names_that_start_alike(mac):
+    edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
+    assert diff(mac, [A], [edited]).exit_code == 1
+    assert diff(mac, [A], [edited], "--diff-mode", "filename=prefix=1").exit_code == 0
 
 
 def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):
@@ -1568,7 +1599,7 @@ def test_strict_counts_a_photo_as_there_only_with_its_exact_date_size_and_name(m
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
     options = ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2011", "photos-2018"]
     assert runner.invoke(app, options).exit_code == 0
-    strict = runner.invoke(app, [*options, "--strict"])
+    strict = runner.invoke(app, [*options, "--diff-mode", "exact"])
     assert strict.exit_code == 1 and "photos-2018: 1 missing" in strict.output
 
 
@@ -1577,7 +1608,7 @@ def test_strict_fix_copies_a_stray_whose_near_copy_is_in_the_right_library(mac, 
     add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 1967270, "old.jpg")])
     add_photos(mac.libraries["photos-2017"], [("2017-06-01 11:00:00", 1968640, "old.jpg")])
     assert fix().exit_code in (0, 1) and mac.calls("copy-ids.applescript") == []
-    fix("--strict")
+    fix("--diff-mode", "exact")
     assert [call[:2] for call in mac.calls("copy-ids.applescript")] == [["photos-2018", "photos-2017"]]
 
 
@@ -1585,9 +1616,8 @@ def test_only_missing_strict_copies_a_photo_whose_near_copy_the_destination_has(
     result = copy_only_missing(mac, NEAR_SOURCE, NEAR_COPY)
     assert "nothing is missing from photos-2018" in result.output and mac.calls("copy-ids.applescript") == []
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
-    strict = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--strict"])
+    strict = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--diff-mode", "exact"])
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
-    assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--strict", "--since", "2011-01-01"]).exit_code == 2
 
 
 def test_the_id_applescripts_do_not_use_applescript_words_as_variable_names():
@@ -1974,7 +2004,7 @@ def test_a_folder_can_be_the_left_side_and_a_difference_in_size_or_time_is_a_dif
     folder = tmp_path / "pics"
     touch(folder / "a.jpg", A[0], size=101)  # another size
     touch(folder / "b.jpg", "2018-03-02 12:00:00")  # an hour later: the time of a re-saved file
-    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv"])
+    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv", "--diff-mode", "exact"])
     rows = list(csv.DictReader(io.StringIO(result.stdout)))
     assert result.exit_code == 1 and sorted((r["side"], r["name"]) for r in rows) == [("left", "a.jpg"), ("left", "b.jpg"), ("right", "a.jpg"), ("right", "b.jpg")]
 
