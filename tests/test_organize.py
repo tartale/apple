@@ -124,11 +124,44 @@ def test_exits_0_while_a_backup_holds_the_lock(icloud):
     assert not (icloud.account / "by-date").exists()
 
 
-def test_a_photo_whose_name_and_size_name_are_both_taken_by_other_photos_fails_the_run(icloud):
+def test_a_photo_whose_name_and_size_name_are_both_taken_by_other_photos_gets_the_next_name(icloud):
     month = icloud.account / "by-date/2020/06"
     month.mkdir(parents=True)
     (month / "a.jpg").write_bytes(b"other")
     (month / "a-100.jpg").write_bytes(b"another")
     icloud.original("a.jpg", 100, JUN_2020)
+    assert organize().exit_code == 0
+    assert same(month / "a-100-2.jpg", icloud.account / "originals/a.jpg")
+    assert "FAILED" not in icloud.log("organize")
+
+
+def test_a_copy_with_the_same_bytes_under_the_names_counts_as_already_there(icloud):
+    """Links left from when originals/ held another copy of the file: the same photo is there, so no more names are made."""
+    month = icloud.account / "by-date/2020/06"
+    month.mkdir(parents=True)
+    (month / "a.jpg").write_bytes(b"x" * 100)
+    (month / "a-100.jpg").write_bytes(b"x" * 100)
+    icloud.original("a.jpg", 100, JUN_2020)
+    result = organize()
+    assert result.exit_code == 0 and sorted(p.name for p in month.iterdir()) == ["a-100.jpg", "a.jpg"]
+    assert "existing=1" in icloud.log("organize") and "FAILED" not in icloud.log("organize")
+
+
+def test_photos_of_the_same_name_and_size_with_different_bytes_are_each_linked_under_their_own_name(icloud):
+    month = icloud.account / "by-date/2020/06"
+    month.mkdir(parents=True)
+    (month / "a.jpg").write_bytes(b"y" * 100)
+    icloud.original("a.jpg", 100, JUN_2020)
+    icloud.original("sub/a.jpg", 100, JUN_2020)  # another photo of that name and size, the same bytes as the first original
+    assert organize().exit_code == 0
+    assert sorted(p.name for p in month.iterdir()) == ["a-100.jpg", "a.jpg"]  # both originals have the same bytes: one link
+    assert (month / "a-100.jpg").read_bytes() == b"x" * 100 and (month / "a.jpg").read_bytes() == b"y" * 100
+
+
+def test_a_link_that_cannot_be_made_fails_the_run_and_the_log_says_why(icloud):
+    (icloud.account / "by-date").mkdir(parents=True)
+    (icloud.account / "by-date/2020").write_text("a file where a folder should be")
+    icloud.original("a.jpg", 100, JUN_2020)
     assert organize().exit_code == 1
-    assert "FAILED to link" in icloud.log("organize")
+    log = icloud.log("organize")
+    assert "FAILED to link" in log and "originals/a.jpg:" in log and "by-date/2020/06/a.jpg" in log
