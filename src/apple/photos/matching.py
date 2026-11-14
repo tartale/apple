@@ -23,6 +23,9 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
                              its name was taken (`IMAG0044_<fingerprint>.JPG`). Where no id is known on both sides, the other
                              parts decide, all of which must agree.
     identity=ignore          the other parts alone decide
+    dimensions=ignore        the pixel size is not looked at (the default)
+    dimensions=exact         photos whose pixel sizes are both known must have the same one (a rotated copy has the same size); read
+                             from the database for a library and from the file's header for a folder, and an unknown size passes
     content=ignore           the bytes of the files are not read (the default)
     content=hash             files with the same SHA-256 are the same photo, whatever their name, date and size; a different hash
                              does not make them different (the tolerance for rewritten metadata stays). Only files whose size also
@@ -53,6 +56,7 @@ class Mode:
     extension: str = "full"  # exact, full or ignore
     identity: str = "auto"  # auto or ignore: whether ids from iCloud decide when both photos have one
     content: str = "ignore"  # ignore or hash: whether files with the same bytes are the same photo
+    dimensions: str = "ignore"  # ignore or exact: whether the pixel sizes must agree
     date_source: str = "modified"  # modified or exif: where a folder's files get their date (a library's photos have Photos' own)
     date: str = "within"  # exact, within or ignore
     date_within: timedelta = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
@@ -68,7 +72,7 @@ HELP = (
     "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore "
     "(of the name without its extension; full ignores case), "
     "extension=full|exact|ignore (full ignores case, and .jpeg is .jpg), identity=auto|ignore (photos with the same iCloud id are the same photo, "
-    "and with different ids are not, whatever the other parts say), content=ignore|hash (files with the same SHA-256 are the same photo; slow), date=exif|modified (where a file in a folder gets its date: its EXIF capture time, as Photos does, or its modification time) or date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
+    "and with different ids are not, whatever the other parts say), content=ignore|hash (files with the same SHA-256 are the same photo; slow), dimensions=ignore|exact (the pixel sizes must agree), date=exif|modified (where a file in a folder gets its date: its EXIF capture time, as Photos does, or its modification time) or date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
     "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
     "`exact,filename=ignore`. The default is tolerant: filename=full,extension=full,identity=auto,content=ignore,date=modified,date=within=2h,filesize=within=1%. Also read from "
     "APPLE_PHOTOS_DIFF_MODE."
@@ -95,6 +99,11 @@ def parse(text: str) -> Mode:
                 mode = replace(mode, extension=value)
             else:
                 raise ValueError(f"extension={value!r}: use full, exact or ignore")
+        elif field == "dimensions":
+            if value in ("ignore", "exact"):
+                mode = replace(mode, dimensions=value)
+            else:
+                raise ValueError(f"dimensions={value!r}: use ignore or exact")
         elif field == "content":
             if value in ("ignore", "hash"):
                 mode = replace(mode, content=value)
@@ -126,7 +135,7 @@ def parse(text: str) -> Mode:
             else:
                 raise ValueError(f"filesize={value!r}: use exact, ignore or within=PERCENT (such as 1%) or within=N bytes (such as 512bytes)")
         else:
-            raise ValueError(f"{item!r}: use filename=..., extension=..., identity=..., content=..., date=..., filesize=..., exact or tolerant")
+            raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., date=..., filesize=..., exact or tolerant")
     return mode
 
 
@@ -171,6 +180,7 @@ def bucket(mode: Mode, photo: Photo) -> tuple:
 
 Ids = Dict[Photo, Dict[str, set]]  # a photo -> {kind of id: the values it has}; a photo can have several items
 CONTENT = "sha256"  # the kind of id that is the hash of a file's bytes: it shows photos to be the same, never different
+DIMENSIONS = "dims"  # the kind of value that is a pixel size: it can show photos to be different, never the same
 
 
 def conflicting(first: Optional[Dict[str, set]], second: Optional[Dict[str, set]]) -> bool:
@@ -186,7 +196,8 @@ class Index:
     def __init__(self, mode: Mode, photos, ids: Optional[Ids] = None) -> None:
         self.mode = mode
         self.kinds = ({"stable", "cloud"} if mode.identity == "auto" else set()) | ({CONTENT} if mode.content == "hash" else set())
-        self.ids: Ids = {photo: {kind: values for kind, values in kinds.items() if kind in self.kinds} for photo, kinds in ids.items()} if ids and self.kinds else {}
+        self.kept = self.kinds | ({DIMENSIONS} if mode.dimensions == "exact" else set())  # the kinds of value looked at
+        self.ids: Ids = {photo: {kind: values for kind, values in kinds.items() if kind in self.kept} for photo, kinds in ids.items()} if ids and self.kept else {}
         self.by_id: Dict[Tuple[str, str], List[Photo]] = {}
         grouped: Dict[tuple, List[tuple]] = {}
         for photo in photos:
@@ -200,7 +211,8 @@ class Index:
     def note(self, photo: Photo) -> None:
         for kind, values in self.ids.get(photo, {}).items():
             for value in values:
-                self.by_id.setdefault((kind, value), []).append(photo)
+                if kind in self.kinds:
+                    self.by_id.setdefault((kind, value), []).append(photo)
 
     def add(self, photo: Photo) -> None:
         when = datetime.fromisoformat(photo[0])
@@ -218,7 +230,7 @@ class Index:
         by_id: List[Tuple[Photo, str]] = []
         if own_ids:
             seen = set()
-            own_ids = {kind: values for kind, values in own_ids.items() if kind in self.kinds}
+            own_ids = {kind: values for kind, values in own_ids.items() if kind in self.kept}
             for kind, values in own_ids.items():
                 for value in values:
                     for other in self.by_id.get((kind, value), []):

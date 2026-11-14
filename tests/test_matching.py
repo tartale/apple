@@ -229,3 +229,18 @@ def test_content_is_a_part_of_the_mode_off_by_default_and_a_hash_never_shows_pho
     near = ("2006-09-30 06:51:41", "100", "a.jpg")
     assert not m.absent(Counter({near: 1}), Counter({held: 1}), mode, {near: {"sha256": {"X"}}}, {held: {"sha256": {"H"}}})  # other bytes do not veto
     assert m.absent(Counter({other: 1}), Counter({held: 1}), m.TOLERANT, {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})  # not read unless asked
+
+
+def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photos_to_be_different():
+    assert m.TOLERANT.dimensions == "ignore" and m.parse("dimensions=exact").dimensions == "exact"
+    with pytest.raises(ValueError):
+        m.parse("dimensions=about")
+    held = ("2018-03-01 10:00:00", "100", "a.jpg")
+    near = ("2018-03-01 10:00:10", "100", "a.jpg")
+    different = ({near: {"dims": {"1000x800"}}}, {held: {"dims": {"2000x1500"}}})
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), m.TOLERANT, *different)  # not looked at
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("dimensions=exact"), *different)
+    same = ({near: {"dims": {"1000x800"}}}, {held: {"dims": {"1000x800"}}})
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("dimensions=exact"), *same)
+    far = ("2005-01-01 00:00:00", "5", "z.jpg")
+    assert m.absent(Counter({far: 1}), Counter({held: 1}), m.parse("dimensions=exact"), {far: {"dims": {"1000x800"}}}, {held: {"dims": {"1000x800"}}})  # a size is not an id

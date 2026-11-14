@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from apple.photos import exif as exif_module
+from apple.photos import image_size as image_size_module
 from apple.photos import powerphotos as pp
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache, fingerprint
@@ -48,12 +49,13 @@ def is_folder(text: str) -> bool:
     return path.is_dir() and not text.rstrip("/").endswith(PACKAGES) and not has_database(path)
 
 
-def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, refresh: bool = False, exif: bool = False) -> pp.Photos:
+def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, refresh: bool = False, exif: bool = False, dimensions: bool = False) -> pp.Photos:
     """The photos and videos below folder as a pp.Photos: all visible, none hidden, burst or shared, and with no original
     missing; `files` gives each one's paths (every copy, in order), which for a library are paths below it. say(text) is told
     the notes of the walk. With refresh the cache is not used, and the result is saved. With exif a photo is dated by the capture
     time in its own metadata, as Photos dates it on import, when it has one (a file's capture time is cached with its modification time
-    and size, so a file is opened again only when it changed)."""
+    and size, so a file is opened again only when it changed). With dimensions each photo's pixel size is read from its header and
+    kept, cached the same way, under `dims` in ids."""
     path = folder.expanduser()
     progress, started, files, paths = Progress(), time.monotonic(), Counter(), {}
     real = resolve(path) or path
@@ -63,6 +65,10 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
     exif_key = fingerprint("exif", str(real))
     prior = cache.get(exif_key) if exif else None
     dates, new_dates = prior[0] if prior else {}, {}  # path -> [modification time, size, capture time, its offset], or just the first two when the file has none
+    dims_key = fingerprint("dims", str(real))
+    before = cache.get(dims_key) if dimensions else None
+    sizes, new_sizes = before[0] if before else {}, {}  # path -> [modification time, size, `<larger>x<smaller>`, or "" when it is not an image we can read]
+    dimensions_of: dict = {}
 
     def skip(logical: Path, real: Path) -> bool:
         return logical.name in IGNORED_FOLDERS or logical.name.endswith(PACKAGES) or has_database(real)
@@ -80,6 +86,17 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
             new_dates[str(entry.real)] = stamp + taken
             when = (exif_module.utc_of(*taken) if taken else None) or when
         photo = (when, str(entry.status.st_size), entry.logical.name)
+        if dimensions and pp.media_of(entry.logical.name) == "photos":
+            stamp = [int(entry.status.st_mtime), entry.status.st_size]
+            known = sizes.get(str(entry.real))
+            if known and known[:2] == stamp:
+                text = known[2]
+            else:
+                found = image_size_module.image_size(entry.real)
+                text = f"{found[0]}x{found[1]}" if found else ""
+            new_sizes[str(entry.real)] = stamp + [text]
+            if text:
+                dimensions_of[photo] = text
         files[photo] += 1
         paths.setdefault(photo, []).append(str(entry.real))
         count += 1
@@ -88,6 +105,8 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
         cache.put(key, remember)
     if exif and new_dates != dates:
         cache.put(exif_key, new_dates)
+    if dimensions and new_sizes != sizes:
+        cache.put(dims_key, new_sizes)
     reused = counts.get("reused", 0)
     progress.line(f"Read {count:,} photos and videos of {path} ({duration(time.monotonic() - started)})" + (f" [{reused:,} of {reused + counts.get('read', 0):,} folders as cached]" if reused else ""))
     ids: dict = {}
@@ -95,4 +114,6 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
         token = fingerprint_in(photo[2])
         if token:
             ids.setdefault(photo, {}).setdefault("stable", set()).add(token)
+    for photo, text in dimensions_of.items():
+        ids.setdefault(photo, {}).setdefault("dims", set()).add(text)
     return pp.Photos(path, files, Counter(), Counter(), {photo: sorted(found) for photo, found in paths.items()}, set(), Counter(), {}, {}, Counter(), ids)

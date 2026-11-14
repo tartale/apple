@@ -302,29 +302,40 @@ def test_against_without_outdated_is_a_usage_error(mac):
     assert runner.invoke(app, ["photos", "libraries", "--against", "Source"]).exit_code == 2
 
 
+def dims_of(flags, current: bool = False):
+    """(width, height) of the flag `dims:<width>x<height>`, or two Nones; with current, the edited size `edited:<width>x<height>` first when given."""
+    for prefix in (("edited:", "dims:") if current else ("dims:",)):
+        for flag in flags:
+            if flag.startswith(prefix):
+                width, _, height = flag[len(prefix):].partition("x")
+                return int(width), int(height)
+    return None, None
+
+
 def add_photos(library: Path, photos) -> Path:
     """Gives a fake library the tables and original files diff reads.
 
     photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, flags]) with flags among "trashed", "hidden", "burst" (a hidden
-    burst member), "shared" (it came from Messages), "stable:<fingerprint>" and "cloud:<id>" (the iCloud ids). An item of size 0 is a placeholder: it has no original file.
+    burst member), "shared" (it came from Messages), "stable:<fingerprint>" and "cloud:<id>" (the iCloud ids), "dims:<width>x<height>" (the pixel size of the original) and
+    "edited:<width>x<height>" (the size the library shows after an edit). An item of size 0 is a placeholder: it has no original file.
     """
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer, ZCLOUDASSETGUID text)")
-    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text, ZORIGINALSTABLEHASH text)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer, ZCLOUDASSETGUID text, ZWIDTH integer, ZHEIGHT integer)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text, ZORIGINALSTABLEHASH text, ZORIGINALWIDTH integer, ZORIGINALHEIGHT integer)")
     (library / "originals" / "A").mkdir(parents=True, exist_ok=True)
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
         stored_as = f"UUID{number}.jpg"
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?, ?)",
+            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?, ?, ?, ?)",
             (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags),
-             next((flag[6:] for flag in flags if flag.startswith("cloud:")), None)),
+             next((flag[6:] for flag in flags if flag.startswith("cloud:")), None), *dims_of(flags, current=True)),
         )
         connection.execute(
-            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?, ?)",
-            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None, next((flag[7:] for flag in flags if flag.startswith("stable:")), None)),
+            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?, ?, ?, ?)",
+            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None, next((flag[7:] for flag in flags if flag.startswith("stable:")), None), *dims_of(flags)),
         )
         original = library / "originals" / "A" / stored_as
         if size:
