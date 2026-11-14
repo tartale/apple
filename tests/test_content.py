@@ -158,3 +158,23 @@ def test_without_only_missing_the_copies_within_the_folder_are_found_by_their_by
     file_in(folder, "a_copy_of_it.jpg", BYTES, "2005-01-01 00:00:00")
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--diff-mode", "content=hash"])
     assert "Imported 0 of 1" in result.output and "1 left out as the same photo as another" in result.output
+
+
+def test_a_refresh_reads_the_files_again_but_keeps_the_hashes_of_the_files_it_did_not_read(mac, tmp_path, monkeypatch):
+    library_with(mac, [("2006-09-30 06:51:40", "a.jpg", BYTES)])
+    first, second = tmp_path / "first", tmp_path / "second"
+    file_in(first, "x.jpg", BYTES)
+    file_in(second, "y.jpg", BYTES)
+    read = []
+    real = content_hash.file_digest
+    monkeypatch.setattr(content_hash, "file_digest", lambda path: read.append(str(path)) or real(path))
+
+    def match(folder, *options):
+        return runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=hash", *options])
+
+    match(first)
+    match(second, "--refresh")  # the library's file and y.jpg are read again; x.jpg is not
+    assert sorted(path.rsplit("/", 1)[-1] for path in read) == ["UUID1.jpg", "UUID1.jpg", "x.jpg", "y.jpg"]
+    read.clear()
+    match(first)
+    assert read == []  # the hash of x.jpg is still saved

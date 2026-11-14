@@ -45,10 +45,11 @@ def content_ids(sides: List[pp.Photos], selected: List[Dict], refresh: bool = Fa
     total = sum(len(items) for items in wanted)
     if not total:
         return [{} for _ in sides]
-    cache, key = Cache(read=not refresh), fingerprint("sha256")
+    cache, key = Cache(), fingerprint("sha256")
     previous = cache.get(key)
-    known = previous[0] if previous else {}
-    kept: Dict[str, list] = dict(known)
+    stored = previous[0] if previous else {}  # every file ever hashed: one entry, so a refresh must add to it and not replace it
+    known = {} if refresh else stored
+    kept: Dict[str, list] = dict(stored)
     progress, started, done = Progress(), time.monotonic(), 0
     ids: List[Ids] = [{} for _ in sides]
     for index, items in enumerate(wanted):
@@ -69,7 +70,7 @@ def content_ids(sides: List[pp.Photos], selected: List[Dict], refresh: bool = Fa
                 continue
             kept[str(path)] = stamp + [digest]
             ids[index].setdefault(photo, {}).setdefault(KIND, set()).add(digest)
-    if kept != known:
+    if kept != stored:
         cache.put(key, kept)
     (say or progress.line)(f"Read the bytes of {total:,} files to compare ({duration(time.monotonic() - started)})")
     return ids
