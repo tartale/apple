@@ -2,11 +2,14 @@
 import fcntl
 import os
 import shutil
+import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, List, NamedTuple, Optional
 
 import typer
 
@@ -72,3 +75,72 @@ class Log:
             handle.write(line + "\n")
         if sys.stdout.isatty():
             print(line)
+
+
+STALL_VARIABLE = "ICLOUD_STALL_MINUTES"
+DEFAULT_STALL_MINUTES = 20  # rclone's own quiet stretches are long: a cold album listing of a large library was silent for 7 minutes
+POLL_SECONDS = 5  # how often a running rclone is looked at
+
+
+class Finished(NamedTuple):
+    returncode: int
+    stdout: bytes
+
+
+def stall_seconds() -> Optional[float]:
+    """How long rclone may show no sign of life (no output, no line in the log) before it is killed: ICLOUD_STALL_MINUTES, 20 by
+    default; None (never) when it is 0. A value that is not a number is an error."""
+    text = os.environ.get(STALL_VARIABLE, "")
+    try:
+        minutes = float(text) if text.strip() else DEFAULT_STALL_MINUTES
+    except ValueError:
+        typer.echo(f"{STALL_VARIABLE} must be a number of minutes, not {text!r}", err=True)
+        raise typer.Exit(2)
+    return minutes * 60 if minutes > 0 else None
+
+
+def run_watched(command: List[str], log: "Log", label: str, capture: bool = False, attempts: int = 3) -> Finished:
+    """Runs a command that talks to iCloud and kills it, and runs it again, when it shows no sign of life for stall_seconds(): rclone
+    can wait on one request for hours, with no error and no timeout. Life is anything on its output (when capture holds it, the
+    output is returned) or a new line in the log file; each kill is logged with the label. After the last attempt the result is a
+    failure (1)."""
+    limit = stall_seconds()
+    for attempt in range(1, attempts + 1):
+        process = subprocess.Popen(command, stdout=subprocess.PIPE if capture else None)
+        chunks: List[bytes] = []
+        seen = {"at": time.monotonic()}
+
+        def read() -> None:
+            for block in iter(lambda: process.stdout.read(65536), b""):
+                chunks.append(block)
+                seen["at"] = time.monotonic()
+
+        reader = threading.Thread(target=read, daemon=True) if capture else None
+        if reader:
+            reader.start()
+        size = log.path.stat().st_size if log.path.exists() else 0
+        stalled = False
+        while True:
+            try:
+                process.wait(timeout=POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                grown = log.path.stat().st_size if log.path.exists() else 0
+                if grown != size:
+                    size, seen["at"] = grown, time.monotonic()
+                if limit is not None and time.monotonic() - seen["at"] > limit:
+                    stalled = True
+                    break
+        if stalled:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        if reader:
+            reader.join()
+        if not stalled:
+            return Finished(process.returncode, b"".join(chunks))
+        log(f"{label}: no sign of life for {limit / 60:g} minutes, killed (attempt {attempt} of {attempts})" + ("; trying again" if attempt < attempts else ""))
+    return Finished(1, b"")

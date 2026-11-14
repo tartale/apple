@@ -5,14 +5,13 @@ A photo is the same photo when its file name, size and modification time match. 
 stored file. One lock for all accounts: they run one after the other, which is also gentler on Apple's rate limits.
 """
 import os
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from apple.photos.common import Log, exclusive_lock, is_dry_run, require_env, require_rclone
+from apple.photos.common import Log, exclusive_lock, is_dry_run, require_env, require_rclone, run_watched, stall_seconds
 
 Key = Tuple[str, str, str]  # file name, size, modification time
 Listing = Tuple[str, str, str]  # modification time, size, path
@@ -94,6 +93,7 @@ def row_text(row: Tuple[str, str, str, str]) -> str:
 def run(dry_flag: bool = False) -> int:
     require_env()
     rclone = require_rclone()
+    stall_seconds()  # a bad ICLOUD_STALL_MINUTES is an error before anything runs
     with exclusive_lock("Previous run still active, exiting"):
         dry = is_dry_run(dry_flag)
         log = Log("backup")
@@ -109,15 +109,16 @@ def run(dry_flag: bool = False) -> int:
             if not dry:
                 (dest / "originals").mkdir(parents=True, exist_ok=True)
             log(f"[{remote}] copying All Photos (dry-run={str(dry).lower()})")
-            copied = subprocess.run([rclone, "copy", f"{remote}:/PrimarySync/All Photos", str(dest / "originals"),
-                                     *config, *options, *common])
+            copied = run_watched([rclone, "copy", f"{remote}:/PrimarySync/All Photos", str(dest / "originals"),
+                                  *config, *options, *common], log, f"[{remote}] copying All Photos")
             status = 1 if copied.returncode else status
 
             # Full listing (modification time, size, path), taken after the copy above. Entries outside "All Photos"
             # are album members.
-            listed = subprocess.run([rclone, "lsf", f"{remote}:/PrimarySync", "-R", "--files-only", "--format", "tsp",
-                                     "--separator", "\t", *config, "--log-file", str(log.path), "--log-level", "INFO"],
-                                    stdout=subprocess.PIPE)
+            log(f"[{remote}] listing the albums (a large library can take several minutes without output)")
+            listed = run_watched([rclone, "lsf", f"{remote}:/PrimarySync", "-R", "--files-only", "--format", "tsp",
+                                  "--separator", "\t", *config, "--log-file", str(log.path), "--log-level", "INFO"],
+                                 log, f"[{remote}] listing the albums", capture=True)
             if listed.returncode:
                 log(f"[{remote}] ERROR: listing failed; album-only photos not copied")
                 return 1
@@ -134,8 +135,8 @@ def run(dry_flag: bool = False) -> int:
             with tempfile.NamedTemporaryFile("wb", suffix=".album-only") as wanted:
                 wanted.write(b"".join(os.fsencode(p) + b"\n" for p in to_download))
                 wanted.flush()
-                copied = subprocess.run([rclone, "copy", f"{remote}:/PrimarySync", str(originals),
-                                         "--files-from-raw", wanted.name, *config, *options, *common])
+                copied = run_watched([rclone, "copy", f"{remote}:/PrimarySync", str(originals),
+                                      "--files-from-raw", wanted.name, *config, *options, *common], log, f"[{remote}] copying the album-only photos")
             status = 1 if copied.returncode else status
 
             # albums.csv lists only entries whose file is in originals/, so a download that failed leaves out its own
