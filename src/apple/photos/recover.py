@@ -92,6 +92,7 @@ def read_list(text: str) -> List[dict]:
         items.append({
             "name": str(record["name"]), "date": str(record["date"]), "hidden": is_true(record.get("hidden")),
             "shared": is_true(record.get("shared")), "identifier": str(record.get("identifier") or ""), "source": str(record.get("source") or ""),
+            "ids": {kind: {str(record[kind])} for kind in ("stable", "cloud") if record.get(kind)},
             "root": str(record.get("root") or ""), "library": str(record.get("library") or ""), "files": [str(f) for f in files],
         })
     return items
@@ -202,10 +203,11 @@ def missing_command(
     # of photos that are the same photo, the first is kept, and one with a Messages identifier comes first
     kept = matching.dedupe(sorted(lacking, key=lambda key: (not photos.identifiers.get(key), key)), match, photos.ids)
     rows = [
-        {"date": key[0], "name": key[2], "hidden": wanted[key], "shared": key in photos.shared, "identifier": photos.identifiers.get(key, "")}
+        {"date": key[0], "name": key[2], "hidden": wanted[key], "shared": key in photos.shared, "identifier": photos.identifiers.get(key, ""),
+         "stable": "|".join(sorted(photos.ids.get(key, {}).get("stable", ()))), "cloud": "|".join(sorted(photos.ids.get(key, {}).get("cloud", ())))}
         for key in sorted(kept)
     ]
-    columns = ["date", "name", "hidden", "shared", "identifier"]
+    columns = ["date", "name", "hidden", "shared", "identifier", "stable", "cloud"]
     if format == DiffFormat.json:
         typer.echo(json.dumps(rows, indent=2))
     elif format == DiffFormat.csv:
@@ -214,8 +216,9 @@ def missing_command(
         for row in rows:
             writer.writerow([cell_text(row[column]) for column in columns])
     elif rows:
-        cells = [columns[:-1]] + [[cell_text(row[column]) for column in columns[:-1]] for row in rows]
-        widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns) - 1)]
+        shown = columns[:-3]  # the identifier and the ids are for `find`
+        cells = [shown] + [[cell_text(row[column]) for column in shown] for row in rows]
+        widths = [max(len(cell[i]) for cell in cells) for i in range(len(shown))]
         for cell in cells:
             typer.echo("  ".join(text.ljust(width) for text, width in zip(cell, widths)).rstrip())
     typer.echo(f"{count(len(rows), 'missing file')}" + (f" ({len(lacking) - len(rows)} left out as the same photo as another, see --diff-mode)" if len(lacking) > len(rows) else ""), err=True)
@@ -258,6 +261,7 @@ def find_command(
         bool,
         typer.Option("--refresh", help="Read the places again instead of reusing what an earlier run saved: library databases are kept by their size and modification time, and Time Machine backup folders by the names of their snapshots. The new result is saved."),
     ] = False,
+    diff_mode: DiffModeOption = "",
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
@@ -267,6 +271,10 @@ def find_command(
 
     Writes each photo of LIST (`apple photos missing --format csv`) with where an original was found, or `none`. Save
     the output (--format csv) and give it to `apple photos import`, on this machine or another, to import the files found.
+
+    A file or a library's photo matches a listed photo as --diff-mode says (by default the same file name and a time within two hours of its
+    capture time), or by an iCloud fingerprint they share: the list's stable column, which `missing` writes, and the 28 characters a backup
+    file's name ends in. Only the name, extension, date and identity parts apply: a list has no file to read.
 
     Say where to search with --messages and --folders (each can be repeated), or the variable APPLE_PHOTOS_RECOVER_SEARCH
     when neither is given; with neither, it is an error. The variable holds space-separated entries read as a shell reads
@@ -287,7 +295,7 @@ def find_command(
     # (APPLE_PHOTOS_RECOVER_SEARCH and APPLE_PHOTOS_RECOVER_MAPPINGS) fits every machine.
     mapping = parse_map(map_paths)
     entries = [(kind, [translate(place, mapping) for place in places] if kind == "folders" else places) for kind, places in entries]
-    sources = build_sources(entries, path, snapshots, Cache(read=not refresh))
+    sources = build_sources(entries, path, snapshots, Cache(read=not refresh), parse_mode(diff_mode))
     for source in sources:
         reason = source.problem()
         if reason:
@@ -299,7 +307,7 @@ def find_command(
         key = (entry["date"], "0", entry["name"])
         if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
             continue
-        items.append({"key": key, "hidden": entry["hidden"], "shared": entry["shared"], "identifier": entry["identifier"]})
+        items.append({"key": key, "hidden": entry["hidden"], "shared": entry["shared"], "identifier": entry["identifier"], "ids": entry["ids"]})
 
     rows, hits = [], []
     looked, started = 0, time.monotonic()
@@ -309,7 +317,7 @@ def find_command(
         looked += 1
         progress.update(f"Looking up originals: {looked}/{len(items)} ({len(hits)} found)")
         key = item["key"]
-        found = next((hit for hit in (source.find(key, item["identifier"]) for source in sources) if hit), None)
+        found = next((hit for hit in (source.find(key, item["identifier"], item["ids"]) for source in sources) if hit), None)
         if found:
             hits.append(found)
         rows.append(found_row(key, item, found))

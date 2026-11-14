@@ -810,7 +810,7 @@ def test_a_cached_library_is_found_under_the_path_it_is_read_from_now(tmp_path):
     cache = cache_module.Cache(tmp_path / "c.sqlite")
     list(rs.database_originals(library, library, cache))
     elsewhere = Path("/mounted/somewhere/other.photoslibrary")
-    (name, taken, real, logical), = rs.database_originals(library, elsewhere, cache)
+    (name, taken, real, logical, fingerprint_of), = rs.database_originals(library, elsewhere, cache)
     assert real == library / "originals" / "A" / "UUID1.jpg" and logical == elsewhere / "originals" / "A" / "UUID1.jpg"
 
 

@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from apple.cli import app
-from apple.photos import folder_photos
+from apple.photos import folder_photos, matching
 from apple.photos import powerphotos as pp
 from apple.photos import recover_cache as cache_module
 from test_powerphotos import add_photos, mac, make_library, scratch_root  # noqa: F401
@@ -44,11 +44,11 @@ def rows_of(result):
 
 def test_a_name_that_ends_in_a_fingerprint_gives_it_and_one_that_only_looks_like_one_does_not():
     token = fingerprint(1)
-    assert folder_photos.fingerprint_in(f"IMAG0044_{token}.JPG") == token
-    assert folder_photos.fingerprint_in("IMAG0044.JPG") is None
-    assert folder_photos.fingerprint_in("holiday_abcdefghijklmnopqrstuvwxyzAB.jpg") is None  # 28 letters that do not decode to 1 and 20 bytes
+    assert matching.fingerprint_in(f"IMAG0044_{token}.JPG") == token
+    assert matching.fingerprint_in("IMAG0044.JPG") is None
+    assert matching.fingerprint_in("holiday_abcdefghijklmnopqrstuvwxyzAB.jpg") is None  # 28 letters that do not decode to 1 and 20 bytes
     slashed = base64.b64encode(b"\x01" + b"\xff" * 20).decode()
-    assert "/" in slashed and folder_photos.fingerprint_in(f"a_{slashed.replace('/', chr(0xff0f))}.jpg") == slashed  # the full-width slash a name uses
+    assert "/" in slashed and matching.fingerprint_in(f"a_{slashed.replace('/', chr(0xff0f))}.jpg") == slashed  # the full-width slash a name uses
 
 
 def test_a_library_reads_the_ids_of_its_photos_and_of_those_in_recently_deleted(mac):

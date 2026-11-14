@@ -38,6 +38,7 @@ The parts:
 
 Examples: `exact,filename=ignore` (the surest, whatever the names), `loose,filesize=within=5%`, `date=within=1d,filesize=ignore`.
 """
+import base64
 import os
 import re
 from bisect import bisect_left, bisect_right
@@ -143,6 +144,24 @@ def parse(text: str) -> Mode:
         else:
             raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., date=..., filesize=..., exact or tolerant")
     return mode
+
+
+FINGERPRINT = re.compile(r"_([A-Za-z0-9+/\uff0f]{28})$")  # what rclone adds to a name that was taken: iCloud's id for the file
+
+
+def fingerprint_in(name: str) -> Optional[str]:
+    """iCloud's fingerprint of a file when its name ends in it (`IMAG0044_ASLNFDmSOi1j8HVs5UVlqKvxeRlA.JPG`, where the `/` a name
+    cannot hold is written as a full-width one), else None: only 28 characters that decode to 21 bytes starting with 1 count, so
+    a name that merely ends in 28 letters does not."""
+    found = FINGERPRINT.search(os.path.splitext(name)[0])
+    if not found:
+        return None
+    token = found.group(1).replace("\uff0f", "/")
+    try:
+        raw = base64.b64decode(token, validate=True)
+    except ValueError:
+        return None
+    return token if len(raw) == 21 and raw[0] == 1 else None
 
 
 def split_name(name: str) -> Tuple[str, str]:
