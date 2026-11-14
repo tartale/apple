@@ -2,7 +2,8 @@
 """Local-directory stand-in for rclone, used by the tests: remote "<r>:/p" maps to $FAKE_CLOUD/<r>/p.
 
 Supports the few commands and flags the CLI uses: copy (with --files-from-raw, --dry-run) and lsf -R --files-only
---format tsp. FAKE_FAIL=lsf|copy-album makes that call exit 1.
+--format tsp. FAKE_FAIL=lsf|copy-album makes that call exit 1. FAKE_HANG=lsf|copy-all|copy-album makes that call wait (for ten minutes) its first
+FAKE_HANG_TIMES times (once if unset), as rclone does on a stalled iCloud request.
 """
 import os
 import shutil
@@ -46,6 +47,13 @@ while index < len(arguments):
 
 source = mapped(positional[0])
 fail = os.environ.get("FAKE_FAIL", "")
+which = "lsf" if command == "lsf" else "copy-album" if files_from is not None else "copy-all"
+if os.environ.get("FAKE_HANG") == which:
+    counter = Path(os.environ["FAKE_CLOUD"]) / ".hangs"
+    done = int(counter.read_text()) if counter.exists() else 0
+    if done < int(os.environ.get("FAKE_HANG_TIMES", "1")):
+        counter.write_text(str(done + 1))
+        time.sleep(600)
 if command == "lsf":
     if fail == "lsf":
         sys.exit(1)

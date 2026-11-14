@@ -197,3 +197,58 @@ def test_the_all_photos_copy_is_preferred_to_an_older_copy_elsewhere_in_original
     icloud.cloud_file("All Photos/sub/n.jpg", 400, JUN_2020)
     assert backup().exit_code == 0
     assert ROW.format("Beach/n.jpg", 400, "sub/n.jpg") in csv_lines(icloud)
+
+
+@pytest.fixture
+def quick_watchdog(monkeypatch):
+    """A watchdog that gives up on a silent rclone after a second."""
+    monkeypatch.setenv("ICLOUD_STALL_MINUTES", "0.02")
+    monkeypatch.setattr("apple.photos.common.POLL_SECONDS", 0.1)
+
+
+def test_a_listing_that_stalls_is_killed_and_tried_again(icloud, monkeypatch, quick_watchdog):
+    icloud.cloud_file("Holiday/h.jpg", 150, JUN_2020)
+    monkeypatch.setenv("FAKE_HANG", "lsf")  # the first listing waits; the second one answers
+    result = backup()
+    assert result.exit_code == 0
+    log = next(icloud.root.glob("backup-*.log")).read_text()
+    assert "listing the albums: no sign of life" in log and "killed (attempt 1 of 3); trying again" in log
+    assert (icloud.account / "originals" / "Holiday" / "h.jpg").exists() and (icloud.account / "albums.csv").exists()
+
+
+def test_a_listing_that_always_stalls_fails_the_run_after_three_attempts(icloud, monkeypatch, quick_watchdog):
+    icloud.cloud_file("Holiday/h.jpg", 150, JUN_2020)
+    monkeypatch.setenv("FAKE_HANG", "lsf")
+    monkeypatch.setenv("FAKE_HANG_TIMES", "9")
+    result = backup()
+    assert result.exit_code == 1
+    log = next(icloud.root.glob("backup-*.log")).read_text()
+    assert "killed (attempt 3 of 3)" in log and "listing failed; album-only photos not copied" in log
+    assert not (icloud.account / "originals" / "Holiday").exists()
+
+
+def test_a_copy_that_stalls_is_killed_and_tried_again_too(icloud, monkeypatch, quick_watchdog):
+    icloud.cloud_file("All Photos/a.jpg", 100, JUN_2020)
+    monkeypatch.setenv("FAKE_HANG", "copy-all")
+    assert backup().exit_code == 0
+    assert (icloud.account / "originals" / "a.jpg").exists()
+    assert "copying All Photos: no sign of life" in next(icloud.root.glob("backup-*.log")).read_text()
+
+
+def test_the_log_says_when_the_album_listing_starts(icloud):
+    icloud.cloud_file("Holiday/h.jpg", 150, JUN_2020)
+    backup()
+    assert "listing the albums (a large library can take several minutes without output)" in next(icloud.root.glob("backup-*.log")).read_text()
+
+
+def test_the_stall_time_is_set_by_the_environment_and_a_bad_value_is_an_error(icloud, monkeypatch):
+    from apple.photos import common
+    monkeypatch.delenv("ICLOUD_STALL_MINUTES", raising=False)
+    assert common.stall_seconds() == 20 * 60
+    monkeypatch.setenv("ICLOUD_STALL_MINUTES", "1.5")
+    assert common.stall_seconds() == 90
+    monkeypatch.setenv("ICLOUD_STALL_MINUTES", "0")
+    assert common.stall_seconds() is None  # off
+    monkeypatch.setenv("ICLOUD_STALL_MINUTES", "soon")
+    result = backup()
+    assert result.exit_code == 2 and "ICLOUD_STALL_MINUTES must be a number of minutes" in result.output
