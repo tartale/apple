@@ -88,9 +88,13 @@ def photos_query(db: sqlite3.Connection, trashed: bool = False) -> str:
     burst = "a.ZAVALANCHEKIND != 0" if "ZAVALANCHEKIND" in asset else "a.ZAVALANCHEUUID is not null" if "ZAVALANCHEUUID" in asset else "0"
     shared = "x.ZSYNDICATIONIDENTIFIER" if "ZSYNDICATIONIDENTIFIER" in attributes else "null"
     uuid = "a.ZUUID" if "ZUUID" in asset else "null"
+    stable = "x.ZORIGINALSTABLEHASH" if "ZORIGINALSTABLEHASH" in attributes else "null"  # iCloud's fingerprint of the original
+    cloud = "a.ZCLOUDASSETGUID" if "ZCLOUDASSETGUID" in asset else "null"  # iCloud's id for the asset
+    width = "coalesce(nullif(x.ZORIGINALWIDTH, 0), a.ZWIDTH)" if "ZORIGINALWIDTH" in attributes and "ZWIDTH" in asset else "a.ZWIDTH" if "ZWIDTH" in asset else "null"
+    height = "coalesce(nullif(x.ZORIGINALHEIGHT, 0), a.ZHEIGHT)" if "ZORIGINALHEIGHT" in attributes and "ZHEIGHT" in asset else "a.ZHEIGHT" if "ZHEIGHT" in asset else "null"
     return f"""
         select datetime(a.ZDATECREATED + 978307200, 'unixepoch'), x.ZORIGINALFILESIZE, coalesce(x.ZORIGINALFILENAME, a.ZFILENAME),
-               {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED, {uuid}
+               {hidden}, {burst}, a.ZDIRECTORY, a.ZFILENAME, {shared}, a.ZDATECREATED, {uuid}, {stable}, {cloud}, {width}, {height}
         from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK
         where a.ZTRASHEDSTATE {"!=" if trashed else "="} 0
     """
@@ -182,7 +186,10 @@ class Photos(NamedTuple):
     the library also has a real visible photo for with the same file name taken within two days (an imported copy). The
     picture is there, and the stand-in can never be saved. uuids maps each key to the Photos identifiers of its items (the
     start of the id PowerPhotos gives a photo, `<uuid>/L0/001`), the one exact way to name a photo. trashed counts the items
-    in Recently Deleted, which the rest leaves out: Photos still knows them when it looks for a duplicate."""
+    in Recently Deleted, which the rest leaves out: Photos still knows them when it looks for a duplicate. ids maps a key to the
+    ids iCloud gave its items, {kind: {values}} (and its pixel size, as `dims`: `<larger>x<smaller>`): `stable` (the fingerprint of the original, which also ends a backup file's name
+    when its name was taken) and `cloud` (the asset's id); trashed_ids is the same for the trash. A library that was not synced
+    with iCloud has none."""
     library: Path
     visible: Counter
     hidden: Counter
@@ -193,6 +200,8 @@ class Photos(NamedTuple):
     identifiers: dict
     uuids: dict
     trashed: Counter = Counter()
+    ids: dict = {}
+    trashed_ids: dict = {}
 
     def original_missing(self, key: tuple) -> bool:
         """True when the item's original file is not stored in the library (Photos keeps a placeholder for photos whose
@@ -204,6 +213,15 @@ class Photos(NamedTuple):
         return bool(paths) and not any((self.library / path).exists() for path in paths)
 
 
+def note_ids(ids: dict, key: tuple, stable, cloud, width=None, height=None) -> None:
+    """Records the iCloud ids of an item under its key, and its pixel size as `dims` (`<larger>x<smaller>`: a rotated copy has the same)."""
+    for kind, value in (("stable", stable), ("cloud", cloud)):
+        if isinstance(value, str) and value:
+            ids.setdefault(key, {}).setdefault(kind, set()).add(value)
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        ids.setdefault(key, {}).setdefault("dims", set()).add(f"{max(width, height)}x{min(width, height)}")
+
+
 def library_photos(library: Path) -> Photos:
     """Reads a library's photos from its database; PowerPhotos is not involved. Raises PowerPhotosError when the
     database cannot be read."""
@@ -213,12 +231,13 @@ def library_photos(library: Path) -> Photos:
         raise PowerPhotosError(f"Could not read the photos of {library}: {error}")
     visible, hidden, bursts, files, shared, superseded, identifiers = Counter(), Counter(), Counter(), {}, set(), Counter(), {}
     real = {}  # lower-case file name -> capture times (seconds) of the visible photos that have their original
-    for _, size, name, is_hidden, *_, taken, _uuid in rows:
+    for _, size, name, is_hidden, *_, taken, _uuid, _stable, _cloud, _width, _height in rows:
         if size and taken is not None and not is_hidden:
             real.setdefault(name.lower(), []).append(taken)
     has_originals = (library / "originals").is_dir()
     uuids: dict = {}
-    for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared, taken, uuid in rows:
+    ids: dict = {}
+    for when, size, name, is_hidden, is_burst, directory, stored_as, is_shared, taken, uuid, stable, cloud, width, height in rows:
         key = (when, str(size), name)
         if taken is not None and any(abs(taken - other) < 172800 for other in real.get(name.lower(), [])):
             # a stand-in without its original (a shared placeholder, or a hidden item whose file is gone) whose picture
@@ -230,6 +249,7 @@ def library_photos(library: Path) -> Photos:
         (hidden if is_hidden else visible)[key] += 1
         if uuid:
             uuids.setdefault(key, []).append(uuid)
+        note_ids(ids, key, stable, cloud, width, height)
         if is_hidden and is_burst:
             bursts[key] += 1
         if is_shared:
@@ -237,8 +257,11 @@ def library_photos(library: Path) -> Photos:
             identifiers[key] = is_shared
         if directory is not None and stored_as:
             files.setdefault(key, []).append(f"originals/{directory}/{stored_as}")
-    trashed = Counter((when, str(size), name) for when, size, name, *_ in trash)
-    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers, uuids, trashed)
+    trashed, trashed_ids = Counter(), {}
+    for when, size, name, *_, stable, cloud, width, height in trash:
+        trashed[(when, str(size), name)] += 1
+        note_ids(trashed_ids, (when, str(size), name), stable, cloud, width, height)
+    return Photos(library, visible, hidden, bursts, files, shared, superseded, identifiers, uuids, trashed, ids, trashed_ids)
 
 
 def photos(library: Path) -> Counter:

@@ -810,7 +810,7 @@ def test_a_cached_library_is_found_under_the_path_it_is_read_from_now(tmp_path):
     cache = cache_module.Cache(tmp_path / "c.sqlite")
     list(rs.database_originals(library, library, cache))
     elsewhere = Path("/mounted/somewhere/other.photoslibrary")
-    (name, taken, real, logical), = rs.database_originals(library, elsewhere, cache)
+    (name, taken, real, logical, fingerprint_of), = rs.database_originals(library, elsewhere, cache)
     assert real == library / "originals" / "A" / "UUID1.jpg" and logical == elsewhere / "originals" / "A" / "UUID1.jpg"
 
 
@@ -1411,7 +1411,7 @@ def test_import_from_a_folder_takes_one_of_the_files_that_are_the_same_photo_und
     make_file(folder / "IMAG0047.JPG", LATER)
     both = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 3" in both.output  # these names differ, so by default they are three photos
-    mode = "filename=regex=^(IMAG\\d+)"
+    mode = "filename=ignore"  # the date and size of the pair agree
     for options in (["--only-missing"], []):
         result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", mode, "--dry-run", *options])
         assert "Imported 0 of 2" in result.output and "1 left out as the same photo as another" in result.output, options
@@ -1465,7 +1465,7 @@ def test_explain_is_of_the_files_left_after_the_ones_that_are_the_same_photo_are
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")
     make_file(folder / "IMAG0044_ASLNFDmS.JPG", "2018-03-05 10:00:00")  # a copy under a longer name
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", r"filename=regex=^(IMAG\d+)"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "filename=ignore,date=within=5s"])
     assert "1 left out as the same photo as another" in result.output
     assert "Why 1 photo did not match" in result.output and "ASLN" not in result.output.split("Why 1 photo")[1].split("date  ")[0]
 
@@ -1483,14 +1483,6 @@ def test_explain_prefers_the_photo_of_the_same_name_to_a_neighbour_that_is_neare
     assert "closest: IMAG0044.JPG  2018-03-20 09:00:00  700" in output
     assert "differs: date by 14d 23h, size by 600 bytes (85.7%)" in output and "IMAG0043" not in output
     assert "no photo of that name" not in output
-
-
-def test_explain_reads_the_name_as_the_mode_does(mac):
-    mode = r"filename=regex=^(IMAG\d+)"
-    output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2017-03-05 10:00:00", 100, "IMAG0044_ASLNFDmS.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)], "--diff-mode", mode)
-    assert "closest: IMAG0044_ASLNFDmS.JPG  2017-03-05 10:00:00  100" in output and "differs: date by 365d" in output
-    assert "no photo of that name" not in output
-
 
 
 def test_explain_says_when_the_library_has_no_photo_of_that_name(mac):

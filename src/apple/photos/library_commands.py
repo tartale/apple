@@ -16,7 +16,7 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
-from apple.photos import blacklist, folder_photos, matching, powerphotos_reports, split_plan
+from apple.photos import blacklist, content_hash, folder_photos, matching, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 
@@ -463,6 +463,16 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
     return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
 
 
+def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = False) -> list:
+    """The ids of the photos of each side that matching uses: the ids of the library (or the fingerprints in a folder's names)
+    and, with content=hash in the mode, the SHA-256 of the files whose size occurs on the other side."""
+    stored = [d.ids for d in data]
+    if match.content != "hash":
+        return stored
+    hashed = content_hash.content_ids(data, selected, refresh)
+    return [merged_ids(stored[index], hashed[index]) for index in range(len(data))]
+
+
 class Compared(NamedTuple):
     """Two libraries or folders read for comparing: which sides are folders, what each holds (pp.Photos), and for each side what
     is hidden, a burst member, or a superseded placeholder in the range, and the photos to compare (first, second)."""
@@ -473,6 +483,7 @@ class Compared(NamedTuple):
     superseded: list
     first: Counter
     second: Counter
+    ids: list
 
 
 def compare_sides(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, exclude_hidden: bool,
@@ -481,7 +492,7 @@ def compare_sides(left: str, right: str, since: Optional[datetime], until: Optio
     folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
     try:
         sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
-        data = [folder_photos.folder_photos(side, refresh=refresh, exif=match.date_source == "exif") if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
+        data = [folder_photos.folder_photos(side, refresh=refresh, exif=match.date_source == "exif", dimensions=match.dimensions == "exact") if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
     except pp.PowerPhotosError as error:
         fail(str(error))
 
@@ -495,7 +506,7 @@ def compare_sides(left: str, right: str, since: Optional[datetime], until: Optio
     first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
     if not include_duplicates:
         first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
-    return Compared(folders, data, hidden, bursts, superseded, first, second)
+    return Compared(folders, data, hidden, bursts, superseded, first, second, ids_for(match, data, [first, second], refresh))
 
 
 def report_notes(compared: Compared, left: str, right: str, exclude_hidden: bool) -> None:
@@ -572,10 +583,10 @@ def diff_command(
     match = parse_mode(diff_mode)
     compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
     data, hidden, bursts, first, second = compared.data, compared.hidden, compared.bursts, compared.first, compared.second
-    only_left, only_right, both = matching.pair(first, second, match)
+    only_left, only_right, both = matching.pair(first, second, match, compared.ids[0], compared.ids[1])
     if explain:
-        explain_unmatched(only_left, second, match, right, data[1].trashed)
-        explain_unmatched(only_right, first, match, left, data[0].trashed)
+        explain_unmatched(only_left, second, match, right, data[1].trashed, compared.ids[0], compared.ids[1])
+        explain_unmatched(only_right, first, match, left, data[0].trashed, compared.ids[1], compared.ids[0])
     if not summary:
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
@@ -584,18 +595,21 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
+HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes"}  # what decided a pair, in words
+
+
 def match_columns(fields: Optional[str], only: Optional[Side], with_files: bool) -> tuple:
     """(the photo columns to read for each side, the columns to show) for `match`. --fields names either the columns of a photo,
-    each shown for both sides as left_<column> and right_<column> and followed by differs, or the columns shown themselves
+    each shown for both sides as left_<column> and right_<column> and followed by differs and matched_by, or the columns shown themselves
     (left_name, right_name, differs ...), which is not for --only, whose rows are single photos."""
     if fields is None:
         base = DEFAULT_FIELDS + (["files"] if with_files else [])
-        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs"]
+        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs", "matched_by"]
     items = [item.strip() for item in fields.split(",") if item.strip()]
-    if not any(item.startswith(("left_", "right_")) or item == "differs" for item in items):
+    if not any(item.startswith(("left_", "right_")) or item in ("differs", "matched_by") for item in items):
         base = parse_fields(fields)
-        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs"]
-    allowed = [f"{side}_{column}" for side in ("left", "right") for column in DIFF_FIELDS] + ["differs"]
+        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs", "matched_by"]
+    allowed = [f"{side}_{column}" for side in ("left", "right") for column in DIFF_FIELDS] + ["differs", "matched_by"]
     if only is not None or not items or any(item not in allowed for item in items) or len(set(items)) != len(items):
         raise typer.BadParameter(
             "use each of " + ", ".join(allowed) + " at most once, comma-separated; or the plain columns of a photo (date, size, name ...), "
@@ -638,7 +652,7 @@ def match_command(
     Photos are compared as `diff` compares them, by --diff-mode (or APPLE_PHOTOS_DIFF_MODE), so what `diff` calls the same
     photo is what is listed here, and what it lists is not. Each photo of one side is paired with at most one of the other (the
     nearest in date of those that are the same photo), and each row is a pair: the photo of the left side, the photo of the
-    right side, and how they differ (`identical` when they are the very same date, size and name, else the name, extension, date
+    right side, what decided the match (`matched_by`: `attributes`, or an iCloud id the two share) and how they differ (`identical` when they are the very same date, size and name, else the name, extension, date
     and size as far as they differ: `date by 36s, size by 12 bytes`). With --only left or --only right, each row is a photo of
     that side that has a match, as `diff --only` shows the ones that have none, so `match A B --only left --format csv` lists
     what A shares with B. The counts go to stderr. Exits 0 when at least one photo matched, 1 when none did. Changes nothing.
@@ -650,7 +664,7 @@ def match_command(
     match = parse_mode(diff_mode)
     compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
     data = compared.data
-    matched, only_left, only_right = matching.pairs(compared.first, compared.second, match)
+    matched, only_left, only_right = matching.pairs(compared.first, compared.second, match, compared.ids[0], compared.ids[1])
     rows = []
     if not summary:
         hidden = {"left": set(compared.hidden[0]), "right": set(compared.hidden[1])}
@@ -663,12 +677,12 @@ def match_command(
             copies[side][photo] += 1
             return row
 
-        for first, second in matched:
+        for first, second, how in matched:
             left_row, right_row = row_of(first, "left"), row_of(second, "right")
             if only is None:
                 rows.append({
                     **{f"left_{column}": left_row[column] for column in columns}, **{f"right_{column}": right_row[column] for column in columns},
-                    "differs": ", ".join(matching.gaps(first, second)) or "identical", "side": "left", "date": first[0], "name": first[2], "size": left_row["size"],
+                    "differs": ", ".join(matching.gaps(first, second)) or "identical", "matched_by": HOW.get(how, how), "side": "left", "date": first[0], "name": first[2], "size": left_row["size"],
                 })
             else:
                 rows.append(left_row if only == Side.left else right_row)
@@ -697,32 +711,45 @@ IgnoreTrashOption = Annotated[
 ]
 
 
+def merged_ids(first: dict, second: dict) -> dict:
+    """The ids of two sets of photos, those of a photo in both put together."""
+    merged = {photo: {kind: set(values) for kind, values in kinds.items()} for photo, kinds in first.items()}
+    for photo, kinds in second.items():
+        for kind, values in kinds.items():
+            merged.setdefault(photo, {}).setdefault(kind, set()).update(values)
+    return merged
+
+
 def lacking_from(wanted: Counter, held: Counter, library: pp.Photos, since: Optional[datetime], until: Optional[datetime],
-                 media: Media, match: matching.Mode, ignore_trash: bool) -> Counter:
+                 media: Media, match: matching.Mode, ignore_trash: bool, wanted_ids: Optional[dict] = None, held_ids: Optional[dict] = None) -> Counter:
     """The photos of wanted that the library (whose live photos, in range, are held) has none of; unless ignore_trash, one
-    that matches a photo in its Recently Deleted is there too, and how many that left out is said."""
-    live = matching.absent(wanted, held, match)
+    that matches a photo in its Recently Deleted is there too, and how many that left out is said. wanted_ids and held_ids are the
+    ids of the wanted photos and of the library's (the library's own, without held_ids)."""
+    held_ids = library.ids if held_ids is None else held_ids
+    live = matching.absent(wanted, held, match, wanted_ids, held_ids)
     if ignore_trash:
         return live
     trash = pp.of_media(within(library.trashed, since, until), media.value)
-    missing = matching.absent(live, held + trash, match)
+    missing = matching.absent(live, held + trash, match, wanted_ids, merged_ids(held_ids, library.trashed_ids))
     if len(missing) < len(live):
         typer.echo(f"{len(live) - len(missing)} left out as the destination has them in Recently Deleted (--ignore-trash lists them)", err=True)
     return missing
 
 
-def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None) -> None:
+def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None,
+                      ids: Optional[dict] = None, other_ids: Optional[dict] = None) -> None:
     """Says on stderr, for each photo of unmatched, which photo of others (the library or folder called name) is closest to it and
     what differs: what is wrong with the match, as far as the mode can tell. Also the photos of the same name, however much
     they differ, and those in Recently Deleted (trashed), which Photos looks at when it looks for a duplicate."""
     if not unmatched:
         return
-    finder = matching.Finder(mode, list(others))
+    finder = matching.Finder(mode, list(others), other_ids)
     trash = matching.Finder(mode, list(trashed)) if trashed else None
     typer.echo(f"Why {count(len(unmatched), 'photo')} did not match a photo of {name} (the closest one, and what differs under the mode):", err=True)
     for photo in sorted(unmatched):
         typer.echo(f"  {photo[2]}  {photo[0]}  {photo[1]}", err=True)
-        near = finder.closest(photo)
+        own = (ids or {}).get(photo)
+        near = finder.closest(photo, own)
         if near is None:
             typer.echo("      nothing like it", err=True)
         else:
@@ -738,7 +765,7 @@ def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, 
                 typer.echo(f"      within the mode: {', '.join(alike)}", err=True)
             if near.differs and all(part in ("name", "extension") for part in near.differs) and not near.gap and not near.bytes_apart:
                 typer.echo("      the same date and size under another name: Photos compares the content, so it may call this a duplicate", err=True)
-        same = finder.same_name(photo)
+        same = finder.same_name(photo, own_ids=own)
         for item in same:
             if not near or item.photo != near.photo:
                 typer.echo(f"      same name: {item.photo[2]}  {item.photo[0]}  {item.photo[1]}  (differs: {', '.join(item.differs) or 'nothing the mode looks at'})", err=True)
@@ -765,9 +792,10 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
-    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash)
+    photo_ids = ids_for(match, data, selected)
+    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
-        explain_unmatched(missing, selected[1], match, right, data[1].trashed)
+        explain_unmatched(missing, selected[1], match, right, data[1].trashed, photo_ids[0], photo_ids[1])
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
     ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
@@ -781,19 +809,20 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
     try:
-        data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif")] + ([pp.library_photos(library)] if library else [])
+        data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif", dimensions=match.dimensions == "exact")] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
-    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash) if library else Counter(dict.fromkeys(selected[0], 1))
+    ids = ids_for(match, data, selected, refresh) if library else ids_for(match, data, selected, refresh) + [{}]
+    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1]) if library else Counter(dict.fromkeys(selected[0], 1))
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
-    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match)
+    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match, ids[0])
     if len(kept) < len(wanted):
         typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
     wanted = Counter({photo: 1 for photo in kept})
     if explain and library:  # of the photos that are left, not of the ones left out as the same photo
-        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed)
+        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed, ids[0], ids[1])
     rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
     return [

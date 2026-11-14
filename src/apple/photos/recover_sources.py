@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
+from apple.photos import matching
 from apple.photos import powerphotos as pp
 from apple.photos.recover_cache import Cache, fingerprint
 from apple.photos.progress import Progress, duration
@@ -33,7 +34,6 @@ IGNORED_FOLDERS = {"@eaDir", ".Spotlight-V100", ".fseventsd", ".TemporaryItems",
 SNAPSHOT = re.compile(r"\d{4}-\d{2}-\d{2}-\d{6}$")  # the folder of a finished Time Machine snapshot (an unfinished one ends in .inProgress)
 SNAPSHOTS = ("all", "ends", "newest", "oldest")
 WORKERS = 8  # directories read at once: a disk on a slow link spends its time waiting
-TOLERANCE = 7200  # seconds a file's time may differ from the photo's capture time (the same photo is an hour out across daylight saving)
 
 
 class Found(NamedTuple):
@@ -55,9 +55,9 @@ class Source:
         """Why this source cannot be used (a path that does not exist, say), or None."""
         return None
 
-    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
+    def find(self, key: tuple, identifier: str = "", ids: Optional[dict] = None) -> Optional[Found]:
         """Where the original of the photo (key is (date, size, file name); identifier is its Messages identifier, if it has
-        one) can be had from, or None."""
+        one; ids are the iCloud ids it has, {kind: {values}}) can be had from, or None."""
         raise NotImplementedError
 
     def prepare(self, progress: Progress) -> None:
@@ -457,7 +457,7 @@ class Messages(Source):
                 pass
         return None
 
-    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
+    def find(self, key: tuple, identifier: str = "", ids: Optional[dict] = None) -> Optional[Found]:
         if not identifier:
             return None
         for attachments in self.folders:
@@ -470,17 +470,20 @@ class Messages(Source):
 
 
 class ByNameAndTime(Source):
-    """Files that are known by name: a photo matches by file name and a time within two hours of its capture time. A name
-    alone is not enough, since the numbers in IMG_nnnn.JPG repeat."""
+    """Files that are known by name: a photo matches as --diff-mode says (by default the file name and a time within two hours of its
+    capture time, or an iCloud fingerprint the two share). A name alone is not enough, since the numbers in IMG_nnnn.JPG repeat."""
 
-    def __init__(self):
-        self._index = None
+    def __init__(self, mode: matching.Mode = matching.TOLERANT):
+        self._index = None  # file name (lower case) -> the entries that have it
+        self._photos: dict = {}  # photo (date, size, name) -> the entries that have it, for matching
+        self._matcher = None
+        self.mode = mode
         self.progress = Progress()
 
     def files(self):
-        """(name, time, real, logical, kind, root, library) of each file that could be an original: the name it is known
-        by, its time, where it can be read and where it is as the backup shows it, what kind of place it is in, the path
-        that was searched and the library that holds it."""
+        """(name, time, real, logical, kind, root, library[, iCloud fingerprint]) of each file that could be an original: the name
+        it is known by, its time, where it can be read and where it is as the backup shows it, what kind of place it is in,
+        the path that was searched and the library that holds it, and, for a photo of a library, its fingerprint."""
         raise NotImplementedError
 
     def prepare(self, progress: Progress) -> None:
@@ -490,13 +493,21 @@ class ByNameAndTime(Source):
     def index(self) -> dict:
         if self._index is None:
             self._index = {}
+            ids: dict = {}
             count, started = 0, time.monotonic()
-            for name, modified, real, logical, kind, root, library in self.files():
-                self._index.setdefault(name.lower(), []).append((modified, real, logical, kind, root, library))
+            for name, modified, real, logical, kind, root, library, *stable in self.files():
+                photo = (datetime.fromtimestamp(int(modified), timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "0", name)  # a file's size is not what a list says of a photo
+                entry = (modified, real, logical, kind, root, library)
+                self._index.setdefault(name.lower(), []).append(entry)
+                self._photos.setdefault(photo, []).append(entry)
+                token = (stable[0] if stable else "") or matching.fingerprint_in(name)
+                if token:
+                    ids.setdefault(photo, {}).setdefault("stable", set()).add(token)
                 count += 1
                 if count % 100 == 0:
                     self.progress.update(self.status(count, started))
             self.finished(count, started)
+            self._matcher = matching.Index(self.mode, list(self._photos), ids)
         return self._index
 
     def status(self, count: int, started: float) -> str:
@@ -506,12 +517,13 @@ class ByNameAndTime(Source):
     def finished(self, count: int, started: float) -> None:
         self.progress.line(f"Indexed {count:,} files in {duration(time.monotonic() - started)}")
 
-    def find(self, key: tuple, identifier: str = "") -> Optional[Found]:
-        taken = captured(key)
-        near = [(abs(entry[0] - taken), entry) for entry in self.index().get(key[2].lower(), []) if abs(entry[0] - taken) <= TOLERANCE]
-        if not near:
+    def find(self, key: tuple, identifier: str = "", ids: Optional[dict] = None) -> Optional[Found]:
+        self.index()
+        decided = self._matcher.decide(key, ids)
+        if not decided:
             return None
-        _, real, logical, kind, root, library = min(near, key=lambda pair: pair[0])[1]
+        taken = captured(key)
+        _, real, logical, kind, root, library = min(self._photos[decided[0][0]], key=lambda entry: abs(entry[0] - taken))
         siblings = sorted(p for p in real.parent.iterdir() if p.suffix.lower() in MEDIA_FILES)
         return Found(kind, with_pair(logical, real, siblings), real.stat().st_size, root, library)
 
@@ -530,9 +542,9 @@ def has_database(path: Path) -> bool:
 
 
 def database_originals(library: Path, logical: Path, cache: Optional[Cache] = None):
-    """(name, time, real path, logical path) for each photo whose original is in a Photos library (library is where it can
-    be read, logical where it is as the backup shows it): the name is the one its database gives, since the file is named
-    by an ID. What is read is kept in the cache under the database's path, size and modification time, so it is read again
+    """(name, time, real path, logical path, iCloud fingerprint or "") for each photo whose original is in a Photos library (library is
+    where it can be read, logical where it is as the backup shows it): the name is the one its database gives, since the file is
+    named by an ID. What is read is kept in the cache under the database's path, size and modification time, so it is read again
     only when the database changes."""
     database = library / "database" / "Photos.sqlite"
     status = os.stat(database)
@@ -543,22 +555,24 @@ def database_originals(library: Path, logical: Path, cache: Optional[Cache] = No
     else:
         db = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
         try:
+            attributes = {row[1] for row in db.execute("pragma table_info(ZADDITIONALASSETATTRIBUTES)")}
+            stable = "x.ZORIGINALSTABLEHASH" if "ZORIGINALSTABLEHASH" in attributes else "null"
             rows = db.execute(
-                "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME "
+                "select coalesce(x.ZORIGINALFILENAME, a.ZFILENAME), a.ZDATECREATED + 978307200, a.ZDIRECTORY, a.ZFILENAME, " + stable + " "
                 "from ZASSET a left join ZADDITIONALASSETATTRIBUTES x on x.ZASSET = a.Z_PK where a.ZTRASHEDSTATE = 0"
             ).fetchall()
         finally:
             db.close()
         found = []
-        for name, taken, directory, stored_as in rows:
+        for name, taken, directory, stored_as, fingerprint_of in rows:
             if name and taken is not None and directory is not None and stored_as:
                 relative = f"originals/{directory}/{stored_as}"
                 if (library / relative).exists():
-                    found.append([name, taken, relative])
+                    found.append([name, taken, relative, fingerprint_of if isinstance(fingerprint_of, str) else ""])
         if cache:
             cache.put(key, found)
-    for name, taken, relative in found:
-        yield name, taken, library / relative, logical / relative
+    for name, taken, relative, fingerprint_of in found:
+        yield name, taken, library / relative, logical / relative, fingerprint_of
 
 
 def iso(when: float) -> str:
@@ -590,8 +604,8 @@ class Folders(ByNameAndTime):
     read through its database, since its files are named by ID. The library being repaired is never searched."""
     name = "folders"
 
-    def __init__(self, folders: List[Path], default: Path, snapshots: str = "all", cache: Optional[Cache] = None):
-        super().__init__()
+    def __init__(self, folders: List[Path], default: Path, snapshots: str = "all", cache: Optional[Cache] = None, mode: matching.Mode = matching.TOLERANT):
+        super().__init__(mode)
         self.cache = cache
         self.patterns = folders
         self.folders = [folder for folder in folders if not has_wildcard(str(folder)) or resolve(folder) is not None]  # patterns are expanded when the search starts
@@ -640,8 +654,8 @@ class Folders(ByNameAndTime):
                 reason = "empty database" if status.st_size == 0 else f"database read error: {error}"
             if originals is not None:
                 self.libraries_in_folder += 1
-                for name, taken, original, original_logical in originals:
-                    yield name, taken, original, original_logical, "library", root, str(logical)
+                for name, taken, original, original_logical, fingerprint_of in originals:
+                    yield name, taken, original, original_logical, "library", root, str(logical), fingerprint_of
                 return
             # The database cannot be used, but a library that keeps files under their own names (Masters, as iPhoto did)
             # can still be searched like any folder.
@@ -742,8 +756,8 @@ class Folders(ByNameAndTime):
                 started = time.monotonic()
                 self.progress.line(f"Searching {label}")
                 entries = [entry for folder in roots for entry in by_root.get(str(folder), [])]
-                for name, modified, real, logical, kind, root, containing in entries:
-                    yield name, modified, Path(real), Path(logical), kind, root, containing
+                for name, modified, real, logical, kind, root, containing, *stable in entries:
+                    yield name, modified, Path(real), Path(logical), kind, root, containing, *stable
                 finish(len(entries), len({entry[6] for entry in entries if entry[4] == "library"}), started, f" [cached {iso(saved)}]")
         elif backups:
             before, items, denied_before = len(self.unreadable), [], len(self.denied)
@@ -788,8 +802,8 @@ def parse_search(text: str) -> List[Tuple[str, List[str]]]:
     return entries
 
 
-def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "all", cache: Optional[Cache] = None) -> List[Source]:
-    """The sources for a search specification, in order. Entries of the same kind are joined."""
+def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, snapshots: str = "all", cache: Optional[Cache] = None, mode: matching.Mode = matching.TOLERANT) -> List[Source]:
+    """The sources for a search specification, in order. Entries of the same kind are joined; mode says how a file matches a photo."""
     joined: Dict[str, List[str]] = {}
     order: List[str] = []
     for kind, paths in entries:
@@ -802,5 +816,5 @@ def build_sources(entries: List[Tuple[str, List[str]]], default_library: Path, s
         if kind == "messages":
             sources.append(Messages(folders))
         else:
-            sources.append(Folders(folders, default_library, snapshots, cache))
+            sources.append(Folders(folders, default_library, snapshots, cache, mode))
     return sources

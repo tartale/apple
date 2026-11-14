@@ -302,28 +302,40 @@ def test_against_without_outdated_is_a_usage_error(mac):
     assert runner.invoke(app, ["photos", "libraries", "--against", "Source"]).exit_code == 2
 
 
+def dims_of(flags, current: bool = False):
+    """(width, height) of the flag `dims:<width>x<height>`, or two Nones; with current, the edited size `edited:<width>x<height>` first when given."""
+    for prefix in (("edited:", "dims:") if current else ("dims:",)):
+        for flag in flags:
+            if flag.startswith(prefix):
+                width, _, height = flag[len(prefix):].partition("x")
+                return int(width), int(height)
+    return None, None
+
+
 def add_photos(library: Path, photos) -> Path:
     """Gives a fake library the tables and original files diff reads.
 
     photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, flags]) with flags among "trashed", "hidden", "burst" (a hidden
-    burst member) and "shared" (it came from Messages). An item of size 0 is a placeholder: it has no original file.
+    burst member), "shared" (it came from Messages), "stable:<fingerprint>" and "cloud:<id>" (the iCloud ids), "dims:<width>x<height>" (the pixel size of the original) and
+    "edited:<width>x<height>" (the size the library shows after an edit). An item of size 0 is a placeholder: it has no original file.
     """
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
-    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer, ZCLOUDASSETGUID text, ZWIDTH integer, ZHEIGHT integer)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text, ZORIGINALSTABLEHASH text, ZORIGINALWIDTH integer, ZORIGINALHEIGHT integer)")
     (library / "originals" / "A").mkdir(parents=True, exist_ok=True)
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
         stored_as = f"UUID{number}.jpg"
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?)",
-            (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
+            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?, ?, ?, ?)",
+            (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags),
+             next((flag[6:] for flag in flags if flag.startswith("cloud:")), None), *dims_of(flags, current=True)),
         )
         connection.execute(
-            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?)",
-            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None),
+            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?, ?, ?, ?)",
+            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None, next((flag[7:] for flag in flags if flag.startswith("stable:")), None), *dims_of(flags)),
         )
         original = library / "originals" / "A" / stored_as
         if size:
@@ -828,21 +840,13 @@ def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(
     assert diff(mac, [A], [near], "--diff-mode", "tolerant").exit_code == 0  # the option wins
     monkeypatch.delenv("APPLE_PHOTOS_DIFF_MODE")
     bad = diff(mac, [A], [near], "--diff-mode", "filename=prefix=0")
-    assert bad.exit_code == 2 and "prefix=N" in " ".join(bad.output.replace("│", " ").split())
+    assert bad.exit_code == 2 and "use full, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
 
 
-def test_diff_mode_filename_regex_matches_what_the_pattern_finds_in_the_names(mac):
-    edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
-    assert diff(mac, [A], [edited], "--diff-mode", r"filename=regex=^(\w)").exit_code == 0
-    assert diff(mac, [A], [("2018-03-01 10:00:00", 100, "b-edited.jpg")], "--diff-mode", r"filename=regex=^(\w)").exit_code == 1
-    bad = diff(mac, [A], [edited], "--diff-mode", "filename=regex=(")
-    assert bad.exit_code == 2 and "not a regular expression" in " ".join(bad.output.replace("│", " ").split())
-
-
-def test_diff_mode_filename_prefix_matches_names_that_start_alike(mac):
+def test_diff_mode_filename_ignore_matches_names_that_differ(mac):
     edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
     assert diff(mac, [A], [edited]).exit_code == 1
-    assert diff(mac, [A], [edited], "--diff-mode", "filename=prefix=1").exit_code == 0
+    assert diff(mac, [A], [edited], "--diff-mode", "filename=ignore").exit_code == 0
 
 
 def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):
@@ -2113,8 +2117,8 @@ def test_match_lists_the_pairs_of_photos_that_are_the_same_photo_and_how_they_di
 def test_match_text_output_has_both_sides_in_aligned_columns(mac):
     result = matched(mac, [A], [("2018-03-01 10:00:30", 100, "a.jpg")])
     header, row = result.stdout.splitlines()[:2]
-    assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs"]
-    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s"]
+    assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs", "matched_by"]
+    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s", "attributes"]
 
 
 def test_match_is_the_inverse_of_diff(mac):
@@ -2174,7 +2178,7 @@ def test_match_fields_can_name_the_columns_shown_for_each_side(mac):
 
 def test_match_fields_with_plain_names_are_shown_for_both_sides_and_a_bad_one_is_a_usage_error(mac):
     result = matched(mac, [A], [A], "--format", "csv", "--fields", "name,size")
-    assert result.stdout.splitlines() == ["left_name,left_size,right_name,right_size,differs", "a.jpg,100,a.jpg,100,identical"]
+    assert result.stdout.splitlines() == ["left_name,left_size,right_name,right_size,differs,matched_by", "a.jpg,100,a.jpg,100,identical,attributes"]
     for bad in ("left_name,left_name", "left_nope", "name,left_size"):
         failed = matched(mac, [A], [A], "--fields", bad)
         assert failed.exit_code == 2, bad
