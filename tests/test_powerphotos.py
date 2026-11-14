@@ -2162,3 +2162,21 @@ def test_match_with_a_folder_gives_the_path_of_its_files(mac, tmp_path):
     result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--format", "csv"])
     row = next(csv.DictReader(io.StringIO(result.stdout)))
     assert row["left_files"] == "" and row["right_files"] == str(folder / "sub" / "a.jpg") and row["differs"] == "identical"
+
+
+def test_match_fields_can_name_the_columns_shown_for_each_side(mac):
+    near = ("2018-03-01 10:00:36", 100, "A.JPG")
+    result = matched(mac, [A, B], [near, B], "--format", "csv", "--fields", "left_name,right_name,differs")
+    assert result.stdout.splitlines() == ["left_name,right_name,differs", "a.jpg,A.JPG,\"name, extension, date by 36s\"", "b.jpg,b.jpg,identical"]
+    only_right = matched(mac, [A], [near], "--format", "csv", "--fields", "right_size,differs")
+    assert only_right.stdout.splitlines() == ["right_size,differs", "100,\"name, extension, date by 36s\""]
+
+
+def test_match_fields_with_plain_names_are_shown_for_both_sides_and_a_bad_one_is_a_usage_error(mac):
+    result = matched(mac, [A], [A], "--format", "csv", "--fields", "name,size")
+    assert result.stdout.splitlines() == ["left_name,left_size,right_name,right_size,differs", "a.jpg,100,a.jpg,100,identical"]
+    for bad in ("left_name,left_name", "left_nope", "name,left_size"):
+        failed = matched(mac, [A], [A], "--fields", bad)
+        assert failed.exit_code == 2, bad
+    prefixed_only = matched(mac, [A], [A], "--only", "left", "--fields", "left_name")
+    assert prefixed_only.exit_code == 2 and "not for --only" in " ".join(prefixed_only.output.replace("│", " ").split())

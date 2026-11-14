@@ -584,6 +584,27 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
+def match_columns(fields: Optional[str], only: Optional[Side], with_files: bool) -> tuple:
+    """(the photo columns to read for each side, the columns to show) for `match`. --fields names either the columns of a photo,
+    each shown for both sides as left_<column> and right_<column> and followed by differs, or the columns shown themselves
+    (left_name, right_name, differs ...), which is not for --only, whose rows are single photos."""
+    if fields is None:
+        base = DEFAULT_FIELDS + (["files"] if with_files else [])
+        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs"]
+    items = [item.strip() for item in fields.split(",") if item.strip()]
+    if not any(item.startswith(("left_", "right_")) or item == "differs" for item in items):
+        base = parse_fields(fields)
+        return base, [f"{side}_{column}" for side in ("left", "right") for column in base] + ["differs"]
+    allowed = [f"{side}_{column}" for side in ("left", "right") for column in DIFF_FIELDS] + ["differs"]
+    if only is not None or not items or any(item not in allowed for item in items) or len(set(items)) != len(items):
+        raise typer.BadParameter(
+            "use each of " + ", ".join(allowed) + " at most once, comma-separated; or the plain columns of a photo (date, size, name ...), "
+            "which are shown for both sides. The left_ and right_ columns are not for --only"
+        )
+    base = [column for column in DIFF_FIELDS if any(item in (f"left_{column}", f"right_{column}") for item in items)]
+    return base, items
+
+
 def match_command(
     left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary; or a folder of photo and video files.")],
     right: Annotated[str, typer.Argument(help="Second library or folder, named the same way.")],
@@ -623,7 +644,7 @@ def match_command(
     what A shares with B. The counts go to stderr. Exits 0 when at least one photo matched, 1 when none did. Changes nothing.
     """
     folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
-    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + (["files"] if any(folders.values()) else [])
+    columns, shown = match_columns(fields, only, any(folders.values()))
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     match = parse_mode(diff_mode)
@@ -658,7 +679,7 @@ def match_command(
         }[sort]
         rows.sort(key=order)
         if only is None:
-            print_diff(rows, [f"{side}_{column}" for side in ("left", "right") for column in columns] + ["differs"], False, format)
+            print_diff(rows, shown, False, format)
         else:
             print_diff(rows, columns, False, format)
     typer.echo(f"In both: {len(matched)}. Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}.", err=True)
