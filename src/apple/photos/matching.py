@@ -1,40 +1,42 @@
-"""When two photos are the same photo: how much their file name, date and size may differ.
+"""When two photos are the same photo.
 
-A photo is its (UTC date, size, file name), as a library's database gives them. How closely two of those must agree to count as
-one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) on every command that compares photos:
+A photo is its (UTC date, size, file name), as a library's database gives them, and a few more things that are known for some photos:
+the ids iCloud gave it, its pixel size, and the bytes of its file. A Mode says which of these to look at and how closely they must
+agree. It is written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) on every command that compares photos.
 
-    filename=full            the name without its extension, without regard to case (the default)
-    filename=exact           the name without its extension, character for character
-    filename=ignore          any name
-    extension=full           the extension without regard to case, and .jpeg is .jpg (the default)
-    extension=exact          the extension character for character
-    extension=ignore         any extension: IMG_1234.HEIC and IMG_1234.JPG are one photo
-    date=exif                a file in a folder is dated by the capture time in its own metadata (EXIF), as Photos dates it on
-                             import, with its modification time only where it has none
-    date=modified            a file in a folder is dated by its modification time alone (the default)
-    date=within=2h           within a time (a number and s, m, h or d; 2h is the default)
-    date=exact | date=ignore
-    filesize=within=1%       within a share of the size (1% is the default), or a number of bytes: filesize=within=512bytes
-    filesize=exact | filesize=ignore
+How a decision is made (the order of the parts in the text has no part in it):
 
-    identity=auto            photos that both carry an id from iCloud are the same photo when the ids are equal, whatever their
-                             name, date and size, and are not when the ids differ (the default); the library's `stable` id (the
-                             fingerprint of the original) and `cloud` id, and the 28 characters a backup file's name ends in when
-                             its name was taken (`IMAG0044_<fingerprint>.JPG`). Where no id is known on both sides, the other
-                             parts decide, all of which must agree.
-    identity=ignore          the other parts alone decide
-    dimensions=ignore        the pixel size is not looked at (the default)
-    dimensions=exact         photos whose pixel sizes are both known must have the same one (a rotated copy has the same size); read
-                             from the database for a library and from the file's header for a folder, and an unknown size passes
-    content=ignore           the bytes of the files are not read (the default)
-    content=hash             files with the same SHA-256 are the same photo, whatever their name, date and size; a different hash
-                             does not make them different (the tolerance for rewritten metadata stays). Only files whose size also
-                             occurs on the other side are read, and a hash is cached; reading is slow over a network share
+  1. An id decides. If both photos have an iCloud id of the same kind (`identity=auto`), they are the same photo when the ids are equal,
+     whatever their name, date and size, and different photos when the ids differ. The same SHA-256 of the files (`content=hash`) also
+     makes them the same photo, but a different hash never makes them different, so a copy with rewritten metadata still matches.
+  2. Without an id to go by, every part must agree: the name, the extension, the date, the size, and, with `dimensions=exact`, the pixel
+     size. A part set to `ignore` is left out, and a size, or a pixel size, that is not known passes.
+  3. When several photos match, a photo is paired with the one that shares its id, else the nearest in date, and each is paired once.
 
-A mode is a comma-separated list read from left to right, starting from the default: `exact` (everything exact, a name as written)
-and `tolerant` (the default) name whole modes, and a field after them changes just that field, as in
-`exact,filename=full` or `date=within=1d,filesize=ignore`. A size that is not known (0, or not a number, as for a placeholder)
-does not tell photos apart.
+Three whole modes are the starting points; a part after one changes just that part, and the default is `tolerant`:
+
+    exact      slow, most accurate      ids, the bytes of the files (`content=hash`), pixel size, the EXIF capture time, and
+                                        everything else exactly: filename=exact,extension=exact,date=exif,date=exact,filesize=exact
+    tolerant   medium speed and accuracy  ids, then the name (case ignored), the extension (`.jpeg` is `.jpg`), a date within 2 hours and a
+                                        size within 1%; no file is opened (modification time as the date)
+    loose      fast, least accurate     the name (case ignored) and a date within 1 day: any extension, any size, no ids
+
+The parts:
+
+    filename=full | exact | ignore         the name without its extension: case ignored (full), as written, or any name
+    extension=full | exact | ignore        the extension: case ignored and `.jpeg` is `.jpg` (full), as written, or any extension
+    date=within=2h | exact | ignore        how two dates compare (a number and s, m, h or d)
+    date=exif | modified                   where a file in a folder gets its date: the capture time in its own metadata (EXIF), as Photos
+                                           dates it on import, with the modification time only where it has none; or the modification time
+    filesize=within=1% | within=512bytes | exact | ignore
+    identity=auto | ignore                 whether iCloud ids decide: a library's `stable` id (the fingerprint of the original) and `cloud` id,
+                                           and the 28 characters a backup file's name ends in when its name was taken (`IMAG0044_<fingerprint>.JPG`)
+    content=ignore | hash                  whether files with the same SHA-256 are the same photo; only files whose size also occurs on the other
+                                           side are read, a hash is cached, and reading is slow over a network share
+    dimensions=ignore | exact              whether the pixel sizes must be the same (a rotated copy has the same size); read from the database
+                                           for a library and from the file's header for a folder
+
+Examples: `exact,filename=ignore` (the surest, whatever the names), `loose,filesize=within=5%`, `date=within=1d,filesize=ignore`.
 """
 import os
 import re
@@ -66,16 +68,20 @@ class Mode:
 
 
 TOLERANT = Mode()
-EXACT = Mode(filename="exact", extension="exact", date="exact", filesize="exact", identity="ignore")
-PRESETS = {"tolerant": TOLERANT, "exact": EXACT}
+# The three whole modes, from the surest and slowest to the quickest and loosest. Each is a starting point that a part after it can change.
+EXACT = Mode(
+    filename="exact", extension="exact", identity="auto", content="hash", dimensions="exact", date_source="exif", date="exact", filesize="exact",
+)
+LOOSE = Mode(filename="full", extension="ignore", identity="ignore", content="ignore", dimensions="ignore", date="within", date_within=timedelta(days=1), filesize="ignore")
+PRESETS = {"exact": EXACT, "tolerant": TOLERANT, "loose": LOOSE}
 HELP = (
-    "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore "
-    "(of the name without its extension; full ignores case), "
-    "extension=full|exact|ignore (full ignores case, and .jpeg is .jpg), identity=auto|ignore (photos with the same iCloud id are the same photo, "
-    "and with different ids are not, whatever the other parts say), content=ignore|hash (files with the same SHA-256 are the same photo; slow), dimensions=ignore|exact (the pixel sizes must agree), date=exif|modified (where a file in a folder gets its date: its EXIF capture time, as Photos does, or its modification time) or date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
-    "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
-    "`exact,filename=ignore`. The default is tolerant: filename=full,extension=full,identity=auto,content=ignore,date=modified,date=within=2h,filesize=within=1%. Also read from "
-    "APPLE_PHOTOS_DIFF_MODE."
+    "How closely two photos must agree to be the same photo: a whole mode, exact (slow, most accurate: ids, file bytes, pixel size, EXIF date, "
+    "everything exact), tolerant (the default; medium: ids, then name, extension, date within 2h, size within 1%) or loose (fast, least "
+    "accurate: name and a date within 1 day), optionally followed by parts that change it, comma-separated and read left to right: "
+    "filename=full|exact|ignore, extension=full|exact|ignore, date=within=DURATION|exact|ignore (such as 2h, 30m, 1d), date=exif|modified "
+    "(where a folder file's date comes from), filesize=within=PERCENT|within=BYTES|exact|ignore (such as 1% or 512bytes), "
+    "identity=auto|ignore (iCloud ids), content=ignore|hash (the SHA-256 of the files; slow), dimensions=ignore|exact (pixel size). "
+    "An id decides when both photos have one; otherwise every part must agree. Example: `exact,filename=ignore`. Also read from APPLE_PHOTOS_DIFF_MODE."
 )
 
 
@@ -270,9 +276,6 @@ def pairs(first: Counter, second: Counter, mode: Mode = TOLERANT, first_ids: Opt
     only in second) when each photo of one is matched with at most one of the other under the mode, a photo with a count being
     that many photos: the extra copies are the ones left over. A photo is matched with one that shares its iCloud id, or else
     the nearest in date of those that are the same photo."""
-    if mode == EXACT:
-        both = first & second
-        return [(photo, photo, "attributes") for photo in sorted(both) for _ in range(both[photo])], first - second, second - first
     unused = Counter(second)
     index = Index(mode, list(second), second_ids)
     only_first, matched = Counter(), []

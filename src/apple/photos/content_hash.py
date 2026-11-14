@@ -56,6 +56,8 @@ def content_ids(sides: List[pp.Photos], selected: List[Dict], refresh: bool = Fa
                 info = path.stat()
             except OSError:
                 continue
+            if str(info.st_size) != photo[1]:  # not the original the database describes (a placeholder, or a file that was changed)
+                continue
             stamp = [int(info.st_mtime), info.st_size]
             cached = known.get(str(path))
             digest = cached[2] if cached and cached[:2] == stamp else file_digest(path)

@@ -122,4 +122,18 @@ def test_identity_ignore_does_not_turn_content_off(mac, tmp_path):
     folder = tmp_path / "backup"
     file_in(folder, "renamed.jpg", BYTES, "2001-01-01 00:00:00")
     assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "identity=ignore,content=hash"]).exit_code == 0
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "exact"]).exit_code == 1
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "filename=exact,extension=exact,date=exact,filesize=exact"]).exit_code == 1  # the names and dates differ
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "exact"]).exit_code == 0  # exact reads the bytes too
+
+
+def test_the_loose_mode_matches_across_extensions_and_sizes_and_the_exact_mode_reads_the_bytes(mac, tmp_path):
+    library_with(mac, [("2018-03-01 10:00:00", "IMG_0001.JPG", BYTES)])
+    folder = tmp_path / "backup"
+    file_in(folder, "img_0001.heic", b"another format" * 10, "2018-03-01 20:00:00")  # another extension and size, ten hours later
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder)]).exit_code == 1
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "loose"]).exit_code == 0
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "loose,extension=exact"]).exit_code == 1
+    renamed = tmp_path / "renamed"
+    file_in(renamed, "anything-at-all.jpg", BYTES, "2001-01-01 00:00:00")
+    assert runner.invoke(app, ["photos", "diff", "Source", str(renamed), "--diff-mode", "exact"]).exit_code == 0  # the same bytes
+    assert runner.invoke(app, ["photos", "diff", "Source", str(renamed), "--diff-mode", "tolerant"]).exit_code == 1
