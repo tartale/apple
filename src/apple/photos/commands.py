@@ -39,6 +39,7 @@ def organize(dry_run: DryRun = False) -> None:
 
 app.command("libraries")(library_commands.libraries_command)
 app.command("diff")(library_commands.diff_command)
+app.command("match")(library_commands.match_command)
 app.command("missing")(recover.missing_command)
 app.command("find")(recover.find_command)
 app.command("import")(recover.import_found_command)

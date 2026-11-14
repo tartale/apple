@@ -2093,3 +2093,72 @@ def test_each_copy_of_a_photo_in_a_folder_has_its_own_path_with_include_duplicat
     result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--only", "right", "--include-duplicates", "--format", "csv"])
     rows = list(csv.DictReader(io.StringIO(result.stdout)))
     assert sorted(r["files"] for r in rows) == [str(folder / "one" / "d.jpg"), str(folder / "two" / "d.jpg")]
+
+
+def matched(mac, left, right, *options):
+    for name, photos in (("Source", left), ("photos-2018", right)):
+        add_photos(mac.libraries[name], photos)
+    return runner.invoke(app, ["photos", "match", "Source", "photos-2018", *options])
+
+
+def test_match_lists_the_pairs_of_photos_that_are_the_same_photo_and_how_they_differ(mac):
+    near = ("2018-03-01 10:00:36", 100, "A.JPG")  # 36 seconds later, in capitals
+    result = matched(mac, [A, B, C], [near, B, D], "--format", "csv")
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 0 and len(rows) == 2
+    assert [(r["left_name"], r["right_name"], r["differs"]) for r in rows] == [("a.jpg", "A.JPG", "name, extension, date by 36s"), ("b.jpg", "b.jpg", "identical")]
+    assert "In both: 2. Only in Source: 1. Only in photos-2018: 1." in result.output
+
+
+def test_match_text_output_has_both_sides_in_aligned_columns(mac):
+    result = matched(mac, [A], [("2018-03-01 10:00:30", 100, "a.jpg")])
+    header, row = result.stdout.splitlines()[:2]
+    assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs"]
+    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s"]
+
+
+def test_match_is_the_inverse_of_diff(mac):
+    near = ("2018-03-01 11:00:00", 100, "a.jpg")
+    left, right = [A, B, C], [near, B, D]
+    add_photos(mac.libraries["Source"], left)
+    add_photos(mac.libraries["photos-2018"], right)
+    diffed = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--fields", "date,size,name", "--format", "csv", "--only", "left"])
+    same = runner.invoke(app, ["photos", "match", "Source", "photos-2018", "--only", "left", "--fields", "date,size,name", "--format", "csv"])
+    seen = {tuple(r.values()) for r in csv.DictReader(io.StringIO(diffed.stdout))} | {tuple(r.values()) for r in csv.DictReader(io.StringIO(same.stdout))}
+    assert seen == {(date, str(size), name) for date, size, name in left}  # every photo of the left is in one list or the other
+    assert not ({tuple(r.values()) for r in csv.DictReader(io.StringIO(diffed.stdout))} & {tuple(r.values()) for r in csv.DictReader(io.StringIO(same.stdout))})
+
+
+def test_match_follows_the_diff_mode(mac):
+    near = ("2018-03-01 11:00:00", 100, "a.jpg")  # an hour later
+    assert matched(mac, [A], [near]).exit_code == 0
+    exact = matched(mac, [A], [near], "--diff-mode", "exact")
+    assert exact.exit_code == 1 and exact.stdout.strip() == ""
+    assert "In both: 0." in exact.output
+
+
+def test_match_only_shows_one_side_s_photos_and_summary_only_the_counts(mac):
+    result = matched(mac, [A, B], [A, D], "--only", "right", "--fields", "name,date")
+    assert [line.split() for line in result.stdout.splitlines()] == [["name", "date"], ["a.jpg", "2018-03-01", "10:00:00"]]
+    summary = matched(mac, [A, B], [A, D], "--summary")
+    assert summary.stdout == "" and "In both: 1." in summary.output
+
+
+def test_match_exits_1_when_nothing_matches_and_0_when_something_does(mac):
+    assert matched(mac, [A], [D]).exit_code == 1
+    assert matched(mac, [A], [A]).exit_code == 0
+
+
+def test_match_pairs_each_photo_with_one_other_and_the_extra_copies_are_left_over(mac):
+    result = matched(mac, [A], [A, ("2018-03-01 10:30:00", 100, "a.jpg")], "--include-duplicates", "--format", "csv")
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert len(rows) == 1 and rows[0]["differs"] == "identical" and "Only in photos-2018: 1." in result.output
+
+
+def test_match_with_a_folder_gives_the_path_of_its_files(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    touch(folder / "sub" / "a.jpg", A[0])
+    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--format", "csv"])
+    row = next(csv.DictReader(io.StringIO(result.stdout)))
+    assert row["left_files"] == "" and row["right_files"] == str(folder / "sub" / "a.jpg") and row["differs"] == "identical"

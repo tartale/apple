@@ -213,14 +213,16 @@ def absent(wanted: Counter, held: Counter, mode: Mode = TOLERANT) -> Counter:
     return Counter({photo: 1 for photo in wanted if not held[photo] and not index.matches(photo)})
 
 
-def pair(first: Counter, second: Counter, mode: Mode = TOLERANT) -> Tuple[Counter, Counter, int]:
-    """(photos only in first, photos only in second, how many pairs) when each photo of one is matched with at most one of
-    the other under the mode, a photo with a count being that many photos: the extra copies are the ones left over."""
+def pairs(first: Counter, second: Counter, mode: Mode = TOLERANT) -> Tuple[List[Tuple[Photo, Photo]], Counter, Counter]:
+    """([(a photo of first, the photo of second it is the same photo as)], photos only in first, photos only in second) when each
+    photo of one is matched with at most one of the other under the mode, a photo with a count being that many photos: the
+    extra copies are the ones left over. A photo is matched with the nearest in date of those that are the same photo."""
     if mode == EXACT:
-        return first - second, second - first, sum((first & second).values())
+        both = first & second
+        return [(photo, photo) for photo in sorted(both) for _ in range(both[photo])], first - second, second - first
     unused = Counter(second)
     index = Index(mode, list(second))
-    only_first, pairs = Counter(), 0
+    only_first, matched = Counter(), []
     for photo in sorted(first):
         for _ in range(first[photo]):
             partner = next((other for other in index.matches(photo) if unused[other]), None)
@@ -228,8 +230,33 @@ def pair(first: Counter, second: Counter, mode: Mode = TOLERANT) -> Tuple[Counte
                 only_first[photo] += 1
             else:
                 unused[partner] -= 1
-                pairs += 1
-    return only_first, +unused, pairs
+                matched.append((photo, partner))
+    return matched, only_first, +unused
+
+
+def pair(first: Counter, second: Counter, mode: Mode = TOLERANT) -> Tuple[Counter, Counter, int]:
+    """(photos only in first, photos only in second, how many pairs): see pairs."""
+    matched, only_first, only_second = pairs(first, second, mode)
+    return only_first, only_second, len(matched)
+
+
+def gaps(first: Photo, second: Photo) -> Tuple[str, ...]:
+    """How two photos differ, however little and whatever the mode: the name and the extension as written, the date, the size.
+    Nothing when they are the very same photo."""
+    stem, extension = split_name(first[2])
+    other_stem, other_extension = split_name(second[2])
+    found = []
+    if stem != other_stem:
+        found.append("name")
+    if extension != other_extension:
+        found.append("extension")
+    gap = abs((datetime.fromisoformat(first[0]) - datetime.fromisoformat(second[0])).total_seconds())
+    if gap:
+        found.append(f"date by {span(gap)}")
+    if first[1] != second[1]:
+        both = first[1].isdigit() and second[1].isdigit() and int(first[1]) and int(second[1])
+        found.append(f"size by {abs(int(first[1]) - int(second[1])):,} bytes" if both else "size")
+    return tuple(found)
 
 
 def dedupe(photos, mode: Mode = TOLERANT) -> List[Photo]:

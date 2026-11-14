@@ -391,6 +391,19 @@ def parse_fields(text: str) -> list:
     return fields
 
 
+def photo_row(key: tuple, side: str, copy: int, hidden: dict, bursts: dict, libraries: dict, with_missing: bool, folders: Optional[dict]) -> dict:
+    """The dict of one photo (the copy-th of its key) of a side: side, date, size (int or None), name, hidden, burst, missing,
+    shared, and files (the path of its file when the side is a folder, each copy its own, else empty)."""
+    when, size, name = key
+    paths = libraries[side].files.get(key, []) if folders and folders[side] else []
+    return {
+        "side": side, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
+        "hidden": key in hidden[side], "burst": key in bursts[side],
+        "missing": libraries[side].original_missing(key) if with_missing else False,
+        "shared": key in libraries[side].shared, "files": [paths[min(copy, len(paths) - 1)]] if paths else [],
+    }
+
+
 def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], sort: DiffSort, hidden: dict, bursts: dict, libraries: dict, with_missing: bool, folders: Optional[dict] = None) -> list:
     """The photos to show as dicts of side, date, size (int or None), name, hidden, burst and missing (true or false), in
     the order asked for. hidden and bursts give, for each side's value, the (date, size, name) keys of that side's hidden
@@ -403,16 +416,8 @@ def diff_rows(only_left: Counter, only_right: Counter, which: Optional[Side], so
         if which in (None, side):
             copy_of = Counter()
             for key in counted.elements():
-                when, size, name = key
-                paths = libraries[side.value].files.get(key, []) if folders and folders[side.value] else []
-                files = [paths[min(copy_of[key], len(paths) - 1)]] if paths else []
+                rows.append(photo_row(key, side.value, copy_of[key], hidden, bursts, libraries, with_missing, folders))
                 copy_of[key] += 1
-                rows.append({
-                    "side": side.value, "date": when, "size": int(size) if size.isdigit() else None, "name": name,
-                    "hidden": key in hidden[side.value], "burst": key in bursts[side.value],
-                    "missing": libraries[side.value].original_missing(key) if with_missing else False,
-                    "shared": key in libraries[side.value].shared, "files": files,
-                })
     order = {
         DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0, r["side"]),
         DiffSort.name: lambda r: (r["name"], r["date"], r["size"] or 0, r["side"]),
@@ -447,7 +452,7 @@ def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) ->
         widths = [max(len(cell[i]) for cell in cells) for i in range(len(columns))] if cells else []
         for cell in cells:
             typer.echo("  ".join(
-                (text.rjust(width) if columns[i] == "size" else text.ljust(width)) for i, (text, width) in enumerate(zip(cell, widths))
+                (text.rjust(width) if columns[i] in ("size", "left_size", "right_size") else text.ljust(width)) for i, (text, width) in enumerate(zip(cell, widths))
             ).rstrip())
 
 
@@ -456,6 +461,59 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
     first = since.date().isoformat() if since else ""
     last = until.date().isoformat() if until else "9999-99-99"
     return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
+
+
+class Compared(NamedTuple):
+    """Two libraries or folders read for comparing: which sides are folders, what each holds (pp.Photos), and for each side what
+    is hidden, a burst member, or a superseded placeholder in the range, and the photos to compare (first, second)."""
+    folders: dict
+    data: list
+    hidden: list
+    bursts: list
+    superseded: list
+    first: Counter
+    second: Counter
+
+
+def compare_sides(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, exclude_hidden: bool,
+                  include_duplicates: bool, refresh: bool, match: matching.Mode) -> Compared:
+    """Reads the two sides of `diff` and `match`: a library by its database, a folder by its files, in the range and media."""
+    folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
+    try:
+        sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
+        data = [folder_photos.folder_photos(side, refresh=refresh, exif=match.date_source == "exif") if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+
+    def selected(counted: Counter) -> Counter:
+        return pp.of_media(within(counted, since, until), media.value)
+
+    superseded = [selected(d.superseded) for d in data]
+    visible = [selected(d.visible) for d in data]
+    hidden = [selected(d.hidden) for d in data]
+    bursts = [selected(d.bursts) for d in data]
+    first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
+    if not include_duplicates:
+        first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
+    return Compared(folders, data, hidden, bursts, superseded, first, second)
+
+
+def report_notes(compared: Compared, left: str, right: str, exclude_hidden: bool) -> None:
+    """What was not compared, on stderr: shared placeholders that have an imported copy, and, with exclude_hidden, hidden items."""
+    superseded, hidden, bursts = compared.superseded, compared.hidden, compared.bursts
+    if sum(superseded[0].values()) or sum(superseded[1].values()):
+        typer.echo(
+            "Not counted, shared placeholders that have an imported copy in the same library: "
+            f"{sum(superseded[0].values())} in {left}, {sum(superseded[1].values())} in {right}.",
+            err=True,
+        )
+    if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
+        typer.echo(
+            "Not compared, hidden in Photos and not listed by PowerPhotos: "
+            f"{sum(hidden[0].values())} in {left} ({count(sum(bursts[0].values()), 'burst member')}), "
+            f"{sum(hidden[1].values())} in {right} ({count(sum(bursts[1].values()), 'burst member')}).",
+            err=True,
+        )
 
 
 def diff_command(
@@ -512,22 +570,8 @@ def diff_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     match = parse_mode(diff_mode)
-    try:
-        sides = [Path(side) if folders[name] else find_library(side) for name, side in (("left", left), ("right", right))]  # a name that is not known fails before anything is read
-        data = [folder_photos.folder_photos(side, refresh=refresh, exif=match.date_source == "exif") if folders[name] else pp.library_photos(side) for name, side in zip(("left", "right"), sides)]
-    except pp.PowerPhotosError as error:
-        fail(str(error))
-
-    def selected(counted: Counter) -> Counter:
-        return pp.of_media(within(counted, since, until), media.value)
-
-    superseded = [selected(d.superseded) for d in data]
-    visible = [selected(d.visible) for d in data]
-    hidden = [selected(d.hidden) for d in data]
-    bursts = [selected(d.bursts) for d in data]
-    first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
-    if not include_duplicates:
-        first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
+    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
+    data, hidden, bursts, first, second = compared.data, compared.hidden, compared.bursts, compared.first, compared.second
     only_left, only_right, both = matching.pair(first, second, match)
     if explain:
         explain_unmatched(only_left, second, match, right, data[1].trashed)
@@ -536,20 +580,90 @@ def diff_command(
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
     typer.echo(f"Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}. In both: {both}.", err=True)
-    if sum(superseded[0].values()) or sum(superseded[1].values()):
-        typer.echo(
-            "Not counted, shared placeholders that have an imported copy in the same library: "
-            f"{sum(superseded[0].values())} in {left}, {sum(superseded[1].values())} in {right}.",
-            err=True,
-        )
-    if exclude_hidden and (sum(hidden[0].values()) or sum(hidden[1].values())):
-        typer.echo(
-            "Not compared, hidden in Photos and not listed by PowerPhotos: "
-            f"{sum(hidden[0].values())} in {left} ({count(sum(bursts[0].values()), 'burst member')}), "
-            f"{sum(hidden[1].values())} in {right} ({count(sum(bursts[1].values()), 'burst member')}).",
-            err=True,
-        )
+    report_notes(compared, left, right, exclude_hidden)
     raise typer.Exit(1 if only_left or only_right else 0)
+
+
+def match_command(
+    left: Annotated[str, typer.Argument(help="First library: a name from `./apple photos libraries`, or the path of a .photoslibrary; or a folder of photo and video files.")],
+    right: Annotated[str, typer.Argument(help="Second library or folder, named the same way.")],
+    summary: Annotated[bool, typer.Option("--summary", help="Print only the counts.")] = False,
+    only: Annotated[Optional[Side], typer.Option(help="Show only the photos of the left, or of the right, library that have a match, one row each, instead of the pairs.")] = None,
+    format: Annotated[DiffFormat, typer.Option(help="text: aligned columns. csv and json: one record per pair, or per photo with --only.")] = DiffFormat.text,
+    fields: Annotated[
+        Optional[str],
+        typer.Option(help="The columns to show for each photo and their order: any of date, size, name, hidden, burst, missing, shared, files, comma-separated (default date, size, name, and files when a side is a folder). For pairs each is shown for both sides as left_<column> and right_<column>."),
+    ] = None,
+    sort: Annotated[DiffSort, typer.Option(help="Order of the rows (by the left photo of a pair).")] = DiffSort.date,
+    since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
+    until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
+    media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
+    diff_mode: DiffModeOption = "",
+    include_duplicates: Annotated[
+        bool,
+        typer.Option("--include-duplicates", help="Count every copy of a photo (the same date, size and file name) a library holds, so each copy is matched on its own. By default a photo is counted once."),
+    ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="For a folder: read it again instead of reusing what an earlier run saved."),
+    ] = False,
+    exclude_hidden: Annotated[
+        bool,
+        typer.Option("--exclude-hidden", help="Leave out the items Photos keeps out of view (mostly burst members); how many were left out is reported on stderr."),
+    ] = False,
+) -> None:
+    """Show which photos and videos are in both of two libraries or folders: the inverse of `diff`.
+
+    Photos are compared as `diff` compares them, by --diff-mode (or APPLE_PHOTOS_DIFF_MODE), so what `diff` calls the same
+    photo is what is listed here, and what it lists is not. Each photo of one side is paired with at most one of the other (the
+    nearest in date of those that are the same photo), and each row is a pair: the photo of the left side, the photo of the
+    right side, and how they differ (`identical` when they are the very same date, size and name, else the name, extension, date
+    and size as far as they differ: `date by 36s, size by 12 bytes`). With --only left or --only right, each row is a photo of
+    that side that has a match, as `diff --only` shows the ones that have none, so `match A B --only left --format csv` lists
+    what A shares with B. The counts go to stderr. Exits 0 when at least one photo matched, 1 when none did. Changes nothing.
+    """
+    folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
+    columns = parse_fields(fields) if fields is not None else DEFAULT_FIELDS + (["files"] if any(folders.values()) else [])
+    if since and until and until < since:
+        raise typer.BadParameter("--until is before --since")
+    match = parse_mode(diff_mode)
+    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
+    data = compared.data
+    matched, only_left, only_right = matching.pairs(compared.first, compared.second, match)
+    rows = []
+    if not summary:
+        hidden = {"left": set(compared.hidden[0]), "right": set(compared.hidden[1])}
+        bursts = {"left": set(compared.bursts[0]), "right": set(compared.bursts[1])}
+        libraries = {"left": data[0], "right": data[1]}
+        copies = {"left": Counter(), "right": Counter()}
+
+        def row_of(photo: tuple, side: str) -> dict:
+            row = photo_row(photo, side, copies[side][photo], hidden, bursts, libraries, "missing" in columns, compared.folders)
+            copies[side][photo] += 1
+            return row
+
+        for first, second in matched:
+            left_row, right_row = row_of(first, "left"), row_of(second, "right")
+            if only is None:
+                rows.append({
+                    **{f"left_{column}": left_row[column] for column in columns}, **{f"right_{column}": right_row[column] for column in columns},
+                    "differs": ", ".join(matching.gaps(first, second)) or "identical", "side": "left", "date": first[0], "name": first[2], "size": left_row["size"],
+                })
+            else:
+                rows.append(left_row if only == Side.left else right_row)
+        order = {
+            DiffSort.date: lambda r: (r["date"], r["name"], r["size"] or 0),
+            DiffSort.name: lambda r: (r["name"], r["date"], r["size"] or 0),
+            DiffSort.size: lambda r: (r["size"] or 0, r["date"], r["name"]),
+        }[sort]
+        rows.sort(key=order)
+        if only is None:
+            print_diff(rows, [f"{side}_{column}" for side in ("left", "right") for column in columns] + ["differs"], False, format)
+        else:
+            print_diff(rows, columns, False, format)
+    typer.echo(f"In both: {len(matched)}. Only in {left}: {sum(only_left.values())}. Only in {right}: {sum(only_right.values())}.", err=True)
+    report_notes(compared, left, right, exclude_hidden)
+    raise typer.Exit(0 if matched else 1)
 
 
 IgnoreTrashOption = Annotated[
