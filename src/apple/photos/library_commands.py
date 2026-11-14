@@ -16,7 +16,7 @@ import typer
 
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
-from apple.photos import blacklist, folder_photos, matching, powerphotos_reports, split_plan
+from apple.photos import blacklist, content_hash, folder_photos, matching, powerphotos_reports, split_plan
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 
@@ -463,6 +463,16 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
     return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
 
 
+def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = False) -> list:
+    """The ids of the photos of each side that matching uses: the ids of the library (or the fingerprints in a folder's names)
+    and, with content=hash in the mode, the SHA-256 of the files whose size occurs on the other side."""
+    stored = [d.ids for d in data]
+    if match.content != "hash":
+        return stored
+    hashed = content_hash.content_ids(data, selected, refresh)
+    return [merged_ids(stored[index], hashed[index]) for index in (0, 1)]
+
+
 class Compared(NamedTuple):
     """Two libraries or folders read for comparing: which sides are folders, what each holds (pp.Photos), and for each side what
     is hidden, a burst member, or a superseded placeholder in the range, and the photos to compare (first, second)."""
@@ -473,6 +483,7 @@ class Compared(NamedTuple):
     superseded: list
     first: Counter
     second: Counter
+    ids: list
 
 
 def compare_sides(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, exclude_hidden: bool,
@@ -495,7 +506,7 @@ def compare_sides(left: str, right: str, since: Optional[datetime], until: Optio
     first, second = (visible[i] if exclude_hidden else visible[i] + hidden[i] for i in (0, 1))
     if not include_duplicates:
         first, second = (Counter(dict.fromkeys(counted, 1)) for counted in (first, second))
-    return Compared(folders, data, hidden, bursts, superseded, first, second)
+    return Compared(folders, data, hidden, bursts, superseded, first, second, ids_for(match, data, [first, second], refresh))
 
 
 def report_notes(compared: Compared, left: str, right: str, exclude_hidden: bool) -> None:
@@ -572,7 +583,7 @@ def diff_command(
     match = parse_mode(diff_mode)
     compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
     data, hidden, bursts, first, second = compared.data, compared.hidden, compared.bursts, compared.first, compared.second
-    only_left, only_right, both = matching.pair(first, second, match, data[0].ids, data[1].ids)
+    only_left, only_right, both = matching.pair(first, second, match, compared.ids[0], compared.ids[1])
     if explain:
         explain_unmatched(only_left, second, match, right, data[1].trashed)
         explain_unmatched(only_right, first, match, left, data[0].trashed)
@@ -584,7 +595,7 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
-HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id"}  # what decided a pair, in words
+HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes"}  # what decided a pair, in words
 
 
 def match_columns(fields: Optional[str], only: Optional[Side], with_files: bool) -> tuple:
@@ -653,7 +664,7 @@ def match_command(
     match = parse_mode(diff_mode)
     compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
     data = compared.data
-    matched, only_left, only_right = matching.pairs(compared.first, compared.second, match, data[0].ids, data[1].ids)
+    matched, only_left, only_right = matching.pairs(compared.first, compared.second, match, compared.ids[0], compared.ids[1])
     rows = []
     if not summary:
         hidden = {"left": set(compared.hidden[0]), "right": set(compared.hidden[1])}
@@ -710,15 +721,16 @@ def merged_ids(first: dict, second: dict) -> dict:
 
 
 def lacking_from(wanted: Counter, held: Counter, library: pp.Photos, since: Optional[datetime], until: Optional[datetime],
-                 media: Media, match: matching.Mode, ignore_trash: bool, wanted_ids: Optional[dict] = None) -> Counter:
+                 media: Media, match: matching.Mode, ignore_trash: bool, wanted_ids: Optional[dict] = None, held_ids: Optional[dict] = None) -> Counter:
     """The photos of wanted that the library (whose live photos, in range, are held) has none of; unless ignore_trash, one
-    that matches a photo in its Recently Deleted is there too, and how many that left out is said. wanted_ids are the iCloud ids
-    of the wanted photos."""
-    live = matching.absent(wanted, held, match, wanted_ids, library.ids)
+    that matches a photo in its Recently Deleted is there too, and how many that left out is said. wanted_ids and held_ids are the
+    ids of the wanted photos and of the library's (the library's own, without held_ids)."""
+    held_ids = library.ids if held_ids is None else held_ids
+    live = matching.absent(wanted, held, match, wanted_ids, held_ids)
     if ignore_trash:
         return live
     trash = pp.of_media(within(library.trashed, since, until), media.value)
-    missing = matching.absent(live, held + trash, match, wanted_ids, merged_ids(library.ids, library.trashed_ids))
+    missing = matching.absent(live, held + trash, match, wanted_ids, merged_ids(held_ids, library.trashed_ids))
     if len(missing) < len(live):
         typer.echo(f"{len(live) - len(missing)} left out as the destination has them in Recently Deleted (--ignore-trash lists them)", err=True)
     return missing
@@ -778,7 +790,8 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
     hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
     bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
-    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, data[0].ids)
+    photo_ids = ids_for(match, data, selected)
+    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
         explain_unmatched(missing, selected[1], match, right, data[1].trashed)
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
@@ -798,10 +811,11 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
-    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, data[0].ids) if library else Counter(dict.fromkeys(selected[0], 1))
+    ids = ids_for(match, data, selected, refresh) if library else [data[0].ids, {}]
+    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1]) if library else Counter(dict.fromkeys(selected[0], 1))
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
-    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match, data[0].ids)
+    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match, ids[0])
     if len(kept) < len(wanted):
         typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
     wanted = Counter({photo: 1 for photo in kept})

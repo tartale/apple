@@ -252,3 +252,17 @@ def test_dedupe_leaves_out_a_photo_with_the_id_of_an_earlier_one():
     assert m.dedupe([one, two]) == [one, two]
     assert m.dedupe([one, two], ids={one: ids(stable="S"), two: ids(stable="S")}) == [one]
     assert m.dedupe([one, two], ids={one: ids(stable="S"), two: ids(stable="T")}) == [one, two]
+
+
+def test_content_is_a_part_of_the_mode_off_by_default_and_a_hash_never_shows_photos_to_be_different():
+    assert m.TOLERANT.content == "ignore" and m.parse("content=hash").content == "hash" and m.parse("content=hash,exact").content == "ignore"
+    with pytest.raises(ValueError):
+        m.parse("content=md5")
+    held = ("2006-09-30 06:51:40", "100", "a.jpg")
+    other = ("2005-01-01 00:00:00", "999", "b.jpg")
+    mode = m.parse("content=hash")
+    same = m.absent(Counter({other: 1}), Counter({held: 1}), mode, {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})
+    assert not same
+    near = ("2006-09-30 06:51:41", "100", "a.jpg")
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), mode, {near: {"sha256": {"X"}}}, {held: {"sha256": {"H"}}})  # other bytes do not veto
+    assert m.absent(Counter({other: 1}), Counter({held: 1}), m.TOLERANT, {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})  # not read unless asked
