@@ -200,7 +200,7 @@ def missing_command(
             wanted[key] = key in photos.hidden
     lacking = [key for key in sorted(wanted) if photos.original_missing(key)]
     # of photos that are the same photo, the first is kept, and one with a Messages identifier comes first
-    kept = matching.dedupe(sorted(lacking, key=lambda key: (not photos.identifiers.get(key), key)), match)
+    kept = matching.dedupe(sorted(lacking, key=lambda key: (not photos.identifiers.get(key), key)), match, photos.ids)
     rows = [
         {"date": key[0], "name": key[2], "hidden": wanted[key], "shared": key in photos.shared, "identifier": photos.identifiers.get(key, "")}
         for key in sorted(kept)

@@ -306,24 +306,25 @@ def add_photos(library: Path, photos) -> Path:
     """Gives a fake library the tables and original files diff reads.
 
     photos: (date as 'yyyy-mm-dd hh:mm:ss', size, name[, flags]) with flags among "trashed", "hidden", "burst" (a hidden
-    burst member) and "shared" (it came from Messages). An item of size 0 is a placeholder: it has no original file.
+    burst member), "shared" (it came from Messages), "stable:<fingerprint>" and "cloud:<id>" (the iCloud ids). An item of size 0 is a placeholder: it has no original file.
     """
     connection = sqlite3.connect(library / "database" / "Photos.sqlite")
     connection.execute("drop table if exists ZASSET")
     connection.execute("drop table if exists ZADDITIONALASSETATTRIBUTES")
-    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer)")
-    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text)")
+    connection.execute("create table ZASSET (Z_PK integer primary key, ZUUID text, ZDATECREATED real, ZFILENAME text, ZDIRECTORY text, ZTRASHEDSTATE integer, ZVISIBILITYSTATE integer, ZAVALANCHEKIND integer, ZCLOUDASSETGUID text)")
+    connection.execute("create table ZADDITIONALASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZORIGINALFILESIZE integer, ZORIGINALFILENAME text, ZSYNDICATIONIDENTIFIER text, ZORIGINALSTABLEHASH text)")
     (library / "originals" / "A").mkdir(parents=True, exist_ok=True)
     for number, (when, size, name, *flags) in enumerate(photos, 1):
         seconds = connection.execute("select strftime('%s', ?) - 978307200", (when,)).fetchone()[0]
         stored_as = f"UUID{number}.jpg"
         connection.execute(
-            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?)",
-            (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags)),
+            "insert into ZASSET values (?, ?, ?, ?, 'A', ?, ?, ?, ?)",
+            (number, f"UUID{number}", seconds, stored_as, int("trashed" in flags), 2 if {"hidden", "burst"} & set(flags) else 0, int("burst" in flags),
+             next((flag[6:] for flag in flags if flag.startswith("cloud:")), None)),
         )
         connection.execute(
-            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?)",
-            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None),
+            "insert into ZADDITIONALASSETATTRIBUTES values (?, ?, ?, ?, ?, ?)",
+            (number, number, size, name, f"at_0_{number}" if "shared" in flags else None, next((flag[7:] for flag in flags if flag.startswith("stable:")), None)),
         )
         original = library / "originals" / "A" / stored_as
         if size:
@@ -2113,8 +2114,8 @@ def test_match_lists_the_pairs_of_photos_that_are_the_same_photo_and_how_they_di
 def test_match_text_output_has_both_sides_in_aligned_columns(mac):
     result = matched(mac, [A], [("2018-03-01 10:00:30", 100, "a.jpg")])
     header, row = result.stdout.splitlines()[:2]
-    assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs"]
-    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s"]
+    assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs", "matched_by"]
+    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s", "attributes"]
 
 
 def test_match_is_the_inverse_of_diff(mac):
@@ -2174,7 +2175,7 @@ def test_match_fields_can_name_the_columns_shown_for_each_side(mac):
 
 def test_match_fields_with_plain_names_are_shown_for_both_sides_and_a_bad_one_is_a_usage_error(mac):
     result = matched(mac, [A], [A], "--format", "csv", "--fields", "name,size")
-    assert result.stdout.splitlines() == ["left_name,left_size,right_name,right_size,differs", "a.jpg,100,a.jpg,100,identical"]
+    assert result.stdout.splitlines() == ["left_name,left_size,right_name,right_size,differs,matched_by", "a.jpg,100,a.jpg,100,identical,attributes"]
     for bad in ("left_name,left_name", "left_nope", "name,left_size"):
         failed = matched(mac, [A], [A], "--fields", bad)
         assert failed.exit_code == 2, bad

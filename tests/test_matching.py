@@ -190,3 +190,65 @@ def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified
     assert m.parse("date=exif,date=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
     assert m.parse("date=exif,exact").date_source == "modified"  # a whole mode starts over
     assert m.parse("filename=regex=a,b,date=exif").pattern == "a,b"  # a comma before date= ends a regex too
+
+
+def ids(**kinds):
+    return {kind: {value} for kind, value in kinds.items()}
+
+
+def test_photos_with_the_same_id_are_the_same_photo_whatever_their_name_date_and_size():
+    held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
+    other = ("2005-09-30 06:51:40", "999", "renamed.jpg")
+    held_ids = {held: ids(stable="ASLNFDmS")}
+    assert not m.absent(Counter({other: 1}), Counter({held: 1}), wanted_ids={other: ids(stable="ASLNFDmS")}, held_ids=held_ids)
+    assert m.absent(Counter({other: 1}), Counter({held: 1}))  # without ids, nothing about them agrees
+
+
+def test_photos_with_different_ids_are_not_the_same_photo_though_everything_else_agrees():
+    held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
+    near = ("2006-09-30 06:51:41", "1492992", "IMAG0044.JPG")
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: ids(stable="B")}, held_ids={held: ids(stable="A")})
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: ids(stable="A")}, held_ids={held: ids(stable="A")})
+
+
+def test_an_id_that_only_one_side_has_does_not_decide():
+    held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
+    near = ("2006-09-30 06:51:50", "1492992", "IMAG0044.JPG")
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: ids(stable="A")})  # the held photo has no id: the other parts agree
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), held_ids={held: ids(stable="A")})
+
+
+def test_ids_of_different_kinds_do_not_conflict_and_a_shared_value_among_several_is_enough():
+    held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
+    near = ("2006-09-30 06:51:50", "1492992", "IMAG0044.JPG")
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: ids(cloud="X")}, held_ids={held: ids(stable="A")})  # no kind in common: the other parts decide
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: {"stable": {"A", "B"}}}, held_ids={held: {"stable": {"B", "C"}}})
+
+
+def test_identity_ignore_and_the_exact_mode_use_the_other_parts_alone():
+    held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
+    other = ("2005-09-30 06:51:40", "999", "renamed.jpg")
+    kwargs = dict(wanted_ids={other: ids(stable="A")}, held_ids={held: ids(stable="A")})
+    assert m.absent(Counter({other: 1}), Counter({held: 1}), m.parse("identity=ignore"), **kwargs)
+    assert m.absent(Counter({other: 1}), Counter({held: 1}), m.EXACT, **kwargs)
+    assert m.EXACT.identity == "ignore" and m.TOLERANT.identity == "auto" and m.parse("exact,identity=auto").identity == "auto"
+    with pytest.raises(ValueError):
+        m.parse("identity=maybe")
+
+
+def test_pairs_say_how_each_was_decided_and_prefer_the_photo_with_the_same_id():
+    first = ("2006-09-30 06:51:40", "100", "a.jpg")
+    close = ("2006-09-30 06:51:41", "100", "a.jpg")  # nearer in date
+    far = ("2005-09-30 06:51:40", "100", "renamed.jpg")  # a year off, but the same id
+    matched, only_first, only_second = m.pairs(Counter({first: 1}), Counter({close: 1, far: 1}), first_ids={first: ids(stable="S")}, second_ids={far: ids(stable="S")})
+    assert matched == [(first, far, "stable")] and only_second == Counter({close: 1})
+    plain, _, _ = m.pairs(Counter({first: 1}), Counter({close: 1}))
+    assert plain == [(first, close, "attributes")]
+
+
+def test_dedupe_leaves_out_a_photo_with_the_id_of_an_earlier_one():
+    one = ("2006-09-30 06:51:40", "100", "IMAG0044.JPG")
+    two = ("2006-09-30 06:51:40", "100", "IMAG0044_ASLN.JPG")
+    assert m.dedupe([one, two]) == [one, two]
+    assert m.dedupe([one, two], ids={one: ids(stable="S"), two: ids(stable="S")}) == [one]
+    assert m.dedupe([one, two], ids={one: ids(stable="S"), two: ids(stable="T")}) == [one, two]

@@ -8,6 +8,9 @@ linked folders are followed, as `find` does, and a file hard-linked into many sn
 cache `find` uses (see recover_cache): a directory whose modification time is what it was is not listed again, which is quick
 but does not notice a file written over in place; refresh reads everything again.
 """
+import base64
+import os
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -19,6 +22,24 @@ from apple.photos import powerphotos as pp
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache, fingerprint
 from apple.photos.recover_sources import IGNORED_FOLDERS, PACKAGES, has_database, resolve, walk
+
+
+FINGERPRINT = re.compile(r"_([A-Za-z0-9+/\uff0f]{28})$")  # what rclone adds to a name that was taken: iCloud's id for the file
+
+
+def fingerprint_in(name: str) -> Optional[str]:
+    """iCloud's fingerprint of a file when its name ends in it (`IMAG0044_ASLNFDmSOi1j8HVs5UVlqKvxeRlA.JPG`, where the `/` a name
+    cannot hold is written as a full-width one), else None: only 28 characters that decode to 21 bytes starting with 1 count, so
+    a name that merely ends in 28 letters does not."""
+    found = FINGERPRINT.search(os.path.splitext(name)[0])
+    if not found:
+        return None
+    token = found.group(1).replace("\uff0f", "/")
+    try:
+        raw = base64.b64decode(token, validate=True)
+    except ValueError:
+        return None
+    return token if len(raw) == 21 and raw[0] == 1 else None
 
 
 def is_folder(text: str) -> bool:
@@ -69,4 +90,9 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
         cache.put(exif_key, new_dates)
     reused = counts.get("reused", 0)
     progress.line(f"Read {count:,} photos and videos of {path} ({duration(time.monotonic() - started)})" + (f" [{reused:,} of {reused + counts.get('read', 0):,} folders as cached]" if reused else ""))
-    return pp.Photos(path, files, Counter(), Counter(), {photo: sorted(found) for photo, found in paths.items()}, set(), Counter(), {}, {})
+    ids: dict = {}
+    for photo in files:
+        token = fingerprint_in(photo[2])
+        if token:
+            ids.setdefault(photo, {}).setdefault("stable", set()).add(token)
+    return pp.Photos(path, files, Counter(), Counter(), {photo: sorted(found) for photo, found in paths.items()}, set(), Counter(), {}, {}, Counter(), ids)
