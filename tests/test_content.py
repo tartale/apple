@@ -137,3 +137,24 @@ def test_the_loose_mode_matches_across_extensions_and_sizes_and_the_exact_mode_r
     file_in(renamed, "anything-at-all.jpg", BYTES, "2001-01-01 00:00:00")
     assert runner.invoke(app, ["photos", "diff", "Source", str(renamed), "--diff-mode", "exact"]).exit_code == 0  # the same bytes
     assert runner.invoke(app, ["photos", "diff", "Source", str(renamed), "--diff-mode", "tolerant"]).exit_code == 1
+
+
+def test_copies_within_one_folder_are_found_by_their_bytes_when_importing(mac, tmp_path):
+    add_photos(mac.libraries["Source"], [("2001-01-01 00:00:00", 5, "unrelated.jpg")])
+    folder = tmp_path / "backup"
+    file_in(folder, "IMAG0044.JPG", BYTES, "2006-09-30 06:51:40")
+    file_in(folder, "IMAG0044_ASLN.JPG", BYTES, "2005-01-01 00:00:00")  # the same bytes, another name and date
+    file_in(folder, "other.jpg", b"different bytes" * 14, "2012-02-02 02:02:02")
+    plain = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    assert "Imported 0 of 3" in plain.output
+    hashed = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=hash"])
+    assert "Imported 0 of 2" in hashed.output and "1 left out as the same photo as another" in hashed.output
+    assert "IMAG0044.JPG" in hashed.stdout and "ASLN" not in hashed.stdout  # the shorter name is kept
+
+
+def test_without_only_missing_the_copies_within_the_folder_are_found_by_their_bytes_too(mac, tmp_path):
+    folder = tmp_path / "backup"
+    file_in(folder, "a.jpg", BYTES, "2006-09-30 06:51:40")
+    file_in(folder, "a_copy_of_it.jpg", BYTES, "2005-01-01 00:00:00")
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--diff-mode", "content=hash"])
+    assert "Imported 0 of 1" in result.output and "1 left out as the same photo as another" in result.output

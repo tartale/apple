@@ -272,3 +272,10 @@ def test_loose_matches_what_tolerant_and_exact_do_not_and_exact_matches_least():
     }
     assert m.absent(Counter({("2018-03-04 10:00:00", "1000", "IMG_0001.JPG"): 1}), Counter({held: 1}), m.LOOSE)  # three days on: not even loose
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_0002.JPG"): 1}), Counter({held: 1}), m.LOOSE)  # another name
+
+
+def test_a_photo_of_the_very_same_key_is_not_there_when_its_id_says_it_is_another_photo():
+    photo = ("2006-09-30 06:51:40", "100", "IMAG0044.JPG")
+    assert m.absent(Counter({photo: 1}), Counter({photo: 1}), wanted_ids={photo: ids(stable="B")}, held_ids={photo: ids(stable="A")})
+    assert not m.absent(Counter({photo: 1}), Counter({photo: 1}), wanted_ids={photo: ids(stable="A")}, held_ids={photo: ids(stable="A")})
+    assert not m.absent(Counter({photo: 1}), Counter({photo: 1}))

@@ -1,11 +1,13 @@
 """The SHA-256 of the files of photos, as ids for matching (`content=hash` in --diff-mode): the same bytes are the same photo.
 
-Two files can only have the same bytes if they have the same size, so only a photo whose size also occurs on the other side is read.
+Two files can only have the same bytes if they have the same size, so only a photo whose size also occurs on the other side, or twice
+on its own (for finding copies within a side), is read.
 A photo is its file: a library's original (below `originals/`) or a folder's file. A hash is cached with the file's modification time
 and size, so a file is read again only when it changed; `refresh` reads them all again.
 """
 import hashlib
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -32,21 +34,23 @@ def file_digest(path: Path) -> Optional[str]:
 
 def content_ids(sides: List[pp.Photos], selected: List[Dict], refresh: bool = False, say: Optional[Callable[[str], None]] = None) -> List[Ids]:
     """For each side, {photo: {"sha256": {hash}}} for the photos (of selected, a Counter of the photos in range) whose size occurs on
-    the other side and whose file can be read."""
-    sizes = [{key[1] for key in chosen if key[1].isdigit() and int(key[1])} for chosen in selected]
+    the other side, or on the same side for another photo, and whose file can be read and has that size. One side alone finds the
+    copies within it."""
+    counts = [Counter(key[1] for key in chosen if key[1].isdigit() and int(key[1])) for chosen in selected]
+    elsewhere = [set().union(*[set(other) for other_index, other in enumerate(counts) if other_index != index]) for index in range(len(counts))]
     wanted = [
-        [(key, path) for key in chosen if key[1] in sizes[1 - index] for path in sides[index].files.get(key, [])[:1]]
+        [(key, path) for key in chosen if key[1] in elsewhere[index] or counts[index][key[1]] > 1 for path in sides[index].files.get(key, [])[:1]]
         for index, chosen in enumerate(selected)
     ]
     total = sum(len(items) for items in wanted)
     if not total:
-        return [{}, {}]
+        return [{} for _ in sides]
     cache, key = Cache(read=not refresh), fingerprint("sha256")
     previous = cache.get(key)
     known = previous[0] if previous else {}
     kept: Dict[str, list] = dict(known)
     progress, started, done = Progress(), time.monotonic(), 0
-    ids: List[Ids] = [{}, {}]
+    ids: List[Ids] = [{} for _ in sides]
     for index, items in enumerate(wanted):
         for photo, relative in items:
             path = Path(sides[index].library) / relative

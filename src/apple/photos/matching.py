@@ -268,7 +268,16 @@ def absent(wanted: Counter, held: Counter, mode: Mode = TOLERANT, wanted_ids: Op
     is there, not when held has fewer copies than wanted, and copies are not carried over. wanted_ids and held_ids are the iCloud
     ids of the photos of each side."""
     index = Index(mode, held, held_ids)
-    return Counter({photo: 1 for photo in wanted if not held[photo] and not index.matches(photo, (wanted_ids or {}).get(photo))})
+
+    def there(photo: Photo) -> bool:
+        own = (wanted_ids or {}).get(photo)
+        if held[photo]:  # a photo of the very same date, size and name, unless an id says it is another photo
+            kept = {kind: values for kind, values in (own or {}).items() if kind in index.kept}
+            if not conflicting(kept, index.ids.get(photo)):
+                return True
+        return bool(index.matches(photo, own))
+
+    return Counter({photo: 1 for photo in wanted if not there(photo)})
 
 
 def pairs(first: Counter, second: Counter, mode: Mode = TOLERANT, first_ids: Optional[Ids] = None, second_ids: Optional[Ids] = None) -> Tuple[List[Tuple[Photo, Photo, str]], Counter, Counter]:
@@ -344,8 +353,12 @@ def span(seconds: float) -> str:
     return " ".join(units[:2]) or "0s"
 
 
-def differences(mode: Mode, photo: Photo, other: Photo) -> Tuple[Tuple[str, ...], float, int]:
-    """(what differs between two photos under the mode, in words; their gap in seconds; their gap in bytes)."""
+KIND_NAMES = {"stable": "iCloud fingerprint", "cloud": "iCloud asset id", DIMENSIONS: "pixel size"}  # what a kind of id is called when it differs
+
+
+def differences(mode: Mode, photo: Photo, other: Photo, photo_ids: Optional[Dict[str, set]] = None, other_ids: Optional[Dict[str, set]] = None) -> Tuple[Tuple[str, ...], float, int]:
+    """(what differs between two photos under the mode, in words; their gap in seconds; their gap in bytes). photo_ids and other_ids
+    are the ids and pixel sizes of the two: an id of the same kind that the mode looks at and that they do not share is a difference."""
     stem, extension = name_key(mode, photo[2])
     other_stem, other_extension = name_key(mode, other[2])
     gap = abs((datetime.fromisoformat(photo[0]) - datetime.fromisoformat(other[0])).total_seconds())
@@ -358,6 +371,11 @@ def differences(mode: Mode, photo: Photo, other: Photo) -> Tuple[Tuple[str, ...]
         found.append("extension")
     if mode.date != "ignore" and (gap > 0 if mode.date == "exact" else gap > mode.date_within.total_seconds()):
         found.append(f"date by {span(gap)}")
+    for kind in ("stable", "cloud", DIMENSIONS):
+        looked_at = (kind == DIMENSIONS and mode.dimensions == "exact") or (kind != DIMENSIONS and mode.identity == "auto")
+        values, others = (photo_ids or {}).get(kind), (other_ids or {}).get(kind)
+        if looked_at and values and others and not (values & others):
+            found.append(KIND_NAMES[kind])
     if not same_size(mode, photo[1], other[1]):
         percent = bytes_apart / max(int(photo[1]), int(other[1])) * 100 if both else 0
         found.append(f"size by {bytes_apart:,} bytes ({percent:.1f}%)" if both else "size")
@@ -375,8 +393,9 @@ class Finder:
     under the mode, if there are any, else of all, the one that differs in the fewest of name, extension, date and size, and
     then in date and size the least."""
 
-    def __init__(self, mode: Mode, held) -> None:
+    def __init__(self, mode: Mode, held, ids: Optional[Ids] = None) -> None:
         self.mode = mode
+        self.ids: Ids = ids or {}
         self.by_stem: Dict[str, List[Photo]] = {}
         self.by_size: Dict[str, List[Photo]] = {}
         dated = []
@@ -388,16 +407,16 @@ class Finder:
         self.dates = [at for at, _ in dated]
         self.dated = [photo for _, photo in dated]
 
-    def same_name(self, photo: Photo, limit: int = 3) -> List[Closest]:
+    def same_name(self, photo: Photo, limit: int = 3, own_ids: Optional[Dict[str, set]] = None) -> List[Closest]:
         """The photos with the same name as this one under the mode (the extension is not
         compared) however their dates and sizes differ, the nearest in date first."""
         found = []
         for other in self.by_stem.get(stem_key(self.mode, photo[2]), []):
-            differs, gap, bytes_apart = differences(self.mode, photo, other)
+            differs, gap, bytes_apart = differences(self.mode, photo, other, own_ids, self.ids.get(other))
             found.append((gap, bytes_apart, other, Closest(other, differs, gap, bytes_apart)))
         return [item[3] for item in sorted(found, key=lambda item: item[:3])[:limit]]
 
-    def closest(self, photo: Photo) -> Optional[Closest]:
+    def closest(self, photo: Photo, own_ids: Optional[Dict[str, set]] = None) -> Optional[Closest]:
         when, day = datetime.fromisoformat(photo[0]), timedelta(days=1)
         candidates = set(self.by_stem.get(stem_key(self.mode, photo[2]), []))
         if not candidates:  # nothing of that name: whatever is alike in size or date
@@ -405,7 +424,7 @@ class Finder:
             candidates.update(self.dated[bisect_left(self.dates, when - day):bisect_right(self.dates, when + day)])
         best = None
         for other in candidates:
-            found, gap, bytes_apart = differences(self.mode, photo, other)
+            found, gap, bytes_apart = differences(self.mode, photo, other, own_ids, self.ids.get(other))
             score = (len(found), gap, bytes_apart, other)
             if best is None or score < best[0]:
                 best = (score, Closest(other, found, gap, bytes_apart))

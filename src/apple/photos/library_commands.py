@@ -470,7 +470,7 @@ def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = Fa
     if match.content != "hash":
         return stored
     hashed = content_hash.content_ids(data, selected, refresh)
-    return [merged_ids(stored[index], hashed[index]) for index in (0, 1)]
+    return [merged_ids(stored[index], hashed[index]) for index in range(len(data))]
 
 
 class Compared(NamedTuple):
@@ -585,8 +585,8 @@ def diff_command(
     data, hidden, bursts, first, second = compared.data, compared.hidden, compared.bursts, compared.first, compared.second
     only_left, only_right, both = matching.pair(first, second, match, compared.ids[0], compared.ids[1])
     if explain:
-        explain_unmatched(only_left, second, match, right, data[1].trashed)
-        explain_unmatched(only_right, first, match, left, data[0].trashed)
+        explain_unmatched(only_left, second, match, right, data[1].trashed, compared.ids[0], compared.ids[1])
+        explain_unmatched(only_right, first, match, left, data[0].trashed, compared.ids[1], compared.ids[0])
     if not summary:
         rows = diff_rows(only_left, only_right, only, sort, {"left": set(hidden[0]), "right": set(hidden[1])}, {"left": set(bursts[0]), "right": set(bursts[1])}, {"left": data[0], "right": data[1]}, "missing" in columns, folders)
         print_diff(rows, columns, only is None, format)
@@ -736,18 +736,20 @@ def lacking_from(wanted: Counter, held: Counter, library: pp.Photos, since: Opti
     return missing
 
 
-def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None) -> None:
+def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, name: str, trashed: Optional[Counter] = None,
+                      ids: Optional[dict] = None, other_ids: Optional[dict] = None) -> None:
     """Says on stderr, for each photo of unmatched, which photo of others (the library or folder called name) is closest to it and
     what differs: what is wrong with the match, as far as the mode can tell. Also the photos of the same name, however much
     they differ, and those in Recently Deleted (trashed), which Photos looks at when it looks for a duplicate."""
     if not unmatched:
         return
-    finder = matching.Finder(mode, list(others))
+    finder = matching.Finder(mode, list(others), other_ids)
     trash = matching.Finder(mode, list(trashed)) if trashed else None
     typer.echo(f"Why {count(len(unmatched), 'photo')} did not match a photo of {name} (the closest one, and what differs under the mode):", err=True)
     for photo in sorted(unmatched):
         typer.echo(f"  {photo[2]}  {photo[0]}  {photo[1]}", err=True)
-        near = finder.closest(photo)
+        own = (ids or {}).get(photo)
+        near = finder.closest(photo, own)
         if near is None:
             typer.echo("      nothing like it", err=True)
         else:
@@ -763,7 +765,7 @@ def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, 
                 typer.echo(f"      within the mode: {', '.join(alike)}", err=True)
             if near.differs and all(part in ("name", "extension") for part in near.differs) and not near.gap and not near.bytes_apart:
                 typer.echo("      the same date and size under another name: Photos compares the content, so it may call this a duplicate", err=True)
-        same = finder.same_name(photo)
+        same = finder.same_name(photo, own_ids=own)
         for item in same:
             if not near or item.photo != near.photo:
                 typer.echo(f"      same name: {item.photo[2]}  {item.photo[0]}  {item.photo[1]}  (differs: {', '.join(item.differs) or 'nothing the mode looks at'})", err=True)
@@ -793,7 +795,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     photo_ids = ids_for(match, data, selected)
     missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
-        explain_unmatched(missing, selected[1], match, right, data[1].trashed)
+        explain_unmatched(missing, selected[1], match, right, data[1].trashed, photo_ids[0], photo_ids[1])
     rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
     ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
@@ -811,7 +813,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     except pp.PowerPhotosError as error:
         fail(str(error))
     selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
-    ids = ids_for(match, data, selected, refresh) if library else [data[0].ids, {}]
+    ids = ids_for(match, data, selected, refresh) if library else ids_for(match, data, selected, refresh) + [{}]
     wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1]) if library else Counter(dict.fromkeys(selected[0], 1))
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
     # a copy that a service gave a longer name)
@@ -820,7 +822,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
     wanted = Counter({photo: 1 for photo in kept})
     if explain and library:  # of the photos that are left, not of the ones left out as the same photo
-        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed)
+        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed, ids[0], ids[1])
     rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
     return [
