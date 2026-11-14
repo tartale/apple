@@ -5,10 +5,6 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
 
     filename=full            the name without its extension, without regard to case (the default)
     filename=exact           the name without its extension, character for character
-    filename=prefix=N        the first N characters of the name without its extension, as `full` reads it
-    filename=regex=PATTERN   what the regular expression matches in the name without its extension (its first group, if it has
-                             one), case ignored: regex=^(\\d{8}_\\d{6}) is the date and time a camera put in front of a name; a name
-                             it does not match is read as `full` reads it
     filename=ignore          any name
     extension=full           the extension without regard to case, and .jpeg is .jpg (the default)
     extension=exact          the extension character for character
@@ -34,12 +30,11 @@ one photo is a Mode, written as text by --diff-mode (or APPLE_PHOTOS_DIFF_MODE) 
 
 A mode is a comma-separated list read from left to right, starting from the default: `exact` (everything exact, a name as written)
 and `tolerant` (the default) name whole modes, and a field after them changes just that field, as in
-`exact,filename=full` or `filename=prefix=8,date=within=1d`. A size that is not known (0, or not a number, as for a placeholder)
+`exact,filename=full` or `date=within=1d,filesize=ignore`. A size that is not known (0, or not a number, as for a placeholder)
 does not tell photos apart.
 """
 import os
 import re
-from functools import lru_cache
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -54,13 +49,11 @@ UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 @dataclass(frozen=True)
 class Mode:
-    filename: str = "full"  # exact, full, prefix, regex or ignore (of the name without its extension)
+    filename: str = "full"  # exact, full or ignore (of the name without its extension)
     extension: str = "full"  # exact, full or ignore
     identity: str = "auto"  # auto or ignore: whether ids from iCloud decide when both photos have one
     content: str = "ignore"  # ignore or hash: whether files with the same bytes are the same photo
     date_source: str = "modified"  # modified or exif: where a folder's files get their date (a library's photos have Photos' own)
-    prefix: int = 0  # for prefix: how many characters of the name must agree
-    pattern: str = ""  # for regex: the regular expression
     date: str = "within"  # exact, within or ignore
     date_within: timedelta = timedelta(hours=2)  # a copy of a photo can differ by a time zone or daylight saving shift
     filesize: str = "within"  # exact, within or ignore
@@ -72,23 +65,20 @@ TOLERANT = Mode()
 EXACT = Mode(filename="exact", extension="exact", date="exact", filesize="exact", identity="ignore")
 PRESETS = {"tolerant": TOLERANT, "exact": EXACT}
 HELP = (
-    "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore|prefix=N|regex=PATTERN "
-    "(of the name without its extension; full ignores case; regex compares what the pattern, or its first group, matches), "
+    "How closely two photos must agree to be the same photo, as a comma-separated list of filename=full|exact|ignore "
+    "(of the name without its extension; full ignores case), "
     "extension=full|exact|ignore (full ignores case, and .jpeg is .jpg), identity=auto|ignore (photos with the same iCloud id are the same photo, "
     "and with different ids are not, whatever the other parts say), content=ignore|hash (files with the same SHA-256 are the same photo; slow), date=exif|modified (where a file in a folder gets its date: its EXIF capture time, as Photos does, or its modification time) or date=exact|ignore|within=DURATION (such as 2h, 30m, 1d) and "
     "filesize=exact|ignore|within=PERCENT (such as 1%) or within=BYTES (such as 512bytes), or the whole modes exact and tolerant, read from left to right: "
-    "`exact,filename=prefix=8`. The default is tolerant: filename=full,extension=full,identity=auto,content=ignore,date=modified,date=within=2h,filesize=within=1%. Also read from "
+    "`exact,filename=ignore`. The default is tolerant: filename=full,extension=full,identity=auto,content=ignore,date=modified,date=within=2h,filesize=within=1%. Also read from "
     "APPLE_PHOTOS_DIFF_MODE."
 )
-
-
-PARTS = re.compile(r",(?=\s*(?:filename=|extension=|identity=|content=|date=|filesize=|exact\b|tolerant\b))")  # a comma ends a part only before the next part: a regex may hold commas
 
 
 def parse(text: str) -> Mode:
     """The Mode a --diff-mode text says; ValueError, with what is wrong with it, when it is not one. Nothing is the default."""
     mode = TOLERANT
-    for item in (part.strip() for part in PARTS.split(text)):
+    for item in (part.strip() for part in text.split(",")):
         if not item:
             continue
         if item in PRESETS:
@@ -96,19 +86,10 @@ def parse(text: str) -> Mode:
             continue
         field, _, value = item.partition("=")
         if field == "filename":
-            kind, _, count = value.partition("=")
-            if kind in ("exact", "full", "ignore") and not count:
-                mode = replace(mode, filename=kind)
-            elif kind == "prefix" and count.isdigit() and int(count) > 0:
-                mode = replace(mode, filename="prefix", prefix=int(count))
-            elif kind == "regex" and count:
-                try:
-                    re.compile(count)
-                except re.error as error:
-                    raise ValueError(f"filename=regex={count}: not a regular expression ({error})")
-                mode = replace(mode, filename="regex", pattern=count)
+            if value in ("exact", "full", "ignore"):
+                mode = replace(mode, filename=value)
             else:
-                raise ValueError(f"filename={value!r}: use full, exact, ignore, prefix=N (N characters, at least 1) or regex=PATTERN")
+                raise ValueError(f"filename={value!r}: use full, exact or ignore")
         elif field == "extension":
             if value in ("exact", "full", "ignore"):
                 mode = replace(mode, extension=value)
@@ -149,11 +130,6 @@ def parse(text: str) -> Mode:
     return mode
 
 
-@lru_cache(maxsize=None)
-def compiled(pattern: str):
-    return re.compile(pattern, re.IGNORECASE)
-
-
 def split_name(name: str) -> Tuple[str, str]:
     """(the name without its extension, the extension with its dot)."""
     stem, extension = os.path.splitext(name)
@@ -168,11 +144,8 @@ def name_key(mode: Mode, name: str) -> tuple:
         stem_key = stem
     elif mode.filename == "ignore":
         stem_key = ""
-    elif mode.filename == "regex":
-        found = compiled(mode.pattern).search(stem)
-        stem_key = lowered if not found else (found.group(1) if found.re.groups and found.group(1) is not None else found.group(0)).lower()
     else:
-        stem_key = lowered[:mode.prefix] if mode.filename == "prefix" else lowered
+        stem_key = lowered
     if mode.extension == "ignore":
         return stem_key, ""
     if mode.extension == "exact":
@@ -377,8 +350,8 @@ def differences(mode: Mode, photo: Photo, other: Photo) -> Tuple[Tuple[str, ...]
 
 
 def stem_key(mode: Mode, name: str) -> str:
-    """What makes two names the same name for the finder: the name without its extension as the mode reads it (so a regex or a
-    prefix applies), or, when the mode ignores names, as written without regard to case."""
+    """What makes two names the same name for the finder: the name without its extension as the mode reads it, or, when the mode
+    ignores names, as written without regard to case."""
     return os.path.splitext(name)[0].lower() if mode.filename == "ignore" else name_key(mode, name)[0]
 
 
@@ -401,7 +374,7 @@ class Finder:
         self.dated = [photo for _, photo in dated]
 
     def same_name(self, photo: Photo, limit: int = 3) -> List[Closest]:
-        """The photos with the same name as this one under the mode (a regex or prefix applies; the extension is not
+        """The photos with the same name as this one under the mode (the extension is not
         compared) however their dates and sizes differ, the nearest in date first."""
         found = []
         for other in self.by_stem.get(stem_key(self.mode, photo[2]), []):

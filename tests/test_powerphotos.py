@@ -829,21 +829,13 @@ def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(
     assert diff(mac, [A], [near], "--diff-mode", "tolerant").exit_code == 0  # the option wins
     monkeypatch.delenv("APPLE_PHOTOS_DIFF_MODE")
     bad = diff(mac, [A], [near], "--diff-mode", "filename=prefix=0")
-    assert bad.exit_code == 2 and "prefix=N" in " ".join(bad.output.replace("│", " ").split())
+    assert bad.exit_code == 2 and "use full, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
 
 
-def test_diff_mode_filename_regex_matches_what_the_pattern_finds_in_the_names(mac):
-    edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
-    assert diff(mac, [A], [edited], "--diff-mode", r"filename=regex=^(\w)").exit_code == 0
-    assert diff(mac, [A], [("2018-03-01 10:00:00", 100, "b-edited.jpg")], "--diff-mode", r"filename=regex=^(\w)").exit_code == 1
-    bad = diff(mac, [A], [edited], "--diff-mode", "filename=regex=(")
-    assert bad.exit_code == 2 and "not a regular expression" in " ".join(bad.output.replace("│", " ").split())
-
-
-def test_diff_mode_filename_prefix_matches_names_that_start_alike(mac):
+def test_diff_mode_filename_ignore_matches_names_that_differ(mac):
     edited = ("2018-03-01 10:00:00", 100, "a-edited.jpg")
     assert diff(mac, [A], [edited]).exit_code == 1
-    assert diff(mac, [A], [edited], "--diff-mode", "filename=prefix=1").exit_code == 0
+    assert diff(mac, [A], [edited], "--diff-mode", "filename=ignore").exit_code == 0
 
 
 def test_a_list_from_diff_leaves_hidden_items_out_and_says_so(mac):

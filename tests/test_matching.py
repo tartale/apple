@@ -15,8 +15,8 @@ def test_nothing_is_the_default_tolerant_mode():
 
 
 def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
-    mode = m.parse("exact,filename=prefix=8,date=within=1d,filesize=within=2.5%")
-    assert (mode.filename, mode.prefix, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("prefix", 8, "within", timedelta(days=1), "within", 0.025)
+    mode = m.parse("exact,filename=full,date=within=1d,filesize=within=2.5%")
+    assert (mode.filename, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("full", "within", timedelta(days=1), "within", 0.025)
     assert m.parse("filename=exact") == m.Mode(filename="exact")
     assert m.parse("extension=ignore").extension == "ignore" and m.parse("exact,extension=full").extension == "full"
     assert m.parse("date=ignore,exact") == m.EXACT  # a whole mode after a field starts over
@@ -25,7 +25,7 @@ def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
     assert m.parse("filesize=within=512bytes,filesize=within=2%").size_bytes is None  # the last one wins
 
 
-@pytest.mark.parametrize("text", ["filename", "filename=prefix", "filename=prefix=0", "filename=prefix=x", "filename=sideways", "extension", "extension=any", "date=within",
+@pytest.mark.parametrize("text", ["filename", "filename=prefix=8", "filename=regex=^(a)", "filename=sideways", "extension", "extension=any", "date=within",
                                   "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date=sometimes", "strict"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
@@ -46,15 +46,6 @@ def test_exact_wants_the_same_date_size_and_name_as_written():
     assert not m.absent(Counter({A: 1}), held, m.EXACT)
     for other in (("2018-03-01 10:00:01", "1000", "IMG_0001.JPG"), ("2018-03-01 10:00:00", "1001", "IMG_0001.JPG"), ("2018-03-01 10:00:00", "1000", "img_0001.jpg")):
         assert m.absent(Counter({other: 1}), held, m.EXACT)
-
-
-def test_a_prefix_of_the_name_is_enough_with_filename_prefix():
-    held = Counter({A: 1})
-    edited = ("2018-03-01 10:00:00", "1000", "IMG_0001-edited.JPG")
-    assert m.absent(Counter({edited: 1}), held)
-    assert not m.absent(Counter({edited: 1}), held, m.parse("filename=prefix=8"))
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_0002.JPG"): 1}), held, m.parse("filename=prefix=8"))
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_0002.JPG"): 1}), held, m.parse("filename=prefix=7"))
 
 
 def test_a_field_set_to_ignore_does_not_count():
@@ -98,39 +89,6 @@ def test_a_size_can_differ_by_a_number_of_bytes_whatever_the_size():
     assert not m.absent(Counter({("2018-03-01 10:00:00", "150", "b.jpg"): 1}), held, mode)  # 50 bytes off a hundred: 50%, but within the 50 bytes
 
 
-def test_a_regex_can_hold_commas_and_ends_at_the_next_part():
-    mode = m.parse(r"filename=regex=^(img_\d{1,4}),date=exact")
-    assert (mode.filename, mode.pattern, mode.date) == ("regex", r"^(img_\d{1,4})", "exact")
-    assert m.parse("exact,filename=regex=a=b").pattern == "a=b"  # an = inside is part of the pattern
-
-
-@pytest.mark.parametrize("text", ["filename=regex", "filename=regex=", "filename=regex=(unclosed"])
-def test_what_is_not_a_regex_is_an_error(text):
-    with pytest.raises(ValueError):
-        m.parse(text)
-
-
-def test_a_regex_compares_what_it_matches_in_the_name_case_ignored():
-    held = Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_a.jpg"): 1})
-    mode = m.parse(r"filename=regex=^(\d{8}_\d{6})")
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100000_b.JPG"): 1}), held, mode)  # what follows the time is not compared
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "20180301_100001_a.jpg"): 1}), held, mode)  # another second
-    ignoring_case = m.parse(r"filename=regex=(img_\d+)")
-    other = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234_edited.JPG"): 1}), other, ignoring_case)
-
-
-def test_a_regex_uses_the_whole_match_without_a_group_and_the_whole_name_for_a_name_it_does_not_match():
-    held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
-    mode = m.parse(r"filename=regex=IMG_\d+")
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, mode)
-    unmatched = Counter({("2018-03-01 10:00:00", "1000", "holiday.jpg"): 1})
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "HOLIDAY.JPG"): 1}), unmatched, mode)  # read as full reads it
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "beach.jpg"): 1}), unmatched, mode)
-    optional = m.parse("filename=regex=(zz)?a")  # the group takes no part in these names: the whole match is compared
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "ab.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "ac.jpg"): 1}), optional)
-
-
 def test_the_name_is_compared_without_its_extension_and_the_extension_on_its_own():
     held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.HEIC"): 1})
     heic_as_jpg = Counter({("2018-03-01 10:00:00", "1000", "img_1234.jpg"): 1})
@@ -147,9 +105,15 @@ def test_the_name_is_compared_without_its_extension_and_the_extension_on_its_own
 
 def test_filename_modes_look_at_the_name_without_its_extension():
     held = Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1})
-    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, m.parse("filename=prefix=8"))
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "IMG_12.jpg"): 1}), m.parse("filename=prefix=8"))  # IMG_12 has 6 characters, not 8
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "a.jpg.jpg"): 1}), m.parse("filename=regex=^(.*)$"))  # the last extension only
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held)  # another name
+    assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234-edited.jpg"): 1}), held, m.parse("filename=ignore"))
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), Counter({("2018-03-01 10:00:00", "1000", "a.jpg.jpg"): 1}))  # the last extension only
+
+
+def test_the_removed_filename_options_are_errors_that_say_what_there_is():
+    for text in ("filename=prefix=8", "filename=regex=^(a)"):
+        with pytest.raises(ValueError, match="use full, exact or ignore"):
+            m.parse(text)
 
 
 def finder(*photos, mode=m.TOLERANT):
@@ -189,7 +153,6 @@ def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified
     assert m.parse("date=exif").date_source == "exif" and m.parse("date=modified").date_source == "modified"
     assert m.parse("date=exif,date=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
     assert m.parse("date=exif,exact").date_source == "modified"  # a whole mode starts over
-    assert m.parse("filename=regex=a,b,date=exif").pattern == "a,b"  # a comma before date= ends a regex too
 
 
 def ids(**kinds):
