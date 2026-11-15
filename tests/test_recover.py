@@ -723,7 +723,7 @@ def test_the_photos_app_s_libraries_are_read_from_lsof_and_syndication_is_left_o
 
 def test_the_import_script_avoids_applescript_s_own_words():
     script = (pp.APPLESCRIPTS / "import-photos.applescript").read_text()
-    assert "skip check duplicates false" in script and "set files" not in script and "set paths" not in script
+    assert "skip check duplicates skipCheck" in script and "set skipCheck to false" in script and "set files" not in script and "set paths" not in script
 
 
 # Progress ----------------------------------------------------------------------------------------------------------------
