@@ -27,7 +27,7 @@ case \$1 in
   -m) mkdir -p "\$3/bin"
       cat > "\$3/bin/python" <<'PYTHON'
 #!/bin/bash
-echo "venv-python \$* APPLE_PROG=\$APPLE_PROG" >> "\$CALLS"
+echo "venv-python \$* APPLE_PROG=\$APPLE_PROG TMPDIR=\${TMPDIR:-}" >> "\$CALLS"
 if [ "\$1 \$2" = "-m pip" ]; then
   [ "\$3" = install ] && exit \${PIP_INSTALL_STATUS:-0}
   exit 0
@@ -48,6 +48,15 @@ SCRIPT
   grep -q "venv-python -m pip install --quiet --upgrade -e $PROJECT" "$CALLS"
   grep -q "venv-python -m apple photos --help" "$CALLS"
   [ -f "$APPLE_VENV/.installed" ]
+}
+
+@test "pip builds in a folder of the venv's local disk, whatever TMPDIR says" {
+  fake_python
+  TMPDIR="$BATS_TEST_TMPDIR/share" run "$PROJECT/apple" photos --help
+  [ "$status" -eq 0 ]
+  grep -q -- "-m pip install .*TMPDIR=$APPLE_VENV/tmp" "$CALLS"
+  grep -q -- "-m apple photos --help APPLE_PROG=.*TMPDIR=$BATS_TEST_TMPDIR/share" "$CALLS"  # the CLI itself keeps the caller's TMPDIR
+  [ -d "$APPLE_VENV/tmp" ]
 }
 
 @test "a second run goes straight to the CLI" {
