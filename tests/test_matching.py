@@ -16,18 +16,18 @@ def test_nothing_is_the_default_tolerant_mode():
 
 
 def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
-    mode = m.parse("strict,filename=normalized,date=within=1d,filesize=within=2.5%")
+    mode = m.parse("strict,filename=normalized,date-range=within=1d,filesize=within=2.5%")
     assert (mode.filename, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("normalized", "within", timedelta(days=1), "within", 0.025)
     assert m.parse("filename=exact") == m.Mode(filename="exact")
     assert m.parse("extension=ignore").extension == "ignore" and m.parse("strict,extension=normalized").extension == "normalized"
-    assert m.parse("date=ignore,strict") == m.STRICT  # a whole mode after a field starts over
-    assert m.parse("date=within=90m").date_within == timedelta(minutes=90)
+    assert m.parse("date-range=ignore,strict") == m.STRICT  # a preset after a field starts over
+    assert m.parse("date-range=within=90m").date_within == timedelta(minutes=90)
     assert m.parse("filesize=within=512bytes").size_bytes == 512 and m.parse("filesize=within=1byte").size_bytes == 1 and m.parse("filesize=within=20b").size_bytes == 20
     assert m.parse("filesize=within=512bytes,filesize=within=2%").size_bytes is None  # the last one wins
 
 
-@pytest.mark.parametrize("text", ["filename", "filename=prefix=8", "filename=regex=^(a)", "filename=sideways", "extension", "extension=any", "date=within",
-                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date=sometimes", "exact"])
+@pytest.mark.parametrize("text", ["filename", "filename=prefix=8", "filename=regex=^(a)", "filename=sideways", "extension", "extension=any", "date-range=within",
+                                  "date-range=within=2", "date-range=within=2w", "date-range=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date-range=sometimes", "exact"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
         m.parse(text)
@@ -51,7 +51,7 @@ def test_exact_wants_the_same_date_size_and_name_as_written():
 
 def test_a_field_set_to_ignore_does_not_count():
     held = Counter({A: 1})
-    assert not m.absent(Counter({("2020-01-01 00:00:00", "1000", "IMG_0001.JPG"): 1}), held, m.parse("date=ignore"))
+    assert not m.absent(Counter({("2020-01-01 00:00:00", "1000", "IMG_0001.JPG"): 1}), held, m.parse("date-range=ignore"))
     assert not m.absent(Counter({("2018-03-01 10:00:00", "5", "IMG_0001.JPG"): 1}), held, m.parse("filesize=ignore"))
     assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "OTHER.JPG"): 1}), held, m.parse("filename=ignore"))
 
@@ -79,7 +79,7 @@ def test_exact_pairing_is_plain_counting():
 def test_date_ignore_pairs_by_size_and_name_as_a_clip_imported_twice_with_a_shifted_time():
     first = Counter({("2018-03-01 10:00:00", "1000", "a.mov"): 1})
     second = Counter({("2019-07-01 10:00:00", "1000", "a.mov"): 1})
-    assert m.pair(first, second, m.parse("strict,date=ignore")) == (Counter(), Counter(), 1)
+    assert m.pair(first, second, m.parse("strict,date-range=ignore")) == (Counter(), Counter(), 1)
 
 
 def test_a_size_can_differ_by_a_number_of_bytes_whatever_the_size():
@@ -153,9 +153,9 @@ def test_a_gap_is_told_in_two_units():
 def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified():
     assert m.TOLERANT.date_source == "modified" and m.LOOSE.date_source == "modified" and m.parse("").date_source == "modified"
     assert m.STRICT.date_source == "exif"  # strict reads the files, so it dates them as Photos does
-    assert m.parse("date=exif").date_source == "exif" and m.parse("date=modified").date_source == "modified"
-    assert m.parse("date=exif,date=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
-    assert m.parse("date=exif,tolerant").date_source == "modified"  # a whole mode starts over
+    assert m.parse("date-source=exif").date_source == "exif" and m.parse("date-source=modified").date_source == "modified"
+    assert m.parse("date-source=exif,date-range=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
+    assert m.parse("date-source=exif,tolerant").date_source == "modified"  # a preset starts over
 
 
 def ids(**kinds):
@@ -220,17 +220,15 @@ def test_dedupe_leaves_out_a_photo_with_the_id_of_an_earlier_one():
     assert m.dedupe([one, two], ids={one: ids(stable="S"), two: ids(stable="T")}) == [one, two]
 
 
-def test_content_is_a_part_of_the_mode_off_by_default_and_a_hash_never_shows_photos_to_be_different():
-    assert m.TOLERANT.content == "ignore" and m.parse("content=hash").content == "hash" and m.parse("content=hash,tolerant").content == "ignore"
-    with pytest.raises(ValueError):
-        m.parse("content=md5")
+def test_content_is_a_part_of_the_mode_off_by_default_and_hash_is_not_a_value():
+    assert m.TOLERANT.content == "ignore" and m.parse("content=identical").content == "identical" and m.parse("content=identical,tolerant").content == "ignore"
+    for text in ("content=md5", "content=hash", "content=picture"):
+        with pytest.raises(ValueError, match="use ignore or identical"):
+            m.parse(text)
     held = ("2006-09-30 06:51:40", "100", "a.jpg")
     other = ("2005-01-01 00:00:00", "999", "b.jpg")
-    mode = m.parse("content=hash")
-    same = m.absent(Counter({other: 1}), Counter({held: 1}), mode, {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})
+    same = m.absent(Counter({other: 1}), Counter({held: 1}), m.parse("content=identical"), {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})
     assert not same
-    near = ("2006-09-30 06:51:41", "100", "a.jpg")
-    assert not m.absent(Counter({near: 1}), Counter({held: 1}), mode, {near: {"sha256": {"X"}}}, {held: {"sha256": {"H"}}})  # other bytes do not veto
     assert m.absent(Counter({other: 1}), Counter({held: 1}), m.TOLERANT, {other: {"sha256": {"H"}}}, {held: {"sha256": {"H"}}})  # not read unless asked
 
 
@@ -254,7 +252,7 @@ def test_the_three_whole_modes_are_strict_tolerant_and_loose():
     assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "identical", "exact")
     assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("normalized", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
     assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "normalized"
-    assert m.parse("tolerant,strict") == m.STRICT  # the last whole mode starts over
+    assert m.parse("tolerant,strict") == m.STRICT  # the last preset starts over
 
 
 def test_loose_matches_what_tolerant_and_strict_do_not_and_strict_matches_least():
@@ -284,7 +282,7 @@ def test_a_photo_of_the_very_same_key_is_not_there_when_its_id_says_it_is_anothe
 def test_exact_is_not_a_whole_mode_and_the_error_names_the_three():
     with pytest.raises(ValueError, match="strict, tolerant or loose"):
         m.parse("exact")
-    assert m.parse("strict,date=ignore").date == "ignore"
+    assert m.parse("strict,date-range=ignore").date == "ignore"
 
 
 def test_content_identical_means_the_same_bytes_are_one_photo_and_different_bytes_are_two():
@@ -292,7 +290,7 @@ def test_content_identical_means_the_same_bytes_are_one_photo_and_different_byte
     same_everything_else = ("2018-03-01 10:00:00", "100", "a.jpg")
     renamed = ("2005-01-01 00:00:00", "100", "other.jpg")
     hashes = lambda value: {"sha256": {value}}  # noqa: E731
-    for mode_text, other_bytes_differ in (("content=hash", False), ("content=identical", True)):
+    for mode_text, other_bytes_differ in (("content=identical", True),):
         mode = m.parse(mode_text)
         # the same name, date and size, other bytes: hash still matches, only does not
         assert bool(m.absent(Counter({same_everything_else: 1}), Counter({held: 1}), mode, {same_everything_else: hashes("A")}, {held: hashes("B")})) is other_bytes_differ
@@ -314,9 +312,9 @@ def test_content_identical_takes_a_different_size_as_different_bytes_and_an_unkn
     assert not m.absent(Counter({unknown: 1}), Counter({held: 1}), m.parse("content=identical"))  # a placeholder: no size to go by
 
 
-def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_the_three():
-    assert m.STRICT.content == "identical" and m.parse("strict,content=hash").content == "hash"
-    with pytest.raises(ValueError, match="use ignore, hash, identical or picture"):
+def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_the_two():
+    assert m.STRICT.content == "identical" and m.parse("strict,content=ignore").content == "ignore"
+    with pytest.raises(ValueError, match="use ignore or identical"):
         m.parse("content=bytes")
 
 
@@ -335,3 +333,10 @@ def test_a_name_pattern_is_matched_as_names_are_compared_everywhere():
     assert pp.named(["IMG_0897"], "IMG_0897.JPG") and pp.named(["img_0897"], "IMG_0897.mov") and not pp.named(["IMG_0897"], "IMG_0897 (1).JPG")
     assert pp.named(["IMG_089?"], "IMG_0897.JPG") and not pp.named(["IMG_0897.JPG"], "IMG_0897.MOV")
     assert pp.named(["IMG_089?.jpg"], "IMG_0897.JPG") and pp.named(["x.jpg", "IMG_*"], "IMG_1.JPG")
+
+
+def test_the_date_is_two_parts_a_range_and_a_source_and_date_alone_is_not_a_part():
+    assert m.parse("date-range=within=3h").date_within == timedelta(hours=3) and m.parse("date-source=exif").date_source == "exif"
+    for text in ("date=exif", "date=within=1h", "date-source=near", "date-source=within=1h", "date-range=exif", "date-range=modified"):
+        with pytest.raises(ValueError):
+            m.parse(text)

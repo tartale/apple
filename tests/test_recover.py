@@ -1335,7 +1335,7 @@ def test_only_missing_and_refresh_are_for_a_folder_and_a_bad_diff_mode_is_a_usag
     for options, text in (
         ([str(listed), "Source", "--only-missing"], "are for a folder"),
         ([str(listed), "Source", "--refresh"], "are for a folder"),
-        ([str(folder), "Source", "--diff-mode", "date=near"], "date="),
+        ([str(folder), "Source", "--diff-mode", "date-range=near"], "date-range="),
     ):
         result = runner.invoke(app, ["photos", "import", *options])
         assert result.exit_code == 2 and text in " ".join(result.output.replace("│", " ").split()), options
@@ -1394,7 +1394,7 @@ def test_missing_lists_a_photo_once_however_its_copies_differ_under_the_diff_mod
     assert "3 missing files (1 left out as the same photo as another" in result.output
     exact = missing("--format", "csv", "--diff-mode", "strict")
     assert len(rows_of(exact)) == 4 and "left out" not in exact.output
-    assert len(rows_of(missing("--format", "csv", "--diff-mode", "date=within=3d"))) == 2  # the day on is the same photo too
+    assert len(rows_of(missing("--format", "csv", "--diff-mode", "date-range=within=3d"))) == 2  # the day on is the same photo too
 
 
 def test_missing_keeps_a_shared_photo_s_messages_identifier_when_it_leaves_out_its_copy(mac):
@@ -1465,7 +1465,7 @@ def test_explain_is_of_the_files_left_after_the_ones_that_are_the_same_photo_are
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")
     make_file(folder / "IMAG0044_ASLNFDmS.JPG", "2018-03-05 10:00:00")  # a copy under a longer name
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "filename=ignore,date=within=5s"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "filename=ignore,date-range=within=5s"])
     assert "1 left out as the same photo as another" in result.output
     assert "Why 1 photo did not match" in result.output and "ASLN" not in result.output.split("Why 1 photo")[1].split("date  ")[0]
 

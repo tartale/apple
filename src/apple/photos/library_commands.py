@@ -475,11 +475,11 @@ def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]
 
 def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = False) -> list:
     """The ids of the photos of each side that matching uses: the ids of the library (or the fingerprints in a folder's names)
-    and, with content=hash in the mode, the SHA-256 of the files whose size occurs on the other side."""
+    and, with content=identical in the mode, the SHA-256 of the files whose size occurs on the other side."""
     stored = [d.ids for d in data]
-    if match.content not in ("hash", "identical", "picture"):
+    if match.content != "identical":
         return stored
-    hashed = content_hash.content_ids(data, selected, refresh, kind=matching.PICTURE if match.content == "picture" else content_hash.KIND)
+    hashed = content_hash.content_ids(data, selected, refresh)
     return [merged_ids(stored[index], hashed[index]) for index in range(len(data))]
 
 
@@ -583,7 +583,7 @@ def diff_command(
     PowerPhotos does not list them and cannot copy them; --exclude-hidden leaves them out and reports how many on stderr. --since and
     --until limit both libraries to a range of dates, in UTC as the databases keep them, and --media to photos or videos,
     so the counts are for that selection too. A photo is counted once however many copies of it (the same date, size and file name) a library
-    holds; --include-duplicates counts every copy. --diff-mode says how closely two photos must agree to be the same photo (their file name, date and size; the default allows a date two hours apart and a size 1% apart), and `date=ignore` matches a clip imported twice with a shifted time. Text output
+    holds; --include-duplicates counts every copy. --diff-mode says how closely two photos must agree to be the same photo (their file name, date and size; the default allows a date two hours apart and a size 1% apart), and `date-range=ignore` matches a clip imported twice with a shifted time. Text output
     marks each photo `<` when it is only in LEFT and `>` when it is only in RIGHT, in aligned columns. The counts go to
     stderr. Exits 1 when the libraries differ, 0 when they match. Changes nothing.
     """
@@ -606,7 +606,7 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
-HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes", "picture": "same picture"}  # what decided a pair, in words
+HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes"}  # what decided a pair, in words
 
 
 def match_columns(fields: Optional[str], only: Optional[Side], with_files: bool) -> tuple:

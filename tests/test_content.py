@@ -1,4 +1,4 @@
-"""content=hash: files with the same bytes are the same photo, whatever their names, dates and sizes."""
+"""content=identical: files with the same bytes are the same photo, whatever their names and dates, and files with other bytes are not."""
 import csv
 import hashlib
 import io
@@ -57,17 +57,9 @@ def test_with_content_hash_a_renamed_and_re_dated_copy_is_the_same_photo(mac, tm
     folder = tmp_path / "backup"
     file_in(folder, "copy-of-something-else.jpg", BYTES, "2001-01-01 00:00:00")
     assert runner.invoke(app, ["photos", "diff", "Source", str(folder)]).exit_code == 1  # nothing else agrees
-    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=hash", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
+    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
     assert rows_of(result) == [{"left_name": "IMAG0044.JPG", "right_name": "copy-of-something-else.jpg", "matched_by": "same bytes"}]
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "content=hash"]).exit_code == 0
-
-
-def test_different_bytes_do_not_make_two_photos_different(mac, tmp_path):
-    other = b"another picture" * 20 + b"."[:0]
-    library_with(mac, [("2006-09-30 06:51:40", "IMAG0044.JPG", BYTES)])
-    folder = tmp_path / "backup"
-    file_in(folder, "IMAG0044.JPG", other[: len(BYTES)].ljust(len(BYTES), b"z"), "2006-09-30 06:51:40")  # the same name, date and size, other bytes
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "content=hash"]).exit_code == 0  # the other parts still agree
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "content=identical"]).exit_code == 0
 
 
 def test_only_files_whose_size_occurs_on_the_other_side_are_read(mac, tmp_path, monkeypatch):
@@ -78,7 +70,7 @@ def test_only_files_whose_size_occurs_on_the_other_side_are_read(mac, tmp_path, 
     read = []
     real = content_hash.file_digest
     monkeypatch.setattr(content_hash, "file_digest", lambda path: read.append(path.name) or real(path))
-    runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=hash"])
+    runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical"])
     assert sorted(read) == ["UUID1.jpg", "x.jpg"]
 
 
@@ -89,7 +81,7 @@ def test_a_hash_is_cached_with_the_files_time_and_size_until_refresh(mac, tmp_pa
     read = []
     real = content_hash.file_digest
     monkeypatch.setattr(content_hash, "file_digest", lambda path: read.append(path.name) or real(path))
-    options = ["photos", "match", "Source", str(folder), "--diff-mode", "content=hash"]
+    options = ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical"]
     runner.invoke(app, options)
     assert len(read) == 2
     runner.invoke(app, options)
@@ -111,7 +103,7 @@ def test_import_only_missing_leaves_out_a_file_with_the_bytes_of_a_photo_the_lib
     folder = tmp_path / "backup"
     file_in(folder, "renamed.jpg", BYTES, "2001-01-01 00:00:00")
     file_in(folder, "new.jpg", b"brand new" * 10, "2013-03-03 03:03:03")
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=hash"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=identical"])
     assert "Imported 0 of 1" in result.output and "new.jpg" in result.stdout and "renamed" not in result.stdout
     plain = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 2" in plain.output
@@ -121,8 +113,8 @@ def test_identity_ignore_does_not_turn_content_off(mac, tmp_path):
     library_with(mac, [("2006-09-30 06:51:40", "IMAG0044.JPG", BYTES)])
     folder = tmp_path / "backup"
     file_in(folder, "renamed.jpg", BYTES, "2001-01-01 00:00:00")
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "identity=ignore,content=hash"]).exit_code == 0
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "filename=exact,extension=exact,date=exact,filesize=exact"]).exit_code == 1  # the names and dates differ
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "identity=ignore,content=identical"]).exit_code == 0
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "filename=exact,extension=exact,date-range=exact,filesize=exact"]).exit_code == 1  # the names and dates differ
     assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "strict"]).exit_code == 0  # strict reads the bytes too
 
 
@@ -147,7 +139,7 @@ def test_copies_within_one_folder_are_found_by_their_bytes_when_importing(mac, t
     file_in(folder, "other.jpg", b"different bytes" * 14, "2012-02-02 02:02:02")
     plain = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 3" in plain.output
-    hashed = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=hash"])
+    hashed = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=identical"])
     assert "Imported 0 of 2" in hashed.output and "1 left out as the same photo as another" in hashed.output
     assert "IMAG0044.JPG" in hashed.stdout and "ASLN" not in hashed.stdout  # the shorter name is kept
 
@@ -156,7 +148,7 @@ def test_without_only_missing_the_copies_within_the_folder_are_found_by_their_by
     folder = tmp_path / "backup"
     file_in(folder, "a.jpg", BYTES, "2006-09-30 06:51:40")
     file_in(folder, "a_copy_of_it.jpg", BYTES, "2005-01-01 00:00:00")
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--diff-mode", "content=hash"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--diff-mode", "content=identical"])
     assert "Imported 0 of 1" in result.output and "1 left out as the same photo as another" in result.output
 
 
@@ -170,7 +162,7 @@ def test_a_refresh_reads_the_files_again_but_keeps_the_hashes_of_the_files_it_di
     monkeypatch.setattr(content_hash, "file_digest", lambda path: read.append(str(path)) or real(path))
 
     def match(folder, *options):
-        return runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=hash", *options])
+        return runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical", *options])
 
     match(first)
     match(second, "--refresh")  # the library's file and y.jpg are read again; x.jpg is not
@@ -186,9 +178,9 @@ def test_strict_import_leaves_out_what_photos_would_call_a_duplicate_and_lists_w
     folder = tmp_path / "backup"
     file_in(folder, "renamed.jpg", BYTES, "2001-01-01 00:00:00")  # the same bytes: a duplicate whatever it is called
     file_in(folder, "IMAG0044.JPG", b"z" * len(BYTES), "2006-09-30 06:51:40")  # the same name, date and size, other bytes: not a duplicate
-    for mode, expected in (("strict", "Imported 0 of 1"), ("strict,content=hash", "Imported 0 of 0")):
+    for mode, listed in (("strict", "IMAG0044.JPG"), ("strict,content=ignore", "renamed.jpg")):  # without the bytes it is the other way round
         result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", mode])
-        assert expected in result.output, mode
+        assert "Imported 0 of 1" in result.output and listed in result.stdout, mode
     only = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "strict"])
     assert "IMAG0044.JPG" in only.stdout and "renamed" not in only.stdout
 
@@ -199,77 +191,29 @@ def test_explain_names_the_bytes_when_they_are_all_that_keeps_two_photos_apart(m
     file_in(folder, "IMAG0044.JPG", b"z" * len(BYTES), "2006-09-30 06:51:40")
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=identical"])
     assert "differs: file bytes" in result.output
-    assert "differs: file bytes" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=hash"]).output
-
-
-def jpeg_with(*metadata, scan=b"\x01\x02\x03" * 10000):
-    """A JPEG of this picture with these metadata segments in front of it."""
-    import struct
-
-    def segment(marker, body):
-        return b"\xff" + bytes([marker]) + struct.pack(">H", len(body) + 2) + body
-
-    picture = segment(0xDB, b"\x00" + bytes(64)) + segment(0xC0, b"\x08" + struct.pack(">HH", 10, 10) + b"\x01\x01\x11\x00") + segment(0xDA, b"\x01\x01\x00\x00\x3f\x00") + scan + b"\xff\xd9"
-    return b"\xff\xd8" + b"".join(segment(0xE2, b"ICC_PROFILE\x00\x01\x01" + bytes(size)) for size in metadata) + picture
-
-
-def test_content_picture_takes_the_same_picture_with_other_metadata_as_one_photo(mac, tmp_path):
-    plain, profiled = jpeg_with(), jpeg_with(1370)
-    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", plain)])
-    folder = tmp_path / "backup"
-    file_in(folder, "IMG_0897.JPG", profiled, "2014-08-03 17:01:46")
-    other = file_in(folder, "IMG_0898.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000), "2014-08-03 17:01:46")  # another picture, the same size as the first
-    assert len(other.read_bytes()) == len(plain)
-    # the sizes differ by 1,370 bytes: exact sizes see two photos, content=identical too, the picture one
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "strict,date=exact,filesize=exact", "--only", "left"]).exit_code == 1
-    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "strict,content=picture", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
-    assert [(r["left_name"], r["right_name"], r["matched_by"]) for r in rows_of(result)] == [("IMG_0897.JPG", "IMG_0897.JPG", "same picture")]
-    renamed = file_in(folder, "other-name.jpg", profiled, "2001-01-01 00:00:00")  # and whatever the name and date
-    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=picture", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
-    assert ("IMG_0897.JPG", "IMG_0897.JPG", "same picture") in [(r["left_name"], r["right_name"], r["matched_by"]) for r in rows_of(result)]
-    assert renamed.exists()
-
-
-def test_content_picture_keeps_two_pictures_apart_and_says_so_in_explain(mac, tmp_path):
-    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", jpeg_with())])
-    folder = tmp_path / "backup"
-    file_in(folder, "IMG_0897.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000), "2014-08-03 17:01:46")  # the same size, name and date: another picture
-    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "tolerant"]).exit_code == 0
-    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "content=picture", "--explain"])
-    assert result.exit_code == 1 and "differs: picture" in result.output
-
-
-def test_content_picture_reads_only_the_files_near_in_size_to_one_on_the_other_side(mac, tmp_path, monkeypatch):
-    library_with(mac, [("2014-08-03 17:01:46", "a.jpg", jpeg_with())])
-    folder = tmp_path / "backup"
-    file_in(folder, "near.jpg", jpeg_with(1370), "2014-08-03 17:01:46")
-    file_in(folder, "far.jpg", jpeg_with(*[60000] * 10), "2014-08-03 17:01:46")  # twenty times the size
-    read = []
-    real = content_hash.file_compare.picture_digest
-    monkeypatch.setattr(content_hash.file_compare, "picture_digest", lambda path: read.append(path.name) or real(path))
-    runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=picture"])
-    assert sorted(read) == ["UUID1.jpg", "near.jpg"]
+    assert "differs: file bytes" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant"]).output
 
 
 def test_name_narrows_diff_match_and_import_to_the_photos_with_that_name(mac, tmp_path):
-    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", jpeg_with()), ("2014-08-03 17:02:46", "IMG_0898.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000))])
+    other = b"another picture" * 12
+    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", BYTES), ("2014-08-03 17:02:46", "IMG_0898.JPG", other)])
     folder = tmp_path / "backup"
-    file_in(folder, "IMG_0897.JPG", jpeg_with(), "2014-08-03 17:01:46")
-    file_in(folder, "IMG_0898.JPG", jpeg_with(scan=b"\x04\x05\x06" * 10000), "2014-08-03 17:02:46")  # another picture, the same size
-    file_in(folder, "IMG_0899.JPG", jpeg_with(1), "2014-08-03 17:03:46")
-    base = ["photos", "diff", "Source", str(folder), "--format", "csv", "--fields", "name"]
-    assert sorted(r["name"] for r in rows_of(runner.invoke(app, base))) == ["IMG_0899.JPG"]  # tolerant: the 0898 pair has the same size, date and name
-    assert [r["name"] for r in rows_of(runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "img_089[89]*"]))] == []  # a bracket is only that character
-    result = runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "IMG_089*"])
-    assert sorted((r["side"], r["name"]) for r in rows_of(result)) == [("left", "IMG_0898.JPG"), ("right", "IMG_0898.JPG"), ("right", "IMG_0899.JPG")]
-    result = runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "IMG_0899.JPG", "--name", "img_0897.jpeg"])
+    file_in(folder, "IMG_0897.JPG", BYTES, "2014-08-03 17:01:46")
+    file_in(folder, "IMG_0898.JPG", b"z" * len(other), "2014-08-03 17:02:46")  # the same name, date and size, other bytes
+    file_in(folder, "IMG_0899.JPG", BYTES, "2014-08-03 17:03:46")  # the bytes of 0897 under another name
+    base = ["photos", "diff", "Source", str(folder), "--format", "csv", "--fields", "name", "--diff-mode", "content=identical"]
+    assert sorted((r["side"], r["name"]) for r in rows_of(runner.invoke(app, base))) == [("left", "IMG_0898.JPG"), ("right", "IMG_0898.JPG"), ("right", "IMG_0899.JPG")]  # 0899 is a second copy of 0897
+    assert [r["name"] for r in rows_of(runner.invoke(app, base + ["--name", "img_089[89]*"]))] == []  # a bracket is only that character
+    result = runner.invoke(app, base + ["--name", "IMG_089*"])
+    assert sorted((r["side"], r["name"]) for r in rows_of(result)) == [("left", "IMG_0898.JPG"), ("right", "IMG_0898.JPG"), ("right", "IMG_0899.JPG")]  # 0897 is not named, so 0899 has no partner
+    result = runner.invoke(app, base + ["--name", "IMG_0899.JPG", "--name", "img_0897.jpeg"])
     assert sorted((r["side"], r["name"]) for r in rows_of(result)) == [("right", "IMG_0899.JPG")]
-    matches = runner.invoke(app, ["photos", "match", "Source", str(folder), "--name", "IMG_0897.JPG", "--format", "csv", "--fields", "left_name"])
+    matches = runner.invoke(app, ["photos", "match", "Source", str(folder), "--name", "IMG_0897", "--format", "csv", "--fields", "left_name"])
     assert [r["left_name"] for r in rows_of(matches)] == ["IMG_0897.JPG"] and "In both: 1. Only in Source: 0. Only in" in matches.output
-    imported = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=picture", "--name", "IMG_089?.JPG"])
-    assert "Imported 0 of 1" in imported.output and "IMG_0898.JPG" in imported.stdout and "IMG_0899" not in imported.stdout  # 0899 is the picture of 0897, which the library holds
+    imported = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=identical", "--name", "IMG_089?.JPG"])
+    assert "Imported 0 of 1" in imported.output and "IMG_0898.JPG" in imported.stdout and "IMG_0899" not in imported.stdout  # 0899 has the bytes of 0897, which the library holds
     # the names narrow what is imported, not what the library is searched for: 0897 is not named, and still is what 0899 is held as
-    kept = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=picture", "--name", "IMG_0899.JPG"])
+    kept = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=identical", "--name", "IMG_0899.JPG"])
     assert "IMG_0899" not in kept.stdout and kept.exit_code == 0
     everything = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--name", "IMG_0899.JPG"])
     assert "IMG_0899.JPG" in everything.stdout and "IMG_0897" not in everything.stdout
