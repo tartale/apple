@@ -126,13 +126,13 @@ def test_the_closest_photo_is_the_one_that_differs_in_the_fewest_parts():
     held = [("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 10:00:00", "5000", "other.jpg"), ("2019-01-01 00:00:00", "1000", "a.jpg")]
     wanted = ("2018-03-01 10:00:00", "2000", "a.jpg")
     near = finder(*held).closest(wanted)
-    assert near.photo == held[0] and near.differs == ("size by 1,000 bytes (50.0%)",) and near.gap == 0 and near.bytes_apart == 1000
+    assert near.photo == held[0] and near.differs == ("size by +1,000 bytes (+50.0%)",) and near.gap == 0 and near.bytes_apart == 1000
 
 
 def test_what_differs_is_said_in_words_for_each_part():
     held = ("2018-03-01 10:00:00", "1000", "IMG_1.jpg")
     near = finder(held).closest(("2018-03-04 14:30:00", "1000", "IMG_2.heic"))
-    assert near.differs == ("name", "extension", "date by 3d 4h")  # the two largest units
+    assert near.differs == ("name", "extension", "date by +3d 4h")  # the two largest units; + for the first photo being later
     assert finder(held).closest(("2018-03-01 10:00:30", "1000", "IMG_1.jpg")).differs == ()  # a match: nothing differs
 
 
@@ -251,7 +251,7 @@ def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photo
 
 def test_the_three_whole_modes_are_strict_tolerant_and_loose():
     assert set(m.PRESETS) == {"strict", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
-    assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "hash", "exact")
+    assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "identical", "exact")
     assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("normalized", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
     assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "normalized"
     assert m.parse("tolerant,strict") == m.STRICT  # the last whole mode starts over
@@ -285,3 +285,53 @@ def test_exact_is_not_a_whole_mode_and_the_error_names_the_three():
     with pytest.raises(ValueError, match="strict, tolerant or loose"):
         m.parse("exact")
     assert m.parse("strict,date=ignore").date == "ignore"
+
+
+def test_content_identical_means_the_same_bytes_are_one_photo_and_different_bytes_are_two():
+    held = ("2018-03-01 10:00:00", "100", "a.jpg")
+    same_everything_else = ("2018-03-01 10:00:00", "100", "a.jpg")
+    renamed = ("2005-01-01 00:00:00", "100", "other.jpg")
+    hashes = lambda value: {"sha256": {value}}  # noqa: E731
+    for mode_text, other_bytes_differ in (("content=hash", False), ("content=identical", True)):
+        mode = m.parse(mode_text)
+        # the same name, date and size, other bytes: hash still matches, only does not
+        assert bool(m.absent(Counter({same_everything_else: 1}), Counter({held: 1}), mode, {same_everything_else: hashes("A")}, {held: hashes("B")})) is other_bytes_differ
+        # a renamed, re-dated copy with the same bytes: both match
+        assert not m.absent(Counter({renamed: 1}), Counter({held: 1}), mode, {renamed: hashes("A")}, {held: hashes("A")})
+    identical = m.parse("content=identical")
+    # a hash that cannot be read for one side: the other parts decide
+    assert not m.absent(Counter({same_everything_else: 1}), Counter({held: 1}), identical, {same_everything_else: hashes("A")}, {})
+    assert m.absent(Counter({renamed: 1}), Counter({held: 1}), identical, {renamed: hashes("A")}, {})
+
+
+def test_content_identical_takes_a_different_size_as_different_bytes_and_an_unknown_size_as_nothing():
+    held = ("2018-03-01 10:00:00", "1000", "a.jpg")
+    near = ("2018-03-01 10:00:00", "1005", "a.jpg")  # within 1%: another file, not the same bytes
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), m.TOLERANT)
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("content=identical"))
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("filesize=ignore,content=identical"))
+    unknown = ("2018-03-01 10:00:00", "0", "a.jpg")
+    assert not m.absent(Counter({unknown: 1}), Counter({held: 1}), m.parse("content=identical"))  # a placeholder: no size to go by
+
+
+def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_the_three():
+    assert m.STRICT.content == "identical" and m.parse("strict,content=hash").content == "hash"
+    with pytest.raises(ValueError, match="use ignore, hash, identical or picture"):
+        m.parse("content=bytes")
+
+
+def test_a_date_and_a_size_difference_say_whether_the_first_photo_is_later_or_larger():
+    a, b = ("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 11:00:00", "1500", "a.jpg")
+    assert m.gaps(a, b) == ("date by -1h", "size by -500 bytes") and m.gaps(b, a) == ("date by +1h", "size by +500 bytes")
+    assert m.differences(m.STRICT, b, a)[0] == ("date by +1h", "size by +500 bytes (+33.3%)")
+    assert m.differences(m.STRICT, a, b)[0] == ("date by -1h", "size by -500 bytes (-33.3%)")
+
+
+def test_a_name_pattern_is_matched_as_names_are_compared_everywhere():
+    from apple.photos import powerphotos as pp
+    assert pp.named(None, "a.jpg") and pp.named([], "a.jpg")
+    assert pp.named(["IMG_0897.jpg"], "img_0897.JPEG") and not pp.named(["IMG_0897.jpg"], "IMG_0897 (1).jpg")
+    assert pp.named(["img_08*"], "IMG_0897.JPG") and not pp.named(["img_08*"], "IMG_0997.JPG")
+    assert pp.named(["IMG_0897"], "IMG_0897.JPG") and pp.named(["img_0897"], "IMG_0897.mov") and not pp.named(["IMG_0897"], "IMG_0897 (1).JPG")
+    assert pp.named(["IMG_089?"], "IMG_0897.JPG") and not pp.named(["IMG_0897.JPG"], "IMG_0897.MOV")
+    assert pp.named(["IMG_089?.jpg"], "IMG_0897.JPG") and pp.named(["x.jpg", "IMG_*"], "IMG_1.JPG")

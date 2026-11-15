@@ -2110,7 +2110,7 @@ def test_match_lists_the_pairs_of_photos_that_are_the_same_photo_and_how_they_di
     result = matched(mac, [A, B, C], [near, B, D], "--format", "csv")
     rows = list(csv.DictReader(io.StringIO(result.stdout)))
     assert result.exit_code == 0 and len(rows) == 2
-    assert [(r["left_name"], r["right_name"], r["differs"]) for r in rows] == [("a.jpg", "A.JPG", "name, extension, date by 36s"), ("b.jpg", "b.jpg", "identical")]
+    assert [(r["left_name"], r["right_name"], r["differs"]) for r in rows] == [("a.jpg", "A.JPG", "name, extension, date by -36s"), ("b.jpg", "b.jpg", "identical")]
     assert "In both: 2. Only in Source: 1. Only in photos-2018: 1." in result.output
 
 
@@ -2118,7 +2118,7 @@ def test_match_text_output_has_both_sides_in_aligned_columns(mac):
     result = matched(mac, [A], [("2018-03-01 10:00:30", 100, "a.jpg")])
     header, row = result.stdout.splitlines()[:2]
     assert header.split() == ["left_date", "left_size", "left_name", "right_date", "right_size", "right_name", "differs", "matched_by"]
-    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "30s", "attributes"]
+    assert row.split() == ["2018-03-01", "10:00:00", "100", "a.jpg", "2018-03-01", "10:00:30", "100", "a.jpg", "date", "by", "-30s", "attributes"]
 
 
 def test_match_is_the_inverse_of_diff(mac):
@@ -2171,9 +2171,9 @@ def test_match_with_a_folder_gives_the_path_of_its_files(mac, tmp_path):
 def test_match_fields_can_name_the_columns_shown_for_each_side(mac):
     near = ("2018-03-01 10:00:36", 100, "A.JPG")
     result = matched(mac, [A, B], [near, B], "--format", "csv", "--fields", "left_name,right_name,differs")
-    assert result.stdout.splitlines() == ["left_name,right_name,differs", "a.jpg,A.JPG,\"name, extension, date by 36s\"", "b.jpg,b.jpg,identical"]
+    assert result.stdout.splitlines() == ["left_name,right_name,differs", "a.jpg,A.JPG,\"name, extension, date by -36s\"", "b.jpg,b.jpg,identical"]
     only_right = matched(mac, [A], [near], "--format", "csv", "--fields", "right_size,differs")
-    assert only_right.stdout.splitlines() == ["right_size,differs", "100,\"name, extension, date by 36s\""]
+    assert only_right.stdout.splitlines() == ["right_size,differs", "100,\"name, extension, date by -36s\""]
 
 
 def test_match_fields_with_plain_names_are_shown_for_both_sides_and_a_bad_one_is_a_usage_error(mac):

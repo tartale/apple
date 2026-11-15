@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, NamedTuple, Optional
+from typing import Annotated, List, NamedTuple, Optional
 
 import typer
 
@@ -38,6 +38,15 @@ class OnUpgrade(str, Enum):
     stop = "stop"
 
 
+NameOption = Annotated[
+    Optional[List[str]],
+    typer.Option(
+        "--name",
+        help="Only photos with this file name, as the other commands show it, with or without its extension (`IMG_0897` or `IMG_0897.JPG`), "
+        "or a pattern with `*` for any characters and `?` for one (`'IMG_08*'`), case ignored and `.jpeg` the same as `.jpg`. Repeat for several; a photo with any of them is used. Combines with "
+        "--since, --until and --media.",
+    ),
+]
 SourceArgument = Annotated[str, typer.Argument(help="Source library, as named by `./apple photos libraries`.")]
 CheckDuplicatesOption = Annotated[
     bool,
@@ -53,7 +62,7 @@ ExplainOption = Annotated[
     typer.Option(
         "--explain",
         help="For each photo that is reported as having no match, say on stderr which photo of the other library is closest to it "
-        "and what differs under --diff-mode: why it is not a match.",
+        "and what differs under --diff-mode: why it is not a match. A date or size is + when the photo with no match is the later or larger one.",
     ),
 ]
 POLL_SECONDS = 5  # how often a library being copied into is looked at
@@ -456,20 +465,21 @@ def print_diff(rows: list, fields: list, show_side: bool, format: DiffFormat) ->
             ).rstrip())
 
 
-def within(photos: Counter, since: Optional[datetime], until: Optional[datetime]) -> Counter:
-    """The photos dated from since to until, both days included (either may be None for no limit)."""
+def within(photos: Counter, since: Optional[datetime], until: Optional[datetime], name_filter: Optional[List[str]] = None) -> Counter:
+    """The photos dated from since to until, both days included (either may be None for no limit), and, when name_filter has
+    patterns, with a file name one of them matches."""
     first = since.date().isoformat() if since else ""
     last = until.date().isoformat() if until else "9999-99-99"
-    return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last})
+    return Counter({key: count for key, count in photos.items() if first <= key[0][:10] <= last and pp.named(name_filter, key[2])})
 
 
 def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = False) -> list:
     """The ids of the photos of each side that matching uses: the ids of the library (or the fingerprints in a folder's names)
     and, with content=hash in the mode, the SHA-256 of the files whose size occurs on the other side."""
     stored = [d.ids for d in data]
-    if match.content != "hash":
+    if match.content not in ("hash", "identical", "picture"):
         return stored
-    hashed = content_hash.content_ids(data, selected, refresh)
+    hashed = content_hash.content_ids(data, selected, refresh, kind=matching.PICTURE if match.content == "picture" else content_hash.KIND)
     return [merged_ids(stored[index], hashed[index]) for index in range(len(data))]
 
 
@@ -487,7 +497,7 @@ class Compared(NamedTuple):
 
 
 def compare_sides(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, exclude_hidden: bool,
-                  include_duplicates: bool, refresh: bool, match: matching.Mode) -> Compared:
+                  include_duplicates: bool, refresh: bool, match: matching.Mode, name_filter: Optional[List[str]] = None) -> Compared:
     """Reads the two sides of `diff` and `match`: a library by its database, a folder by its files, in the range and media."""
     folders = {name: folder_photos.is_folder(side) for name, side in (("left", left), ("right", right))}
     try:
@@ -497,7 +507,7 @@ def compare_sides(left: str, right: str, since: Optional[datetime], until: Optio
         fail(str(error))
 
     def selected(counted: Counter) -> Counter:
-        return pp.of_media(within(counted, since, until), media.value)
+        return pp.of_media(within(counted, since, until, name_filter), media.value)
 
     superseded = [selected(d.superseded) for d in data]
     visible = [selected(d.visible) for d in data]
@@ -538,6 +548,7 @@ def diff_command(
         typer.Option(help="The columns to show and their order: any of date, size, name, hidden, burst, missing, shared, comma-separated. hidden, burst, missing and shared are true or false: missing means the original file is not stored in the library, so PowerPhotos cannot list or copy it; shared means the photo came from Messages (Shared with You), and when it is also missing, saving it to the library in Photos makes it copyable. The default is date,size,name,hidden,burst,missing,shared; with --exclude-hidden, without hidden and burst, which would only ever say false."),
     ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the photos.")] = DiffSort.date,
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
@@ -581,7 +592,7 @@ def diff_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     match = parse_mode(diff_mode)
-    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
+    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match, name)
     data, hidden, bursts, first, second = compared.data, compared.hidden, compared.bursts, compared.first, compared.second
     only_left, only_right, both = matching.pair(first, second, match, compared.ids[0], compared.ids[1])
     if explain:
@@ -595,7 +606,7 @@ def diff_command(
     raise typer.Exit(1 if only_left or only_right else 0)
 
 
-HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes"}  # what decided a pair, in words
+HOW = {"attributes": "attributes", "stable": "iCloud fingerprint", "cloud": "iCloud asset id", "sha256": "same bytes", "picture": "same picture"}  # what decided a pair, in words
 
 
 def match_columns(fields: Optional[str], only: Optional[Side], with_files: bool) -> tuple:
@@ -630,6 +641,7 @@ def match_command(
         typer.Option(help="The columns to show for each photo and their order: any of date, size, name, hidden, burst, missing, shared, files, comma-separated (default date, size, name, and files when a side is a folder). For pairs each is shown for both sides as left_<column> and right_<column>."),
     ] = None,
     sort: Annotated[DiffSort, typer.Option(help="Order of the rows (by the left photo of a pair).")] = DiffSort.date,
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="Compare only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Compare only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Compare photos, videos or both, by file name ending as `copy --media` does.")] = Media.all,
@@ -653,7 +665,7 @@ def match_command(
     photo is what is listed here, and what it lists is not. Each photo of one side is paired with at most one of the other (the
     nearest in date of those that are the same photo), and each row is a pair: the photo of the left side, the photo of the
     right side, what decided the match (`matched_by`: `attributes`, or an iCloud id the two share) and how they differ (`identical` when they are the very same date, size and name, else the name, extension, date
-    and size as far as they differ: `date by 36s, size by 12 bytes`). With --only left or --only right, each row is a photo of
+    and size as far as they differ: `date by -36s, size by +12 bytes`, + when the left photo is the later or the larger). With --only left or --only right, each row is a photo of
     that side that has a match, as `diff --only` shows the ones that have none, so `match A B --only left --format csv` lists
     what A shares with B. The counts go to stderr. Exits 0 when at least one photo matched, 1 when none did. Changes nothing.
     """
@@ -662,7 +674,7 @@ def match_command(
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     match = parse_mode(diff_mode)
-    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match)
+    compared = compare_sides(left, right, since, until, media, exclude_hidden, include_duplicates, refresh, match, name)
     data = compared.data
     matched, only_left, only_right = matching.pairs(compared.first, compared.second, match, compared.ids[0], compared.ids[1])
     rows = []
@@ -783,15 +795,17 @@ def parse_mode(text: str) -> matching.Mode:
         raise typer.BadParameter(str(error))
 
 
-def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False, ignore_trash: bool = False) -> list:
-    """The records of `diff LEFT RIGHT --only left` for the dates and media given, read from the databases."""
+def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False, ignore_trash: bool = False,
+                  name_filter: Optional[List[str]] = None) -> list:
+    """The records of `diff LEFT RIGHT --only left` for the dates, media and names given, read from the databases."""
     try:
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
     except pp.PowerPhotosError as error:
         fail(str(error))
-    selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
-    hidden = [set(pp.of_media(within(d.hidden, since, until), media.value)) for d in data]
-    bursts = [set(pp.of_media(within(d.bursts, since, until), media.value)) for d in data]
+    names = [name_filter, None]  # the names narrow what is asked about, the photos of the left: the right is searched whole
+    selected = [pp.of_media(within(d.visible + d.hidden, since, until, names[side]), media.value) for side, d in enumerate(data)]
+    hidden = [set(pp.of_media(within(d.hidden, since, until, names[side]), media.value)) for side, d in enumerate(data)]
+    bursts = [set(pp.of_media(within(d.bursts, since, until, names[side]), media.value)) for side, d in enumerate(data)]
     photo_ids = ids_for(match, data, selected)
     missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
@@ -804,7 +818,8 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     return rows
 
 
-def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library", ignore_trash: bool = False) -> list:
+def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library", ignore_trash: bool = False,
+                   name_filter: Optional[List[str]] = None) -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
@@ -812,7 +827,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif", dimensions=match.dimensions == "exact")] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
-    selected = [pp.of_media(within(d.visible + d.hidden, since, until), media.value) for d in data]
+    selected = [pp.of_media(within(d.visible + d.hidden, since, until, name_filter if side == 0 else None), media.value) for side, d in enumerate(data)]  # the names narrow the folder's files, not the library searched
     ids = ids_for(match, data, selected, refresh) if library else ids_for(match, data, selected, refresh) + [{}]
     wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1]) if library else Counter(dict.fromkeys(selected[0], 1))
     # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
@@ -835,6 +850,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
 def copy_command(
     source: SourceArgument,
     destination: Annotated[str, typer.Argument(help="Destination library; it must already exist in PowerPhotos.")],
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="First date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Last date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Copy photos, videos or both.")] = Media.all,
@@ -844,7 +860,7 @@ def copy_command(
     ] = None,
     only_missing: Annotated[
         bool,
-        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list -. --since, --until and --media limit what is compared. Not with --list."),
+        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list -. --since, --until, --media and --name limit what is compared. Not with --list."),
     ] = False,
     check_duplicates: CheckDuplicatesOption = False,
     diff_mode: DiffModeOption = "",
@@ -873,6 +889,8 @@ def copy_command(
         raise typer.BadParameter("--until is before --since")
     if only_missing and list_file is not None:
         raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
+    if name and not only_missing:
+        raise typer.BadParameter("--name is for --only-missing: a date range is copied by PowerPhotos, which cannot pick names, and a list already names the photos")
     match = parse_mode(diff_mode)
     if (explain or ignore_trash) and not only_missing:
         raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the photos missing from the destination")
@@ -881,7 +899,7 @@ def copy_command(
     names, hidden, no_original = None, {}, {}
     ids = None
     if only_missing:
-        rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash)
+        rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash, name)
         names, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too

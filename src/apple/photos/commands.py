@@ -3,7 +3,7 @@ from typing import Annotated
 
 import typer
 
-from apple.photos import library_commands, recover
+from apple.photos import compare_command, library_commands, recover
 from apple.photos.backup import run as backup_run
 from apple.photos.organize import run as organize_run
 
@@ -40,6 +40,7 @@ def organize(dry_run: DryRun = False) -> None:
 app.command("libraries")(library_commands.libraries_command)
 app.command("diff")(library_commands.diff_command)
 app.command("match")(library_commands.match_command)
+app.command("compare")(compare_command.compare_command)
 app.command("missing")(recover.missing_command)
 app.command("find")(recover.find_command)
 app.command("import")(recover.import_found_command)

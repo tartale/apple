@@ -21,7 +21,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within, NameOption
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -168,6 +168,7 @@ def missing_command(
             "APPLE_PHOTOS_DEFAULT_LIBRARY.",
         ),
     ] = None,
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
@@ -197,7 +198,7 @@ def missing_command(
         fail(str(error))
     wanted = {}
     for counted in (photos.visible, photos.hidden):
-        for key in pp.of_media(within(counted, since, until), media.value):
+        for key in pp.of_media(within(counted, since, until, name), media.value):
             wanted[key] = key in photos.hidden
     lacking = [key for key in sorted(wanted) if photos.original_missing(key)]
     # of photos that are the same photo, the first is kept, and one with a Messages identifier comes first
@@ -262,6 +263,7 @@ def find_command(
         typer.Option("--refresh", help="Read the places again instead of reusing what an earlier run saved: library databases are kept by their size and modification time, and Time Machine backup folders by the names of their snapshots. The new result is saved."),
     ] = False,
     diff_mode: DiffModeOption = "",
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
@@ -305,7 +307,7 @@ def find_command(
     items = []
     for entry in load_list(list_file):
         key = (entry["date"], "0", entry["name"])
-        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
+        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value) or not pp.named(name, entry["name"]):
             continue
         items.append({"key": key, "hidden": entry["hidden"], "shared": entry["shared"], "identifier": entry["identifier"], "ids": entry["ids"]})
 
@@ -379,6 +381,7 @@ def import_found_command(
         typer.Option("--map", help="OLD=NEW, a translation of the start of the paths the list gives (it has them as the machine that searched saw them), such as /volume1=/Volumes. Repeat for several; for each path the first one, in the order given, whose OLD starts it is used, so put specific ones before general ones. A path that exists as written is left alone. Without --map, APPLE_PHOTOS_RECOVER_MAPPINGS, which holds OLD=NEW entries separated by spaces and read as a shell reads words, so one value can be shared by the machines."),
     ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Import nothing; report what would be imported. Same as DRY_RUN=true.")] = False,
+    name: NameOption = None,
     since: Annotated[Optional[datetime], typer.Option(help="Only photos from this date on (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Only photos up to and including this date (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Photos, videos or both.")] = Media.all,
@@ -411,14 +414,14 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash)
-        import_listed(listed, source, destination, path, dry, [], since, until, media, format)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash, name)
+        import_listed(listed, source, destination, path, dry, [], since, until, media, format, name)
         return
-    import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format)
+    import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format, name)
 
 
 def import_listed(listed: List[dict], list_name: str, target: Optional[str], path: Path, dry: bool, mapping: List[tuple],
-                  since: Optional[datetime], until: Optional[datetime], media: Media, format: DiffFormat) -> None:
+                  since: Optional[datetime], until: Optional[datetime], media: Media, format: DiffFormat, name_filter: Optional[List[str]] = None) -> None:
     """Import the originals the listed rows (from read_list) say where to find, as import does, into the library target (at
     path) unless dry: a list's rows and a folder's files are imported the same way. list_name is what the rows came from."""
     progress = Progress()
@@ -434,7 +437,7 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
         return
     for entry in listed:
         key = (entry["date"], "0", entry["name"])
-        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value):
+        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({key: 1}), media.value) or not pp.named(name_filter, entry["name"]):
             continue
         found = None
         if entry["files"]:

@@ -1,5 +1,6 @@
 """Talks to PowerPhotos through the bundled AppleScript files, and reads library versions and contents from disk."""
 import fcntl
+import fnmatch
 import os
 import plistlib
 import re
@@ -161,6 +162,17 @@ def normalized_name(name: str) -> str:
     """A file name as PowerPhotos compares it: without regard to case, and .jpeg is .jpg."""
     lowered = name.lower()
     return lowered[:-5] + ".jpg" if lowered.endswith(".jpeg") else lowered
+
+
+def named(patterns: Optional[List[str]], name: str) -> bool:
+    """Whether a file name is one of the names asked for: True when none were asked for, else when any pattern matches the name, or
+    the name without its extension (`IMG_0897` is `IMG_0897.JPG` and `IMG_0897.MOV`), as names are compared everywhere (case
+    ignored, `.jpeg` is `.jpg`), a `*` standing for any characters and a `?` for one (a `[` is just that character)."""
+    if not patterns:
+        return True
+    full = normalized_name(name)
+    stem = os.path.splitext(full)[0]
+    return any(fnmatch.fnmatchcase(text, normalized_name(pattern).replace("[", "[[]")) for pattern in patterns for text in (full, stem))
 
 
 def media_of(name: str) -> Optional[str]:
