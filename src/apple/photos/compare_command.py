@@ -61,10 +61,16 @@ def show(result: file_compare.Compared) -> None:
                 note = "only in left" if one else "only in right"
             rows.append((name, f"{one.size:,}" if one else "-", f"{other.size:,}" if other else "-", note))
         table(rows)
+
+        def note(fact: str) -> str:
+            if first.facts.get(fact) == second.facts.get(fact):
+                return ""
+            return "differs" if fact in result.only_first + result.only_second + result.changed or fact in file_compare.OTHER_FACTS else "the same: no profile is sRGB"
+
         facts = [fact for fact in file_compare.WORTH + file_compare.OTHER_FACTS if fact in first.facts or fact in second.facts]
         if facts:
             typer.echo("")
-            table([("says", "left", "right", "")] + [(fact, first.facts.get(fact, "-"), second.facts.get(fact, "-"), "" if first.facts.get(fact) == second.facts.get(fact) else "differs") for fact in facts])
+            table([("says", "left", "right", "")] + [(fact, first.facts.get(fact, "-"), second.facts.get(fact, "-"), note(fact)) for fact in facts])
     typer.echo("")
     if result.same_picture and result.differing:
         typer.echo(f"The same picture; what differs: {', '.join(result.differing)}.")
@@ -86,7 +92,8 @@ def compare_command(
     IPTC, a thumbnail), so a difference of a few hundred bytes is told as the same picture with other metadata, or as another
     picture. What each file says about the photo is listed (capture time, GPS, camera, description, title, keywords, rating,
     faces, color profile, maker note, orientation), and the better one to keep is named when the files settle it: the same
-    picture where only one has something worth keeping, or the one with more pixels. A file of another type is compared by
+    picture where only one has something worth keeping, or the one with more pixels. An sRGB color profile counts as none: a
+    picture without a profile is shown as sRGB. A file of another type is compared by
     where its bytes differ. A + is the left file being the larger. With NAME, every file of that name on the left is compared
     with every one on the right; a library's file is the original it stores. Changes nothing.
     """

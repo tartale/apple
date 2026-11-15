@@ -114,10 +114,35 @@ def exif_facts(tiff: bytes) -> Dict[str, str]:
     return facts
 
 
+def profile_name(profile: bytes) -> str:
+    """The name an ICC color profile gives itself (its description, as `sRGB IEC61966-2.1`), or "" when it cannot be read."""
+    try:
+        (count,) = struct.unpack_from(">I", profile, 128)
+        for index in range(min(count, 100)):
+            tag, at, _ = struct.unpack_from(">4sII", profile, 132 + 12 * index)
+            if tag != b"desc":
+                continue
+            if profile[at:at + 4] == b"desc":  # version 2: plain text
+                (length,) = struct.unpack_from(">I", profile, at + 8)
+                return profile[at + 12:at + 12 + length].split(b"\x00")[0].decode("ascii", "replace").strip()
+            if profile[at:at + 4] == b"mluc" and struct.unpack_from(">I", profile, at + 8)[0]:  # version 4: the first language
+                length, offset = struct.unpack_from(">II", profile, at + 20)
+                return profile[at + offset:at + offset + length].decode("utf-16-be", "replace").strip("\x00 ")
+    except struct.error:
+        pass
+    return ""
+
+
+def is_default_profile(name: Optional[str]) -> bool:
+    """True for no color profile and for an sRGB one: a picture without a profile is shown as sRGB, so the two say the same."""
+    return name is None or "srgb" in name.lower()
+
+
 def read_jpeg(data: bytes) -> Tuple[List[Part], Dict[str, str]]:
     """The parts of a JPEG in the order they first appear (segments of one name are one part) and what its metadata says."""
     pieces: Dict[str, Tuple[str, List[bytes]]] = {}
     facts: Dict[str, str] = {}
+    profile: List[bytes] = []  # the chunks of the color profile, each starting with its number
 
     def add(name: str, kind: str, chunk: bytes) -> None:
         pieces.setdefault(name, (kind, []))[1].append(chunk)
@@ -153,12 +178,14 @@ def read_jpeg(data: bytes) -> Tuple[List[Part], Dict[str, str]]:
             elif name == "IPTC":
                 facts.update({fact: "yes" for fact, mark in IPTC_FACTS.items() if fact not in facts and mark in payload})
             elif name == "color profile":
-                facts["color profile"] = "yes"
+                profile.append(payload[12:])
         else:
             add(PICTURE, "picture", data[at:end])
         at = end
     if at < len(data):
         add("after the picture", "other", data[at:])
+    if profile:
+        facts["color profile"] = profile_name(b"".join(chunk[2:] for chunk in sorted(profile, key=lambda chunk: chunk[:1]))) or "yes"
     parts = []
     for name, (kind, chunks) in pieces.items():
         whole = b"".join(chunks)
@@ -206,7 +233,7 @@ def shared_ends(first: Path, second: Path) -> Tuple[int, int]:
 class Compared(NamedTuple):
     """Two files compared: each one described, the bytes they share at the start and at the end, the names of the parts that
     differ, whether the picture is the same (None when the format is not read), the facts only the first has, only the second has,
-    and that both have with another value, which one is the better to keep (`first`, `second`, `either` or None), and why."""
+    and that both have with another value (an sRGB color profile and no profile count as the same), which one is the better to keep (`first`, `second`, `either` or None), and why."""
     first: Described
     second: Described
     ends: Tuple[int, int]
@@ -230,9 +257,12 @@ def compare(one: Path, other: Path) -> Compared:
     differing = [name for name in dict.fromkeys(list(sides[0]) + list(sides[1])) if sides[0].get(name) != sides[1].get(name)]
     readable = bool(first.parts and second.parts)
     same_picture = True if identical else (PICTURE not in differing if readable else None)
-    only_first = [fact for fact in WORTH if fact in first.facts and fact not in second.facts]
-    only_second = [fact for fact in WORTH if fact in second.facts and fact not in first.facts]
-    changed = [fact for fact in WORTH if fact in first.facts and fact in second.facts and first.facts[fact] != second.facts[fact]]
+    profiles = [described.facts.get("color profile") for described in (first, second)]
+    default_profile = profiles[0] != profiles[1] and all(is_default_profile(name) for name in profiles)
+    said = [{fact: value for fact, value in described.facts.items() if not (fact == "color profile" and default_profile)} for described in (first, second)]
+    only_first = [fact for fact in WORTH if fact in said[0] and fact not in said[1]]
+    only_second = [fact for fact in WORTH if fact in said[1] and fact not in said[0]]
+    changed = [fact for fact in WORTH if fact in said[0] and fact in said[1] and said[0][fact] != said[1][fact]]
     if identical:
         better, why = "either", "the same file, byte for byte"
     elif same_picture is None:
@@ -251,4 +281,6 @@ def compare(one: Path, other: Path) -> Compared:
         better, why = ("first" if only_first else "second"), f"the same picture, and only this one has {', '.join(only_first or only_second)}"
     else:
         better, why = "either", "the same picture, and they say the same about it: what differs holds nothing about the photo"
+        if default_profile:
+            why += ", and an sRGB color profile is what a picture without a profile is shown with"
     return Compared(first, second, ends, differing, same_picture, only_first, only_second, changed, better, why)

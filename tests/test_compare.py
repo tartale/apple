@@ -68,7 +68,21 @@ def exif(*args, **kwargs):
 
 JFIF = segment(0xE0, b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
 XMP = segment(0xE1, b"http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta><dc:subject>beach</dc:subject><xmp:Rating>4</xmp:Rating></x:xmpmeta>")
-PROFILE = segment(0xE2, b"ICC_PROFILE\x00\x01\x01" + bytes(100))
+
+
+def icc(name, version=2):
+    """A color profile whose description is name: plain text as version 2 writes it, or in a language table as version 4 does."""
+    if version == 2:
+        described = b"desc" + bytes(4) + struct.pack(">I", len(name) + 1) + name.encode() + b"\x00"
+    else:
+        text = name.encode("utf-16-be")
+        described = b"mluc" + bytes(4) + struct.pack(">II", 1, 12) + b"enUS" + struct.pack(">II", len(text), 28) + text
+    profile = bytes(128) + struct.pack(">I", 2) + struct.pack(">4sII", b"cprt", 156, 0) + struct.pack(">4sII", b"desc", 156, len(described)) + described
+    half = len(profile) // 2  # in two segments, the second one first
+    return segment(0xE2, b"ICC_PROFILE\x00\x02\x02" + profile[half:]) + segment(0xE2, b"ICC_PROFILE\x00\x01\x02" + profile[:half])
+
+
+PROFILE = icc("Display P3", version=4)
 
 
 def compared(tmp_path, left, right):
@@ -87,7 +101,7 @@ def test_a_jpeg_is_read_as_its_picture_and_the_parts_written_around_it(tmp_path)
     assert sum(part.size for part in described.parts) == described.size  # every byte is in a part
     assert described.parts[-1].size == len(b"trailer")
     assert described.facts == {"capture time": "2006:07:04 12:00:00", "GPS": "47.50000, -122.25000", "camera": "Canon PowerShot S3", "maker note": "40 bytes",
-                               "thumbnail": "5,000 bytes", "keywords": "yes", "rating": "yes", "color profile": "yes"}
+                               "thumbnail": "5,000 bytes", "keywords": "yes", "rating": "yes", "color profile": "Display P3"}
 
 
 def test_the_same_picture_with_more_said_about_it_is_the_better_one(tmp_path):
@@ -113,6 +127,20 @@ def test_files_that_disagree_or_each_say_something_the_other_does_not_get_no_rec
     turned = compared(tmp_path, jpeg(exif(CAMERA, [TAKEN])), jpeg(exif(CAMERA + [(0x0112, 3, 6)], [TAKEN])))  # not saying is upright, so they disagree
     assert turned.better is None and turned.changed == ["orientation"]
     assert compared(tmp_path, jpeg(exif(CAMERA + [(0x0112, 3, 1)], [TAKEN])), jpeg(exif(CAMERA, [TAKEN]))).better == "either"
+
+
+def test_an_srgb_color_profile_is_what_a_file_without_a_profile_has(tmp_path):
+    plain, srgb = jpeg(exif(CAMERA, [TAKEN])), jpeg(exif(CAMERA, [TAKEN]), icc("sRGB IEC61966-2.1"))
+    result = compared(tmp_path, srgb, plain)
+    assert result.first.facts["color profile"] == "sRGB IEC61966-2.1" and result.differing == ["color profile"]
+    assert result.better == "either" and result.only_first == [] and "an sRGB color profile is what a picture without a profile is shown with" in result.why
+    shown = runner.invoke(app, ["photos", "compare", str(tmp_path / "left.jpg"), str(tmp_path / "right.jpg")]).stdout
+    assert ["color", "profile", "sRGB", "IEC61966-2.1", "-", "the", "same:", "no", "profile", "is", "sRGB"] in [line.split() for line in shown.splitlines()] and "Better to keep: either one" in shown
+    wide = compared(tmp_path, jpeg(exif(CAMERA, [TAKEN]), PROFILE), plain)  # another color space is something only that file says
+    assert wide.better == "first" and wide.only_first == ["color profile"]
+    assert compared(tmp_path, jpeg(PROFILE), srgb).changed == ["color profile"]
+    unread = compared(tmp_path, jpeg(exif(CAMERA, [TAKEN]), segment(0xE2, b"ICC_PROFILE\x00\x01\x01" + bytes(100))), plain)  # a profile with no name may be anything
+    assert unread.first.facts["color profile"] == "yes" and unread.better == "first"
 
 
 def test_another_picture_is_ranked_only_by_its_pixel_size(tmp_path):
