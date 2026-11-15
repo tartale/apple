@@ -197,6 +197,6 @@ def test_explain_names_the_bytes_when_they_are_all_that_keeps_two_photos_apart(m
     library_with(mac, [("2006-09-30 06:51:40", "IMAG0044.JPG", BYTES)])
     folder = tmp_path / "backup"
     file_in(folder, "IMAG0044.JPG", b"z" * len(BYTES), "2006-09-30 06:51:40")
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=only"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=identical"])
     assert "differs: file bytes" in result.output
     assert "differs: file bytes" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=hash"]).output
