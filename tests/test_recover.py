@@ -1323,7 +1323,7 @@ def test_only_missing_judges_with_the_tolerances_and_strict_wants_exact(mac, tmp
     make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)
     loose = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
     assert "Imported 0 of 0" in loose.output
-    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--diff-mode", "exact", "--dry-run"])
+    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--diff-mode", "strict", "--dry-run"])
     assert "Imported 0 of 1" in exact.output and "[dry run]" in exact.output
 
 
@@ -1392,7 +1392,7 @@ def test_missing_lists_a_photo_once_however_its_copies_differ_under_the_diff_mod
     result = missing("--format", "csv")
     assert [(r["date"], r["name"]) for r in rows_of(result)] == [(WHEN, "one.heic"), (WHEN, "two.heic"), (LATER, "one.heic")]
     assert "3 missing files (1 left out as the same photo as another" in result.output
-    exact = missing("--format", "csv", "--diff-mode", "exact")
+    exact = missing("--format", "csv", "--diff-mode", "strict")
     assert len(rows_of(exact)) == 4 and "left out" not in exact.output
     assert len(rows_of(missing("--format", "csv", "--diff-mode", "date=within=3d"))) == 2  # the day on is the same photo too
 

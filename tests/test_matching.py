@@ -7,7 +7,7 @@ import pytest
 from apple.photos import matching as m
 
 A = ("2018-03-01 10:00:00", "1000", "IMG_0001.JPG")
-STRICT = m.Mode(filename="exact", extension="exact", date="exact", filesize="exact", identity="ignore")  # every attribute exact, and nothing else
+ATTRIBUTES = m.Mode(filename="exact", extension="exact", date="exact", filesize="exact", identity="ignore")  # every attribute exact, and nothing else
 
 
 def test_nothing_is_the_default_tolerant_mode():
@@ -16,18 +16,18 @@ def test_nothing_is_the_default_tolerant_mode():
 
 
 def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
-    mode = m.parse("exact,filename=full,date=within=1d,filesize=within=2.5%")
+    mode = m.parse("strict,filename=full,date=within=1d,filesize=within=2.5%")
     assert (mode.filename, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("full", "within", timedelta(days=1), "within", 0.025)
     assert m.parse("filename=exact") == m.Mode(filename="exact")
-    assert m.parse("extension=ignore").extension == "ignore" and m.parse("exact,extension=full").extension == "full"
-    assert m.parse("date=ignore,exact") == m.EXACT  # a whole mode after a field starts over
+    assert m.parse("extension=ignore").extension == "ignore" and m.parse("strict,extension=full").extension == "full"
+    assert m.parse("date=ignore,strict") == m.STRICT  # a whole mode after a field starts over
     assert m.parse("date=within=90m").date_within == timedelta(minutes=90)
     assert m.parse("filesize=within=512bytes").size_bytes == 512 and m.parse("filesize=within=1byte").size_bytes == 1 and m.parse("filesize=within=20b").size_bytes == 20
     assert m.parse("filesize=within=512bytes,filesize=within=2%").size_bytes is None  # the last one wins
 
 
 @pytest.mark.parametrize("text", ["filename", "filename=prefix=8", "filename=regex=^(a)", "filename=sideways", "extension", "extension=any", "date=within",
-                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date=sometimes", "strict"])
+                                  "date=within=2", "date=within=2w", "date=near", "filesize=within=1", "filesize=within=1.5bytes", "filesize=within=x%", "exif=maybe", "date=sometimes", "exact"])
 def test_what_is_not_a_mode_says_what_is_wrong(text):
     with pytest.raises(ValueError):
         m.parse(text)
@@ -44,9 +44,9 @@ def test_the_default_ignores_case_and_jpeg_and_allows_two_hours_and_one_percent(
 
 def test_exact_wants_the_same_date_size_and_name_as_written():
     held = Counter({A: 1})
-    assert not m.absent(Counter({A: 1}), held, STRICT)
+    assert not m.absent(Counter({A: 1}), held, ATTRIBUTES)
     for other in (("2018-03-01 10:00:01", "1000", "IMG_0001.JPG"), ("2018-03-01 10:00:00", "1001", "IMG_0001.JPG"), ("2018-03-01 10:00:00", "1000", "img_0001.jpg")):
-        assert m.absent(Counter({other: 1}), held, STRICT)
+        assert m.absent(Counter({other: 1}), held, ATTRIBUTES)
 
 
 def test_a_field_set_to_ignore_does_not_count():
@@ -60,7 +60,7 @@ def test_an_unknown_size_does_not_tell_photos_apart_unless_sizes_must_be_exact()
     held = Counter({A: 1})
     placeholder = ("2018-03-01 10:00:00", "0", "IMG_0001.JPG")
     assert not m.absent(Counter({placeholder: 1}), held)
-    assert m.absent(Counter({placeholder: 1}), held, STRICT)
+    assert m.absent(Counter({placeholder: 1}), held, ATTRIBUTES)
 
 
 def test_pairing_matches_each_photo_with_at_most_one_other_and_the_extra_copies_are_left_over():
@@ -73,13 +73,13 @@ def test_pairing_matches_each_photo_with_at_most_one_other_and_the_extra_copies_
 def test_exact_pairing_is_plain_counting():
     other = ("2018-03-09 09:00:00", "1", "y.jpg")
     first, second = Counter({A: 2}), Counter({A: 1, other: 1})
-    assert m.pair(first, second, STRICT) == (Counter({A: 1}), Counter({other: 1}), 1)
+    assert m.pair(first, second, ATTRIBUTES) == (Counter({A: 1}), Counter({other: 1}), 1)
 
 
 def test_date_ignore_pairs_by_size_and_name_as_a_clip_imported_twice_with_a_shifted_time():
     first = Counter({("2018-03-01 10:00:00", "1000", "a.mov"): 1})
     second = Counter({("2019-07-01 10:00:00", "1000", "a.mov"): 1})
-    assert m.pair(first, second, m.parse("exact,date=ignore")) == (Counter(), Counter(), 1)
+    assert m.pair(first, second, m.parse("strict,date=ignore")) == (Counter(), Counter(), 1)
 
 
 def test_a_size_can_differ_by_a_number_of_bytes_whatever_the_size():
@@ -99,7 +99,7 @@ def test_the_name_is_compared_without_its_extension_and_the_extension_on_its_own
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_9999.heic"): 1}), held, m.parse("extension=ignore"))  # the name still counts
     assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234.heic"): 1}), held)  # case ignored by default
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "img_1234.heic"): 1}), held, m.parse("extension=exact"))
-    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.heic"): 1}), held, STRICT)
+    assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "IMG_1234.heic"): 1}), held, ATTRIBUTES)
     jpeg = Counter({("2018-03-01 10:00:00", "1000", "a.JPEG"): 1})
     assert not m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), jpeg)  # .jpeg is .jpg
     assert m.absent(Counter({("2018-03-01 10:00:00", "1000", "a.jpg"): 1}), jpeg, m.parse("extension=exact"))
@@ -152,7 +152,7 @@ def test_a_gap_is_told_in_two_units():
 
 def test_the_date_of_a_folder_file_comes_from_exif_unless_the_mode_says_modified():
     assert m.TOLERANT.date_source == "modified" and m.LOOSE.date_source == "modified" and m.parse("").date_source == "modified"
-    assert m.EXACT.date_source == "exif"  # exact reads the files, so it dates them as Photos does
+    assert m.STRICT.date_source == "exif"  # strict reads the files, so it dates them as Photos does
     assert m.parse("date=exif").date_source == "exif" and m.parse("date=modified").date_source == "modified"
     assert m.parse("date=exif,date=within=1h") == m.Mode(date_source="exif", date_within=timedelta(hours=1))  # a source and a comparison are separate parts
     assert m.parse("date=exif,tolerant").date_source == "modified"  # a whole mode starts over
@@ -191,13 +191,13 @@ def test_ids_of_different_kinds_do_not_conflict_and_a_shared_value_among_several
     assert not m.absent(Counter({near: 1}), Counter({held: 1}), wanted_ids={near: {"stable": {"A", "B"}}}, held_ids={held: {"stable": {"B", "C"}}})
 
 
-def test_identity_ignore_and_the_exact_mode_use_the_other_parts_alone():
+def test_identity_ignore_and_the_attribute_modes_use_the_other_parts_alone():
     held = ("2006-09-30 06:51:40", "1492992", "IMAG0044.JPG")
     other = ("2005-09-30 06:51:40", "999", "renamed.jpg")
     kwargs = dict(wanted_ids={other: ids(stable="A")}, held_ids={held: ids(stable="A")})
     assert m.absent(Counter({other: 1}), Counter({held: 1}), m.parse("identity=ignore"), **kwargs)
-    assert m.absent(Counter({other: 1}), Counter({held: 1}), STRICT, **kwargs)
-    assert STRICT.identity == "ignore" and m.TOLERANT.identity == "auto" and m.parse("loose,identity=auto").identity == "auto" and m.parse("loose").identity == "ignore"
+    assert m.absent(Counter({other: 1}), Counter({held: 1}), ATTRIBUTES, **kwargs)
+    assert ATTRIBUTES.identity == "ignore" and m.TOLERANT.identity == "auto" and m.parse("loose,identity=auto").identity == "auto" and m.parse("loose").identity == "ignore"
     with pytest.raises(ValueError):
         m.parse("identity=maybe")
 
@@ -249,22 +249,22 @@ def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photo
     assert m.absent(Counter({far: 1}), Counter({held: 1}), m.parse("dimensions=exact"), {far: {"dims": {"1000x800"}}}, {held: {"dims": {"1000x800"}}})  # a size is not an id
 
 
-def test_the_three_whole_modes_are_exact_tolerant_and_loose():
-    assert set(m.PRESETS) == {"exact", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
-    assert (m.EXACT.filename, m.EXACT.extension, m.EXACT.date, m.EXACT.filesize, m.EXACT.identity, m.EXACT.content, m.EXACT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "hash", "exact")
+def test_the_three_whole_modes_are_strict_tolerant_and_loose():
+    assert set(m.PRESETS) == {"strict", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
+    assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "hash", "exact")
     assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("full", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
     assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "full"
-    assert m.parse("tolerant,exact") == m.EXACT  # the last whole mode starts over
+    assert m.parse("tolerant,strict") == m.STRICT  # the last whole mode starts over
 
 
-def test_loose_matches_what_tolerant_and_exact_do_not_and_exact_matches_least():
+def test_loose_matches_what_tolerant_and_strict_do_not_and_strict_matches_least():
     held = ("2018-03-01 10:00:00", "1000", "IMG_0001.JPG")
     candidates = {
         "another extension and size, 20 hours on": ("2018-03-02 06:00:00", "5000", "IMG_0001.HEIC"),
         "an hour on, a size 0.5% off, in capitals": ("2018-03-01 11:00:00", "1005", "img_0001.jpg"),
         "the very same": held,
     }
-    matches = {label: [not m.absent(Counter({photo: 1}), Counter({held: 1}), mode) for mode in (m.LOOSE, m.TOLERANT, m.EXACT)] for label, photo in candidates.items()}
+    matches = {label: [not m.absent(Counter({photo: 1}), Counter({held: 1}), mode) for mode in (m.LOOSE, m.TOLERANT, m.STRICT)] for label, photo in candidates.items()}
     assert matches == {
         "another extension and size, 20 hours on": [True, False, False],
         "an hour on, a size 0.5% off, in capitals": [True, True, False],
@@ -279,3 +279,9 @@ def test_a_photo_of_the_very_same_key_is_not_there_when_its_id_says_it_is_anothe
     assert m.absent(Counter({photo: 1}), Counter({photo: 1}), wanted_ids={photo: ids(stable="B")}, held_ids={photo: ids(stable="A")})
     assert not m.absent(Counter({photo: 1}), Counter({photo: 1}), wanted_ids={photo: ids(stable="A")}, held_ids={photo: ids(stable="A")})
     assert not m.absent(Counter({photo: 1}), Counter({photo: 1}))
+
+
+def test_exact_is_not_a_whole_mode_and_the_error_names_the_three():
+    with pytest.raises(ValueError, match="strict, tolerant or loose"):
+        m.parse("exact")
+    assert m.parse("strict,date=ignore").date == "ignore"

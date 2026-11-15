@@ -15,7 +15,7 @@ How a decision is made (the order of the parts in the text has no part in it):
 
 Three whole modes are the starting points; a part after one changes just that part, and the default is `tolerant`:
 
-    exact      slow, most accurate      ids, the bytes of the files (`content=hash`), pixel size, the EXIF capture time, and
+    strict     slow, most accurate      ids, the bytes of the files (`content=hash`), pixel size, the EXIF capture time, and
                                         everything else exactly: filename=exact,extension=exact,date=exif,date=exact,filesize=exact
     tolerant   medium speed and accuracy  ids, then the name (case ignored), the extension (`.jpeg` is `.jpg`), a date within 2 hours and a
                                         size within 1%; no file is opened (modification time as the date)
@@ -36,7 +36,7 @@ The parts:
     dimensions=ignore | exact              whether the pixel sizes must be the same (a rotated copy has the same size); read from the database
                                            for a library and from the file's header for a folder
 
-Examples: `exact,filename=ignore` (the surest, whatever the names), `loose,filesize=within=5%`, `date=within=1d,filesize=ignore`.
+Examples: `strict,filename=ignore` (the surest, whatever the names), `loose,filesize=within=5%`, `date=within=1d,filesize=ignore`.
 """
 import base64
 import os
@@ -70,19 +70,19 @@ class Mode:
 
 TOLERANT = Mode()
 # The three whole modes, from the surest and slowest to the quickest and loosest. Each is a starting point that a part after it can change.
-EXACT = Mode(
+STRICT = Mode(
     filename="exact", extension="exact", identity="auto", content="hash", dimensions="exact", date_source="exif", date="exact", filesize="exact",
 )
 LOOSE = Mode(filename="full", extension="ignore", identity="ignore", content="ignore", dimensions="ignore", date="within", date_within=timedelta(days=1), filesize="ignore")
-PRESETS = {"exact": EXACT, "tolerant": TOLERANT, "loose": LOOSE}
+PRESETS = {"strict": STRICT, "tolerant": TOLERANT, "loose": LOOSE}
 HELP = (
-    "How closely two photos must agree to be the same photo: a whole mode, exact (slow, most accurate: ids, file bytes, pixel size, EXIF date, "
+    "How closely two photos must agree to be the same photo: a whole mode, strict (slow, most accurate: ids, file bytes, pixel size, EXIF date, "
     "everything exact), tolerant (the default; medium: ids, then name, extension, date within 2h, size within 1%) or loose (fast, least "
     "accurate: name and a date within 1 day), optionally followed by parts that change it, comma-separated and read left to right: "
     "filename=full|exact|ignore, extension=full|exact|ignore, date=within=DURATION|exact|ignore (such as 2h, 30m, 1d), date=exif|modified "
     "(where a folder file's date comes from), filesize=within=PERCENT|within=BYTES|exact|ignore (such as 1% or 512bytes), "
     "identity=auto|ignore (iCloud ids), content=ignore|hash (the SHA-256 of the files; slow), dimensions=ignore|exact (pixel size). "
-    "An id decides when both photos have one; otherwise every part must agree. Example: `exact,filename=ignore`. Also read from APPLE_PHOTOS_DIFF_MODE."
+    "An id decides when both photos have one; otherwise every part must agree. Example: `strict,filename=ignore`. Also read from APPLE_PHOTOS_DIFF_MODE."
 )
 
 
@@ -142,7 +142,7 @@ def parse(text: str) -> Mode:
             else:
                 raise ValueError(f"filesize={value!r}: use exact, ignore or within=PERCENT (such as 1%) or within=N bytes (such as 512bytes)")
         else:
-            raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., date=..., filesize=..., exact or tolerant")
+            raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., date=..., filesize=..., strict, tolerant or loose")
     return mode
 
 
