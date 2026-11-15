@@ -316,7 +316,7 @@ def test_content_identical_takes_a_different_size_as_different_bytes_and_an_unkn
 
 def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_the_three():
     assert m.STRICT.content == "identical" and m.parse("strict,content=hash").content == "hash"
-    with pytest.raises(ValueError, match="use ignore, hash or identical"):
+    with pytest.raises(ValueError, match="use ignore, hash, identical or picture"):
         m.parse("content=bytes")
 
 

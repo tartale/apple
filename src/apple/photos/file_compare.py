@@ -193,6 +193,23 @@ def read_jpeg(data: bytes) -> Tuple[List[Part], Dict[str, str]]:
     return parts, facts
 
 
+def picture_digest(path: Path) -> Optional[str]:
+    """The SHA-256 of a file's picture data (a JPEG without its metadata segments) as hex; of the whole file for another type;
+    None when it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            start = handle.read(2)
+            if start != b"\xff\xd8":
+                digest = hashlib.sha256(start)
+                for block in iter(lambda: handle.read(BLOCK), b""):
+                    digest.update(block)
+                return digest.hexdigest()
+            parts, _ = read_jpeg(start + handle.read())
+    except OSError:
+        return None
+    return next((part.digest for part in parts if part.name == PICTURE), None)
+
+
 def describe(path: Path) -> Described:
     """A file as its parts. Raises OSError when it cannot be read."""
     size = path.stat().st_size
