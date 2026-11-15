@@ -332,4 +332,6 @@ def test_a_name_pattern_is_matched_as_names_are_compared_everywhere():
     assert pp.named(None, "a.jpg") and pp.named([], "a.jpg")
     assert pp.named(["IMG_0897.jpg"], "img_0897.JPEG") and not pp.named(["IMG_0897.jpg"], "IMG_0897 (1).jpg")
     assert pp.named(["img_08*"], "IMG_0897.JPG") and not pp.named(["img_08*"], "IMG_0997.JPG")
+    assert pp.named(["IMG_0897"], "IMG_0897.JPG") and pp.named(["img_0897"], "IMG_0897.mov") and not pp.named(["IMG_0897"], "IMG_0897 (1).JPG")
+    assert pp.named(["IMG_089?"], "IMG_0897.JPG") and not pp.named(["IMG_0897.JPG"], "IMG_0897.MOV")
     assert pp.named(["IMG_089?.jpg"], "IMG_0897.JPG") and pp.named(["x.jpg", "IMG_*"], "IMG_1.JPG")

@@ -42,8 +42,8 @@ NameOption = Annotated[
     Optional[List[str]],
     typer.Option(
         "--name",
-        help="Only photos with this file name, as the other commands show it: a name, or a pattern with `*` for any characters and `?` for "
-        "one (`'IMG_08*'`), case ignored and `.jpeg` the same as `.jpg`. Repeat for several; a photo with any of them is used. Combines with "
+        help="Only photos with this file name, as the other commands show it, with or without its extension (`IMG_0897` or `IMG_0897.JPG`), "
+        "or a pattern with `*` for any characters and `?` for one (`'IMG_08*'`), case ignored and `.jpeg` the same as `.jpg`. Repeat for several; a photo with any of them is used. Combines with "
         "--since, --until and --media.",
     ),
 ]

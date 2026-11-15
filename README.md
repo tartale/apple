@@ -73,7 +73,7 @@ A folder file that has the id in its name, and a library photo with that fingerp
 
 ### Narrowing to a name: `--name`
 
-`diff`, `match`, `missing`, `find`, `import` and `copy --only-missing` take `--name NAME` (repeatable) beside `--since`, `--until` and `--media`: only photos whose file name is NAME, or matches it, are looked at. A name is compared as everywhere else (case ignored, `.jpeg` is `.jpg`) and may hold `*` for any characters and `?` for one: `--name IMG_0897.JPG`, `--name 'IMG_08*'`, `--name IMG_0897.JPG --name IMG_0898.JPG`. Quote a pattern so the shell leaves it alone.
+`diff`, `match`, `missing`, `find`, `import` and `copy --only-missing` take `--name NAME` (repeatable) beside `--since`, `--until` and `--media`: only photos whose file name is NAME, or matches it, are looked at. A name is compared as everywhere else (case ignored, `.jpeg` is `.jpg`), with or without its extension (`--name IMG_0897` is `IMG_0897.JPG` and `IMG_0897.MOV`, not `IMG_0897 (1).JPG`), and may hold `*` for any characters and `?` for one: `--name IMG_0897.JPG`, `--name 'IMG_08*'`, `--name IMG_0897.JPG --name IMG_0898.JPG`. Quote a pattern so the shell leaves it alone.
 
 For `diff` and `match` both sides are narrowed. For `import --only-missing` and `copy --only-missing` the names narrow the photos asked about (the folder's files, or the source's photos) and the destination is still searched whole, so a photo of another name there that is the same photo (by id, bytes or picture) still counts as held. `copy` without `--only-missing` takes no `--name`: PowerPhotos copies a date range and cannot pick names (a list, `--list`, already names them). `split` and `compare` take none.
 
