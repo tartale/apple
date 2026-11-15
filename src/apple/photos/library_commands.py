@@ -53,7 +53,7 @@ ExplainOption = Annotated[
     typer.Option(
         "--explain",
         help="For each photo that is reported as having no match, say on stderr which photo of the other library is closest to it "
-        "and what differs under --diff-mode: why it is not a match.",
+        "and what differs under --diff-mode: why it is not a match. A date or size is + when the photo with no match is the later or larger one.",
     ),
 ]
 POLL_SECONDS = 5  # how often a library being copied into is looked at
@@ -653,7 +653,7 @@ def match_command(
     photo is what is listed here, and what it lists is not. Each photo of one side is paired with at most one of the other (the
     nearest in date of those that are the same photo), and each row is a pair: the photo of the left side, the photo of the
     right side, what decided the match (`matched_by`: `attributes`, or an iCloud id the two share) and how they differ (`identical` when they are the very same date, size and name, else the name, extension, date
-    and size as far as they differ: `date by 36s, size by 12 bytes`). With --only left or --only right, each row is a photo of
+    and size as far as they differ: `date by -36s, size by +12 bytes`, + when the left photo is the later or the larger). With --only left or --only right, each row is a photo of
     that side that has a match, as `diff --only` shows the ones that have none, so `match A B --only left --format csv` lists
     what A shares with B. The counts go to stderr. Exits 0 when at least one photo matched, 1 when none did. Changes nothing.
     """

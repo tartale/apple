@@ -67,7 +67,7 @@ def test_diff_and_match_treat_a_file_and_a_photo_with_the_same_fingerprint_as_on
     assert runner.invoke(app, ["photos", "diff", "Source", str(folder)]).exit_code == 0
     matched = runner.invoke(app, ["photos", "match", "Source", str(folder), "--format", "csv", "--fields", "left_name,right_name,differs,matched_by"])
     assert rows_of(matched) == [{"left_name": "IMAG0044.JPG", "right_name": f"IMAG0044_{token}.JPG", "differs": rows_of(matched)[0]["differs"], "matched_by": "iCloud fingerprint"}]
-    assert "name" in rows_of(matched)[0]["differs"] and "date by 365d" in rows_of(matched)[0]["differs"]
+    assert "name" in rows_of(matched)[0]["differs"] and "date by +365d" in rows_of(matched)[0]["differs"]
     ignored = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "identity=ignore"])
     assert ignored.exit_code == 1  # the ids alone made them one photo
 

@@ -1430,7 +1430,7 @@ def test_explain_says_why_a_file_is_not_matched_in_the_library(mac):
     words = result.output
     assert "Why 2 photos did not match a photo of Source" in words
     assert "IMAG0044_copy.JPG" in words and "differs: name" in words and "within the mode: date the same, size the same" in words and "may call this a duplicate" in words
-    assert "differs: size by 400 bytes (80.0%)" in words and "within the mode: date the same" in words
+    assert "differs: size by +400 bytes (+80.0%)" in words and "within the mode: date the same" in words
 
 
 def test_explain_does_not_call_it_a_duplicate_when_the_date_is_only_within_the_tolerance(mac):
@@ -1481,7 +1481,7 @@ def explained(mac, in_library, files, *options):
 def test_explain_prefers_the_photo_of_the_same_name_to_a_neighbour_that_is_nearer(mac):
     output = explained(mac, [("2018-03-05 10:00:36", 100, "IMAG0043.JPG"), ("2018-03-20 09:00:00", 700, "IMAG0044.JPG")], [("IMAG0044.JPG", "2018-03-05 10:00:00", 100)])
     assert "closest: IMAG0044.JPG  2018-03-20 09:00:00  700" in output
-    assert "differs: date by 14d 23h, size by 600 bytes (85.7%)" in output and "IMAG0043" not in output
+    assert "differs: date by -14d 23h, size by -600 bytes (-85.7%)" in output and "IMAG0043" not in output
     assert "no photo of that name" not in output
 
 

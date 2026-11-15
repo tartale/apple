@@ -331,8 +331,9 @@ def pair(first: Counter, second: Counter, mode: Mode = TOLERANT, first_ids: Opti
 
 
 def gaps(first: Photo, second: Photo) -> Tuple[str, ...]:
-    """How two photos differ, however little and whatever the mode: the name and the extension as written, the date, the size.
-    Nothing when they are the very same photo."""
+    """How two photos differ, however little and whatever the mode: the name and the extension as written, the date, the size. A date
+    or size says by how much the first photo is later (+) or earlier (-), larger (+) or smaller (-) than the second. Nothing when
+    they are the very same photo."""
     stem, extension = split_name(first[2])
     other_stem, other_extension = split_name(second[2])
     found = []
@@ -340,12 +341,12 @@ def gaps(first: Photo, second: Photo) -> Tuple[str, ...]:
         found.append("name")
     if extension != other_extension:
         found.append("extension")
-    gap = abs((datetime.fromisoformat(first[0]) - datetime.fromisoformat(second[0])).total_seconds())
-    if gap:
-        found.append(f"date by {span(gap)}")
+    later = (datetime.fromisoformat(first[0]) - datetime.fromisoformat(second[0])).total_seconds()
+    if later:
+        found.append(f"date by {'+' if later > 0 else '-'}{span(abs(later))}")
     if first[1] != second[1]:
         both = first[1].isdigit() and second[1].isdigit() and int(first[1]) and int(second[1])
-        found.append(f"size by {abs(int(first[1]) - int(second[1])):,} bytes" if both else "size")
+        found.append(f"size by {int(first[1]) - int(second[1]):+,} bytes" if both else "size")
     return tuple(found)
 
 
@@ -382,20 +383,23 @@ KIND_NAMES = {"stable": "iCloud fingerprint", "cloud": "iCloud asset id", DIMENS
 
 
 def differences(mode: Mode, photo: Photo, other: Photo, photo_ids: Optional[Dict[str, set]] = None, other_ids: Optional[Dict[str, set]] = None) -> Tuple[Tuple[str, ...], float, int]:
-    """(what differs between two photos under the mode, in words; their gap in seconds; their gap in bytes). photo_ids and other_ids
-    are the ids and pixel sizes of the two: an id of the same kind that the mode looks at and that they do not share is a difference."""
+    """(what differs between two photos under the mode, in words; their gap in seconds; their gap in bytes). A date or size says by
+    how much the first photo is later (+) or earlier (-), larger (+) or smaller (-) than the other. photo_ids and other_ids are the ids
+    and pixel sizes of the two: an id of the same kind that the mode looks at and that they do not share is a difference."""
     stem, extension = name_key(mode, photo[2])
     other_stem, other_extension = name_key(mode, other[2])
-    gap = abs((datetime.fromisoformat(photo[0]) - datetime.fromisoformat(other[0])).total_seconds())
+    later = (datetime.fromisoformat(photo[0]) - datetime.fromisoformat(other[0])).total_seconds()
+    gap = abs(later)
     both = photo[1].isdigit() and other[1].isdigit() and int(photo[1]) and int(other[1])
-    bytes_apart = abs(int(photo[1]) - int(other[1])) if both else 0
+    larger = int(photo[1]) - int(other[1]) if both else 0
+    bytes_apart = abs(larger)
     found = []
     if stem != other_stem:
         found.append("name")
     if extension != other_extension:
         found.append("extension")
     if mode.date != "ignore" and (gap > 0 if mode.date == "exact" else gap > mode.date_within.total_seconds()):
-        found.append(f"date by {span(gap)}")
+        found.append(f"date by {'+' if later > 0 else '-'}{span(gap)}")
     for kind in ("stable", "cloud", DIMENSIONS, CONTENT):
         looked_at = {DIMENSIONS: mode.dimensions == "exact", CONTENT: mode.content == "identical"}.get(kind, mode.identity == "auto")
         values, others = (photo_ids or {}).get(kind), (other_ids or {}).get(kind)
@@ -403,7 +407,7 @@ def differences(mode: Mode, photo: Photo, other: Photo, photo_ids: Optional[Dict
             found.append(KIND_NAMES[kind])
     if not same_size(mode, photo[1], other[1]):
         percent = bytes_apart / max(int(photo[1]), int(other[1])) * 100 if both else 0
-        found.append(f"size by {bytes_apart:,} bytes ({percent:.1f}%)" if both else "size")
+        found.append(f"size by {larger:+,} bytes ({'+' if larger > 0 else '-'}{percent:.1f}%)" if both else "size")
     return tuple(found), gap, bytes_apart
 
 

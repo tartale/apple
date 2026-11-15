@@ -126,13 +126,13 @@ def test_the_closest_photo_is_the_one_that_differs_in_the_fewest_parts():
     held = [("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 10:00:00", "5000", "other.jpg"), ("2019-01-01 00:00:00", "1000", "a.jpg")]
     wanted = ("2018-03-01 10:00:00", "2000", "a.jpg")
     near = finder(*held).closest(wanted)
-    assert near.photo == held[0] and near.differs == ("size by 1,000 bytes (50.0%)",) and near.gap == 0 and near.bytes_apart == 1000
+    assert near.photo == held[0] and near.differs == ("size by +1,000 bytes (+50.0%)",) and near.gap == 0 and near.bytes_apart == 1000
 
 
 def test_what_differs_is_said_in_words_for_each_part():
     held = ("2018-03-01 10:00:00", "1000", "IMG_1.jpg")
     near = finder(held).closest(("2018-03-04 14:30:00", "1000", "IMG_2.heic"))
-    assert near.differs == ("name", "extension", "date by 3d 4h")  # the two largest units
+    assert near.differs == ("name", "extension", "date by +3d 4h")  # the two largest units; + for the first photo being later
     assert finder(held).closest(("2018-03-01 10:00:30", "1000", "IMG_1.jpg")).differs == ()  # a match: nothing differs
 
 
@@ -318,3 +318,10 @@ def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_th
     assert m.STRICT.content == "identical" and m.parse("strict,content=hash").content == "hash"
     with pytest.raises(ValueError, match="use ignore, hash or identical"):
         m.parse("content=bytes")
+
+
+def test_a_date_and_a_size_difference_say_whether_the_first_photo_is_later_or_larger():
+    a, b = ("2018-03-01 10:00:00", "1000", "a.jpg"), ("2018-03-01 11:00:00", "1500", "a.jpg")
+    assert m.gaps(a, b) == ("date by -1h", "size by -500 bytes") and m.gaps(b, a) == ("date by +1h", "size by +500 bytes")
+    assert m.differences(m.STRICT, b, a)[0] == ("date by +1h", "size by +500 bytes (+33.3%)")
+    assert m.differences(m.STRICT, a, b)[0] == ("date by -1h", "size by -500 bytes (-33.3%)")
