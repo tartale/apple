@@ -325,3 +325,11 @@ def test_a_date_and_a_size_difference_say_whether_the_first_photo_is_later_or_la
     assert m.gaps(a, b) == ("date by -1h", "size by -500 bytes") and m.gaps(b, a) == ("date by +1h", "size by +500 bytes")
     assert m.differences(m.STRICT, b, a)[0] == ("date by +1h", "size by +500 bytes (+33.3%)")
     assert m.differences(m.STRICT, a, b)[0] == ("date by -1h", "size by -500 bytes (-33.3%)")
+
+
+def test_a_name_pattern_is_matched_as_names_are_compared_everywhere():
+    from apple.photos import powerphotos as pp
+    assert pp.named(None, "a.jpg") and pp.named([], "a.jpg")
+    assert pp.named(["IMG_0897.jpg"], "img_0897.JPEG") and not pp.named(["IMG_0897.jpg"], "IMG_0897 (1).jpg")
+    assert pp.named(["img_08*"], "IMG_0897.JPG") and not pp.named(["img_08*"], "IMG_0997.JPG")
+    assert pp.named(["IMG_089?.jpg"], "IMG_0897.JPG") and pp.named(["x.jpg", "IMG_*"], "IMG_1.JPG")

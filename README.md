@@ -71,6 +71,12 @@ A folder file that has the id in its name, and a library photo with that fingerp
 
 `--explain` (on `diff`, `copy --only-missing` and `import --only-missing`) says on stderr why a photo has no match: for each one, the closest photo of the other library (or folder) and what differs under the mode (`name`, `extension`, `date by +3d 4h`, `size by -1,000 bytes (-50.0%)`: `+` when the photo that has no match is the later or the larger of the two, `-` when the closest one is). It also lists the photos of the same name however much they differ (`same name: … (differs: date by -14d 23h, size by -600 bytes (-85.7%))`, or `no photo of that name`) and the ones in Recently Deleted, which Photos looks at when it checks for a duplicate (`import` and `copy --only-missing` count a match there as present unless `--ignore-trash`). When only the name differs and the date and size are exactly the same, it says that Photos' own duplicate check (which compares the content) may call the photo a duplicate. It also names an iCloud id or a pixel size that differs (`differs: iCloud fingerprint`, `differs: pixel size`).
 
+### Narrowing to a name: `--name`
+
+`diff`, `match`, `missing`, `find`, `import` and `copy --only-missing` take `--name NAME` (repeatable) beside `--since`, `--until` and `--media`: only photos whose file name is NAME, or matches it, are looked at. A name is compared as everywhere else (case ignored, `.jpeg` is `.jpg`) and may hold `*` for any characters and `?` for one: `--name IMG_0897.JPG`, `--name 'IMG_08*'`, `--name IMG_0897.JPG --name IMG_0898.JPG`. Quote a pattern so the shell leaves it alone.
+
+For `diff` and `match` both sides are narrowed. For `import --only-missing` and `copy --only-missing` the names narrow the photos asked about (the folder's files, or the source's photos) and the destination is still searched whole, so a photo of another name there that is the same photo (by id, bytes or picture) still counts as held. `copy` without `--only-missing` takes no `--name`: PowerPhotos copies a date range and cannot pick names (a list, `--list`, already names them). `split` and `compare` take none.
+
 ## Development
 
 | Script | What it does |

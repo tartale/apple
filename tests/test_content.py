@@ -249,3 +249,32 @@ def test_content_picture_reads_only_the_files_near_in_size_to_one_on_the_other_s
     monkeypatch.setattr(content_hash.file_compare, "picture_digest", lambda path: read.append(path.name) or real(path))
     runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=picture"])
     assert sorted(read) == ["UUID1.jpg", "near.jpg"]
+
+
+def test_name_narrows_diff_match_and_import_to_the_photos_with_that_name(mac, tmp_path):
+    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", jpeg_with()), ("2014-08-03 17:02:46", "IMG_0898.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000))])
+    folder = tmp_path / "backup"
+    file_in(folder, "IMG_0897.JPG", jpeg_with(), "2014-08-03 17:01:46")
+    file_in(folder, "IMG_0898.JPG", jpeg_with(scan=b"\x04\x05\x06" * 10000), "2014-08-03 17:02:46")  # another picture, the same size
+    file_in(folder, "IMG_0899.JPG", jpeg_with(1), "2014-08-03 17:03:46")
+    base = ["photos", "diff", "Source", str(folder), "--format", "csv", "--fields", "name"]
+    assert sorted(r["name"] for r in rows_of(runner.invoke(app, base))) == ["IMG_0899.JPG"]  # tolerant: the 0898 pair has the same size, date and name
+    assert [r["name"] for r in rows_of(runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "img_089[89]*"]))] == []  # a bracket is only that character
+    result = runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "IMG_089*"])
+    assert sorted((r["side"], r["name"]) for r in rows_of(result)) == [("left", "IMG_0898.JPG"), ("right", "IMG_0898.JPG"), ("right", "IMG_0899.JPG")]
+    result = runner.invoke(app, base + ["--diff-mode", "content=picture", "--name", "IMG_0899.JPG", "--name", "img_0897.jpeg"])
+    assert sorted((r["side"], r["name"]) for r in rows_of(result)) == [("right", "IMG_0899.JPG")]
+    matches = runner.invoke(app, ["photos", "match", "Source", str(folder), "--name", "IMG_0897.JPG", "--format", "csv", "--fields", "left_name"])
+    assert [r["left_name"] for r in rows_of(matches)] == ["IMG_0897.JPG"] and "In both: 1. Only in Source: 0. Only in" in matches.output
+    imported = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=picture", "--name", "IMG_089?.JPG"])
+    assert "Imported 0 of 1" in imported.output and "IMG_0898.JPG" in imported.stdout and "IMG_0899" not in imported.stdout  # 0899 is the picture of 0897, which the library holds
+    # the names narrow what is imported, not what the library is searched for: 0897 is not named, and still is what 0899 is held as
+    kept = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "content=picture", "--name", "IMG_0899.JPG"])
+    assert "IMG_0899" not in kept.stdout and kept.exit_code == 0
+    everything = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--name", "IMG_0899.JPG"])
+    assert "IMG_0899.JPG" in everything.stdout and "IMG_0897" not in everything.stdout
+
+
+def test_name_with_copy_is_for_only_missing(mac):
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--name", "a.jpg"])
+    assert result.exit_code == 2 and "--name is for --only-missing" in result.output
