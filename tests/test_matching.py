@@ -251,7 +251,7 @@ def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photo
 
 def test_the_three_whole_modes_are_strict_tolerant_and_loose():
     assert set(m.PRESETS) == {"strict", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
-    assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "hash", "exact")
+    assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "only", "exact")
     assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("normalized", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
     assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "normalized"
     assert m.parse("tolerant,strict") == m.STRICT  # the last whole mode starts over
@@ -285,3 +285,36 @@ def test_exact_is_not_a_whole_mode_and_the_error_names_the_three():
     with pytest.raises(ValueError, match="strict, tolerant or loose"):
         m.parse("exact")
     assert m.parse("strict,date=ignore").date == "ignore"
+
+
+def test_content_only_means_the_same_bytes_are_one_photo_and_different_bytes_are_two():
+    held = ("2018-03-01 10:00:00", "100", "a.jpg")
+    same_everything_else = ("2018-03-01 10:00:00", "100", "a.jpg")
+    renamed = ("2005-01-01 00:00:00", "100", "other.jpg")
+    hashes = lambda value: {"sha256": {value}}  # noqa: E731
+    for mode_text, other_bytes_differ in (("content=hash", False), ("content=only", True)):
+        mode = m.parse(mode_text)
+        # the same name, date and size, other bytes: hash still matches, only does not
+        assert bool(m.absent(Counter({same_everything_else: 1}), Counter({held: 1}), mode, {same_everything_else: hashes("A")}, {held: hashes("B")})) is other_bytes_differ
+        # a renamed, re-dated copy with the same bytes: both match
+        assert not m.absent(Counter({renamed: 1}), Counter({held: 1}), mode, {renamed: hashes("A")}, {held: hashes("A")})
+    only = m.parse("content=only")
+    # a hash that cannot be read for one side: the other parts decide
+    assert not m.absent(Counter({same_everything_else: 1}), Counter({held: 1}), only, {same_everything_else: hashes("A")}, {})
+    assert m.absent(Counter({renamed: 1}), Counter({held: 1}), only, {renamed: hashes("A")}, {})
+
+
+def test_content_only_takes_a_different_size_as_different_bytes_and_an_unknown_size_as_nothing():
+    held = ("2018-03-01 10:00:00", "1000", "a.jpg")
+    near = ("2018-03-01 10:00:00", "1005", "a.jpg")  # within 1%: another file, not the same bytes
+    assert not m.absent(Counter({near: 1}), Counter({held: 1}), m.TOLERANT)
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("content=only"))
+    assert m.absent(Counter({near: 1}), Counter({held: 1}), m.parse("filesize=ignore,content=only"))
+    unknown = ("2018-03-01 10:00:00", "0", "a.jpg")
+    assert not m.absent(Counter({unknown: 1}), Counter({held: 1}), m.parse("content=only"))  # a placeholder: no size to go by
+
+
+def test_the_strict_mode_decides_by_the_bytes_and_the_error_for_content_lists_the_three():
+    assert m.STRICT.content == "only" and m.parse("strict,content=hash").content == "hash"
+    with pytest.raises(ValueError, match="use ignore, hash or only"):
+        m.parse("content=bytes")

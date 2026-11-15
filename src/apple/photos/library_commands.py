@@ -467,7 +467,7 @@ def ids_for(match: matching.Mode, data: list, selected: list, refresh: bool = Fa
     """The ids of the photos of each side that matching uses: the ids of the library (or the fingerprints in a folder's names)
     and, with content=hash in the mode, the SHA-256 of the files whose size occurs on the other side."""
     stored = [d.ids for d in data]
-    if match.content != "hash":
+    if match.content not in ("hash", "only"):
         return stored
     hashed = content_hash.content_ids(data, selected, refresh)
     return [merged_ids(stored[index], hashed[index]) for index in range(len(data))]

@@ -178,3 +178,25 @@ def test_a_refresh_reads_the_files_again_but_keeps_the_hashes_of_the_files_it_di
     read.clear()
     match(first)
     assert read == []  # the hash of x.jpg is still saved
+
+
+def test_strict_import_leaves_out_what_photos_would_call_a_duplicate_and_lists_what_it_would_not(mac, tmp_path):
+    """The library's photo and the files: same bytes under another name and date (a duplicate); another file that looks the same (it is not)."""
+    library_with(mac, [("2006-09-30 06:51:40", "IMAG0044.JPG", BYTES)])
+    folder = tmp_path / "backup"
+    file_in(folder, "renamed.jpg", BYTES, "2001-01-01 00:00:00")  # the same bytes: a duplicate whatever it is called
+    file_in(folder, "IMAG0044.JPG", b"z" * len(BYTES), "2006-09-30 06:51:40")  # the same name, date and size, other bytes: not a duplicate
+    for mode, expected in (("strict", "Imported 0 of 1"), ("strict,content=hash", "Imported 0 of 0")):
+        result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", mode])
+        assert expected in result.output, mode
+    only = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "strict"])
+    assert "IMAG0044.JPG" in only.stdout and "renamed" not in only.stdout
+
+
+def test_explain_names_the_bytes_when_they_are_all_that_keeps_two_photos_apart(mac, tmp_path):
+    library_with(mac, [("2006-09-30 06:51:40", "IMAG0044.JPG", BYTES)])
+    folder = tmp_path / "backup"
+    file_in(folder, "IMAG0044.JPG", b"z" * len(BYTES), "2006-09-30 06:51:40")
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=only"])
+    assert "differs: file bytes" in result.output
+    assert "differs: file bytes" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant,content=hash"]).output
