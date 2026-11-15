@@ -23,8 +23,8 @@ Three whole modes are the starting points; a part after one changes just that pa
 
 The parts:
 
-    filename=full | exact | ignore         the name without its extension: case ignored (full), as written, or any name
-    extension=full | exact | ignore        the extension: case ignored and `.jpeg` is `.jpg` (full), as written, or any extension
+    filename=normalized | exact | ignore   the name without its extension: case ignored (normalized), as written, or any name
+    extension=normalized | exact | ignore  the extension: case ignored and `.jpeg` is `.jpg` (normalized), as written, or any extension
     date=within=2h | exact | ignore        how two dates compare (a number and s, m, h or d)
     date=exif | modified                   where a file in a folder gets its date: the capture time in its own metadata (EXIF), as Photos
                                            dates it on import, with the modification time only where it has none; or the modification time
@@ -55,8 +55,8 @@ UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 @dataclass(frozen=True)
 class Mode:
-    filename: str = "full"  # exact, full or ignore (of the name without its extension)
-    extension: str = "full"  # exact, full or ignore
+    filename: str = "normalized"  # exact, normalized or ignore (of the name without its extension)
+    extension: str = "normalized"  # exact, normalized or ignore
     identity: str = "auto"  # auto or ignore: whether ids from iCloud decide when both photos have one
     content: str = "ignore"  # ignore or hash: whether files with the same bytes are the same photo
     dimensions: str = "ignore"  # ignore or exact: whether the pixel sizes must agree
@@ -73,13 +73,13 @@ TOLERANT = Mode()
 STRICT = Mode(
     filename="exact", extension="exact", identity="auto", content="hash", dimensions="exact", date_source="exif", date="exact", filesize="exact",
 )
-LOOSE = Mode(filename="full", extension="ignore", identity="ignore", content="ignore", dimensions="ignore", date="within", date_within=timedelta(days=1), filesize="ignore")
+LOOSE = Mode(filename="normalized", extension="ignore", identity="ignore", content="ignore", dimensions="ignore", date="within", date_within=timedelta(days=1), filesize="ignore")
 PRESETS = {"strict": STRICT, "tolerant": TOLERANT, "loose": LOOSE}
 HELP = (
     "How closely two photos must agree to be the same photo: a whole mode, strict (slow, most accurate: ids, file bytes, pixel size, EXIF date, "
     "everything exact), tolerant (the default; medium: ids, then name, extension, date within 2h, size within 1%) or loose (fast, least "
     "accurate: name and a date within 1 day), optionally followed by parts that change it, comma-separated and read left to right: "
-    "filename=full|exact|ignore, extension=full|exact|ignore, date=within=DURATION|exact|ignore (such as 2h, 30m, 1d), date=exif|modified "
+    "filename=normalized|exact|ignore, extension=normalized|exact|ignore, date=within=DURATION|exact|ignore (such as 2h, 30m, 1d), date=exif|modified "
     "(where a folder file's date comes from), filesize=within=PERCENT|within=BYTES|exact|ignore (such as 1% or 512bytes), "
     "identity=auto|ignore (iCloud ids), content=ignore|hash (the SHA-256 of the files; slow), dimensions=ignore|exact (pixel size). "
     "An id decides when both photos have one; otherwise every part must agree. Example: `strict,filename=ignore`. Also read from APPLE_PHOTOS_DIFF_MODE."
@@ -97,15 +97,15 @@ def parse(text: str) -> Mode:
             continue
         field, _, value = item.partition("=")
         if field == "filename":
-            if value in ("exact", "full", "ignore"):
+            if value in ("exact", "normalized", "ignore"):
                 mode = replace(mode, filename=value)
             else:
-                raise ValueError(f"filename={value!r}: use full, exact or ignore")
+                raise ValueError(f"filename={value!r}: use normalized, exact or ignore")
         elif field == "extension":
-            if value in ("exact", "full", "ignore"):
+            if value in ("exact", "normalized", "ignore"):
                 mode = replace(mode, extension=value)
             else:
-                raise ValueError(f"extension={value!r}: use full, exact or ignore")
+                raise ValueError(f"extension={value!r}: use normalized, exact or ignore")
         elif field == "dimensions":
             if value in ("ignore", "exact"):
                 mode = replace(mode, dimensions=value)

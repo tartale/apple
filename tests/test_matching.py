@@ -12,14 +12,14 @@ ATTRIBUTES = m.Mode(filename="exact", extension="exact", date="exact", filesize=
 
 def test_nothing_is_the_default_tolerant_mode():
     assert m.parse("") == m.TOLERANT == m.parse("tolerant")
-    assert m.TOLERANT.filename == "full" and m.TOLERANT.date_within == timedelta(hours=2) and m.TOLERANT.size_within == 0.01
+    assert m.TOLERANT.filename == "normalized" and m.TOLERANT.date_within == timedelta(hours=2) and m.TOLERANT.size_within == 0.01
 
 
 def test_a_mode_is_read_from_left_to_right_starting_from_the_default():
-    mode = m.parse("strict,filename=full,date=within=1d,filesize=within=2.5%")
-    assert (mode.filename, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("full", "within", timedelta(days=1), "within", 0.025)
+    mode = m.parse("strict,filename=normalized,date=within=1d,filesize=within=2.5%")
+    assert (mode.filename, mode.date, mode.date_within, mode.filesize, mode.size_within) == ("normalized", "within", timedelta(days=1), "within", 0.025)
     assert m.parse("filename=exact") == m.Mode(filename="exact")
-    assert m.parse("extension=ignore").extension == "ignore" and m.parse("strict,extension=full").extension == "full"
+    assert m.parse("extension=ignore").extension == "ignore" and m.parse("strict,extension=normalized").extension == "normalized"
     assert m.parse("date=ignore,strict") == m.STRICT  # a whole mode after a field starts over
     assert m.parse("date=within=90m").date_within == timedelta(minutes=90)
     assert m.parse("filesize=within=512bytes").size_bytes == 512 and m.parse("filesize=within=1byte").size_bytes == 1 and m.parse("filesize=within=20b").size_bytes == 20
@@ -114,7 +114,7 @@ def test_filename_modes_look_at_the_name_without_its_extension():
 
 def test_the_removed_filename_options_are_errors_that_say_what_there_is():
     for text in ("filename=prefix=8", "filename=regex=^(a)"):
-        with pytest.raises(ValueError, match="use full, exact or ignore"):
+        with pytest.raises(ValueError, match="use normalized, exact or ignore"):
             m.parse(text)
 
 
@@ -252,8 +252,8 @@ def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photo
 def test_the_three_whole_modes_are_strict_tolerant_and_loose():
     assert set(m.PRESETS) == {"strict", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
     assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "hash", "exact")
-    assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("full", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
-    assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "full"
+    assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("normalized", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
+    assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "normalized"
     assert m.parse("tolerant,strict") == m.STRICT  # the last whole mode starts over
 
 

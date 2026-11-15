@@ -58,8 +58,8 @@ Every command that decides whether two photos are the same photo (`diff`, `match
 
 | Part | Values |
 | --- | --- |
-| `filename=` | `full` (the name without its extension, case ignored), `exact` (as written), `ignore` |
-| `extension=` | `full` (case ignored, `.jpeg` is `.jpg`), `exact`, `ignore` (`IMG_1234.HEIC` and `IMG_1234.JPG` are one photo) |
+| `filename=` | `normalized` (the name without its extension, case ignored), `exact` (as written), `ignore` |
+| `extension=` | `normalized` (case ignored, `.jpeg` is `.jpg`), `exact`, `ignore` (`IMG_1234.HEIC` and `IMG_1234.JPG` are one photo) |
 | `date=` | how two dates compare: `within=2h` (a number and `s`, `m`, `h` or `d`), `exact`, `ignore`. Where a file in a folder gets its date is a separate part: `exif` (the capture time in the file's own metadata, which is the date Photos gives it on import, read in this Mac's time zone unless the file has an offset; a file with none, such as a video or a PNG, keeps its modification time) or `modified` (the modification time alone, which is quicker and opens no file). A camera clock that was off, or a date corrected later, makes the two differ. A library's photos always have the date Photos gave them. The capture time is cached with the file's modification time and size, and `--refresh` reads it again. Example: `date=exif,date=within=1h` |
 | `filesize=` | `within=1%`, `within=512bytes` (a number of bytes whatever the size; `b` and `byte` also work), `exact`, `ignore` |
 | `identity=` | `auto` or `ignore`: whether iCloud ids decide. The ids are a library's `stable` id (iCloud's fingerprint of the original, 28 characters, in the database as `ZORIGINALSTABLEHASH`) and `cloud` id (`ZCLOUDASSETGUID`), and, for a file in a folder, the fingerprint that ends its name when rclone had to rename it (`IMAG0044_ASLNFDmSOi1j8HVs5UVlqKvxeRlA.JPG`). A library that was not synced with iCloud (one built by importing files) has none. `match` shows what decided each pair in `matched_by` |

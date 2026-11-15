@@ -840,7 +840,7 @@ def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(
     assert diff(mac, [A], [near], "--diff-mode", "tolerant").exit_code == 0  # the option wins
     monkeypatch.delenv("APPLE_PHOTOS_DIFF_MODE")
     bad = diff(mac, [A], [near], "--diff-mode", "filename=prefix=0")
-    assert bad.exit_code == 2 and "use full, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
+    assert bad.exit_code == 2 and "use normalized, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
 
 
 def test_diff_mode_filename_ignore_matches_names_that_differ(mac):
