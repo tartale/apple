@@ -829,18 +829,18 @@ def test_diff_mode_date_ignore_matches_the_same_clip_imported_with_a_shifted_tim
 def test_diff_is_tolerant_by_default_and_exact_on_request(mac):
     near = ("2018-03-01 11:00:00", 100, "A.JPEG")  # an hour later, in capitals, and a .jpeg
     assert diff(mac, [A], [near]).exit_code == 0
-    exact = diff(mac, [A], [near], "--diff-mode", "exact")
+    exact = diff(mac, [A], [near], "--diff-mode", "strict")
     assert exact.exit_code == 1 and "Only in Source: 1. Only in photos-2018: 1." in exact.output
 
 
 def test_diff_mode_can_be_set_by_the_environment_and_a_bad_one_is_a_usage_error(mac, monkeypatch):
     near = ("2018-03-01 11:00:00", 100, "a.jpg")
-    monkeypatch.setenv("APPLE_PHOTOS_DIFF_MODE", "exact")
+    monkeypatch.setenv("APPLE_PHOTOS_DIFF_MODE", "strict")
     assert diff(mac, [A], [near]).exit_code == 1
     assert diff(mac, [A], [near], "--diff-mode", "tolerant").exit_code == 0  # the option wins
     monkeypatch.delenv("APPLE_PHOTOS_DIFF_MODE")
     bad = diff(mac, [A], [near], "--diff-mode", "filename=prefix=0")
-    assert bad.exit_code == 2 and "use full, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
+    assert bad.exit_code == 2 and "use normalized, exact or ignore" in " ".join(bad.output.replace("│", " ").split())
 
 
 def test_diff_mode_filename_ignore_matches_names_that_differ(mac):
@@ -1603,7 +1603,7 @@ def test_strict_counts_a_photo_as_there_only_with_its_exact_date_size_and_name(m
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
     options = ["photos", "split", "--check", "Source", "--media", "photos", "--years", "2011", "photos-2018"]
     assert runner.invoke(app, options).exit_code == 0
-    strict = runner.invoke(app, [*options, "--diff-mode", "exact"])
+    strict = runner.invoke(app, [*options, "--diff-mode", "strict"])
     assert strict.exit_code == 1 and "photos-2018: 1 missing" in strict.output
 
 
@@ -1612,7 +1612,7 @@ def test_strict_fix_copies_a_stray_whose_near_copy_is_in_the_right_library(mac, 
     add_photos(mac.libraries["photos-2018"], [A, ("2017-06-01 10:00:00", 1967270, "old.jpg")])
     add_photos(mac.libraries["photos-2017"], [("2017-06-01 11:00:00", 1968640, "old.jpg")])
     assert fix().exit_code in (0, 1) and mac.calls("copy-ids.applescript") == []
-    fix("--diff-mode", "exact")
+    fix("--diff-mode", "strict")
     assert [call[:2] for call in mac.calls("copy-ids.applescript")] == [["photos-2018", "photos-2017"]]
 
 
@@ -1620,7 +1620,7 @@ def test_only_missing_strict_copies_a_photo_whose_near_copy_the_destination_has(
     result = copy_only_missing(mac, NEAR_SOURCE, NEAR_COPY)
     assert "nothing is missing from photos-2018" in result.output and mac.calls("copy-ids.applescript") == []
     add_photos(mac.libraries["photos-2018"], NEAR_COPY)
-    strict = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--diff-mode", "exact"])
+    strict = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--diff-mode", "strict"])
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
 
 
@@ -2008,7 +2008,7 @@ def test_a_folder_can_be_the_left_side_and_a_difference_in_size_or_time_is_a_dif
     folder = tmp_path / "pics"
     touch(folder / "a.jpg", A[0], size=101)  # another size
     touch(folder / "b.jpg", "2018-03-02 12:00:00")  # an hour later: the time of a re-saved file
-    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv", "--diff-mode", "exact"])
+    result = runner.invoke(app, ["photos", "diff", str(folder), "Source", "--fields", "date,size,name", "--format", "csv", "--diff-mode", "strict"])
     rows = list(csv.DictReader(io.StringIO(result.stdout)))
     assert result.exit_code == 1 and sorted((r["side"], r["name"]) for r in rows) == [("left", "a.jpg"), ("left", "b.jpg"), ("right", "a.jpg"), ("right", "b.jpg")]
 
@@ -2136,7 +2136,7 @@ def test_match_is_the_inverse_of_diff(mac):
 def test_match_follows_the_diff_mode(mac):
     near = ("2018-03-01 11:00:00", 100, "a.jpg")  # an hour later
     assert matched(mac, [A], [near]).exit_code == 0
-    exact = matched(mac, [A], [near], "--diff-mode", "exact")
+    exact = matched(mac, [A], [near], "--diff-mode", "strict")
     assert exact.exit_code == 1 and exact.stdout.strip() == ""
     assert "In both: 0." in exact.output
 
