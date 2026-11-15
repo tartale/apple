@@ -818,11 +818,11 @@ def test_diff_default_columns_are_true_or_false_flags_after_the_name(mac):
 def test_diff_mode_date_ignore_matches_the_same_clip_imported_with_a_shifted_time(mac):
     shifted = ("2018-03-05 11:00:00", 100, "a.jpg")
     assert diff(mac, [A], [shifted]).exit_code == 1
-    result = diff(mac, [A], [shifted], "--diff-mode", "date=ignore")
+    result = diff(mac, [A], [shifted], "--diff-mode", "date-range=ignore")
     assert result.exit_code == 0 and "In both: 1." in result.output
-    twice = diff(mac, [A], [A, shifted], "--diff-mode", "date=ignore")  # the destination holds the clip twice: one extra
+    twice = diff(mac, [A], [A, shifted], "--diff-mode", "date-range=ignore")  # the destination holds the clip twice: one extra
     assert twice.exit_code == 1 and shown(twice) == [">  2018-03-05 11:00:00  100  a.jpg"]
-    different = diff(mac, [A], [("2018-03-05 11:00:00", 999, "a.jpg")], "--diff-mode", "date=ignore")
+    different = diff(mac, [A], [("2018-03-05 11:00:00", 999, "a.jpg")], "--diff-mode", "date-range=ignore")
     assert different.exit_code == 1  # a different size is a different photo
 
 
