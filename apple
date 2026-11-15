@@ -66,7 +66,10 @@ main() {
 
   if [ ! -f "$stamp" ] || [ "$here/pyproject.toml" -nt "$stamp" ]; then
     echo "Installing the dependencies into $venv..." >&2
-    "$venv/bin/python" -m pip install --quiet --upgrade -e "$here" >&2 || { echo "Installing the dependencies failed (see above); the next run will try again." >&2; return 1; }
+    # pip builds in TMPDIR, which may be a folder of the checkout on a network share (a Python file read back from there can contain
+    # null bytes); the venv is on a local disk, so its own tmp folder is where the build goes
+    mkdir -p "$venv/tmp" || return 1
+    TMPDIR="$venv/tmp" "$venv/bin/python" -m pip install --quiet --upgrade -e "$here" >&2 || { echo "Installing the dependencies failed (see above); the next run will try again." >&2; return 1; }
     touch "$stamp"
   fi
 
