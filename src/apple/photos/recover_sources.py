@@ -68,13 +68,14 @@ class Source:
         return None
 
 
-def import_files(found: List[Found]) -> int:
-    """Imports the files found into the library Photos has open; returns how many items Photos imported."""
+def import_files(found: List[Found], force: bool = False) -> int:
+    """Imports the files found into the library Photos has open; returns how many items Photos imported. With force Photos is told
+    to import them even when it has them, without asking whether to import a duplicate."""
     pp.SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=pp.SCRATCH_ROOT) as scratch:
         listing = Path(scratch) / "files.txt"
         listing.write_text("\n".join(path for item in found for path in item.files) + "\n", encoding="utf-8")
-        output = pp.run_applescript("import-photos.applescript", str(listing))
+        output = pp.run_applescript("import-photos.applescript", str(listing), *(["true"] if force else []))
     return int(output.rsplit(" ", 1)[-1])
 
 

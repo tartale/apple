@@ -80,6 +80,18 @@ A folder file that has the id in its name, and a library photo with that fingerp
 
 For `diff` and `match` both sides are narrowed. For `import --only-missing` and `copy --only-missing` the names narrow the photos asked about (the folder's files, or the source's photos) and the destination is still searched whole, so a photo of another name there that is the same photo (by id or bytes) still counts as held. `copy` without `--only-missing` takes no `--name`: PowerPhotos copies a date range and cannot pick names (a list, `--list`, already names them). `split` and `compare` take none.
 
+### Replacing a photo with a better file: `--prefer`
+
+`import --only-missing` and `copy --only-missing` take `--prefer none | recommended | larger`. It is about a photo the destination already has as another file: the same photo under `--diff-mode` (so `equivalent`, which ignores metadata, finds the most) whose file differs.
+
+| Value | A file of the source is written when |
+| --- | --- |
+| `none` (the default) | never: the destination's photo stays and the source's file is not written |
+| `recommended` | `apple photos compare` recommends it over the destination's: the same image with something worth keeping that the other lacks (GPS, a capture time, a camera, keywords, a rating, faces, a color profile, a maker note, an orientation) |
+| `larger` | it is the larger of the two files, whatever compare says |
+
+A preferred file is written beside the photo it is preferred to, as a duplicate: `import` tells Photos to import it without asking whether it is a duplicate, and `copy` copies it with PowerPhotos' duplicate check off. Then the destination's photo is moved to Recently Deleted (PowerPhotos does that, so for `import` the destination must be a library PowerPhotos knows). Nothing is removed for good, and a photo is moved only once its preferred file has arrived: `copy` waits for it to show in the destination's database, and `import` moves nothing if Photos imported fewer files than were preferred. With `--dry-run` the photos that would be replaced are listed, and `--prefer` without `--only-missing` is an error. PowerPhotos may still ask to confirm the move to the trash; the AppleScript cannot be tested here, so how it behaves on your Mac is for you to see on the first run.
+
 ## Development
 
 | Script | What it does |

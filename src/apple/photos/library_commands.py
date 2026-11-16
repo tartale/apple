@@ -17,6 +17,8 @@ import typer
 from apple.platform import require_macos
 from apple.photos import powerphotos as pp
 from apple.photos import blacklist, content_hash, folder_photos, matching, powerphotos_reports, split_plan
+from apple.photos import prefer as prefer_module
+from apple.photos.prefer import Prefer
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 
@@ -45,6 +47,16 @@ NameOption = Annotated[
         help="Only photos with this file name, as the other commands show it, with or without its extension (`IMG_0897` or `IMG_0897.JPG`), "
         "or a pattern with `*` for any characters and `?` for one (`'IMG_08*'`), case ignored and `.jpeg` the same as `.jpg`. Repeat for several; a photo with any of them is used. Combines with "
         "--since, --until and --media.",
+    ),
+]
+PreferOption = Annotated[
+    Prefer,
+    typer.Option(
+        "--prefer",
+        help="With --only-missing, what to do with a photo the destination has as another file (the same photo under --diff-mode that differs in "
+        "its metadata): none leaves it, recommended writes the source's file when `apple photos compare` recommends it (it has something worth "
+        "keeping the destination's lacks), larger writes it when it is the larger file. A preferred file is written as a duplicate that Photos "
+        "is told to import without asking, and the photo it is preferred to is moved to Recently Deleted.",
     ),
 ]
 SourceArgument = Annotated[str, typer.Argument(help="Source library, as named by `./apple photos libraries`.")]
@@ -796,8 +808,9 @@ def parse_mode(text: str) -> matching.Mode:
 
 
 def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False, ignore_trash: bool = False,
-                  name_filter: Optional[List[str]] = None) -> list:
-    """The records of `diff LEFT RIGHT --only left` for the dates, media and names given, read from the databases."""
+                  name_filter: Optional[List[str]] = None, prefer: Prefer = Prefer.none) -> list:
+    """The records of `diff LEFT RIGHT --only left` for the dates, media and names given, read from the databases. With a preference,
+    also the photos of the left that are preferred to the photo of the right they match (their `replaces` says which)."""
     try:
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
     except pp.PowerPhotosError as error:
@@ -810,16 +823,22 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
         explain_unmatched(missing, selected[1], match, right, data[1].trashed, photo_ids[0], photo_ids[1])
-    rows = diff_rows(missing, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
+    swapped = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, photo_ids[0], photo_ids[1])
+    swapped = [swap for swap in swapped if swap.source not in missing and swap.source not in hidden[0]]
+    rows = diff_rows(missing + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
-    ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in missing if data[0].uuids.get(key)}
+    ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in list(missing) + [swap.source for swap in swapped] if data[0].uuids.get(key)}
+    replaces = {(swap.source[0], swap.source[2], int(swap.source[1]) if swap.source[1].isdigit() else None): swap for swap in swapped}
     for row in rows:
-        row["id"] = ids.get((row["date"], row["name"], row["size"]))  # the Photos identifier of one copy of it
+        at = (row["date"], row["name"], row["size"])
+        row["id"] = ids.get(at)  # the Photos identifier of one copy of it
+        swap = replaces.get(at)
+        row["replaces"] = {"id": swap.identifier, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} if swap else None
     return rows
 
 
 def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library", ignore_trash: bool = False,
-                   name_filter: Optional[List[str]] = None) -> list:
+                   name_filter: Optional[List[str]] = None, prefer: Prefer = Prefer.none) -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
     of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
     files that are the same photo under the mode, one."""
@@ -838,11 +857,19 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     wanted = Counter({photo: 1 for photo in kept})
     if explain and library:  # of the photos that are left, not of the ones left out as the same photo
         explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed, ids[0], ids[1])
-    rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
+    swapped = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, ids[0], ids[1]) if library else []
+    swapped = [swap for swap in swapped if swap.source not in wanted]
+    rows = diff_rows(wanted + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
+    replaces = {(swap.source[0], swap.source[2], int(swap.source[1]) if swap.source[1].isdigit() else None): swap for swap in swapped}
+
+    def replaced(row: dict) -> Optional[dict]:
+        swap = replaces.get((row["date"], row["name"], row["size"]))
+        return {"id": swap.identifier, "name": swap.destination[2], "date": swap.destination[0], "why": swap.why} if swap else None
+
     return [
         {"name": row["name"], "date": row["date"], "hidden": False, "shared": False, "identifier": "", "source": "folder",
-         "root": folder, "library": "", "files": row["files"]}
+         "root": folder, "library": "", "files": row["files"], "replaces": replaced(row)}
         for row in rows
     ]
 
@@ -866,6 +893,7 @@ def copy_command(
     diff_mode: DiffModeOption = "",
     explain: ExplainOption = False,
     ignore_trash: IgnoreTrashOption = False,
+    prefer: PreferOption = Prefer.none,
     timeout: TimeoutOption = DEFAULT_TIMEOUT,
     ignore_blacklist: IgnoreBlacklistOption = False,
     on_upgrade: OnUpgradeOption = OnUpgrade.skip,
@@ -894,12 +922,14 @@ def copy_command(
     match = parse_mode(diff_mode)
     if (explain or ignore_trash) and not only_missing:
         raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the photos missing from the destination")
+    if prefer != Prefer.none and not only_missing:
+        raise typer.BadParameter("--prefer is for --only-missing: it is about the photos the destination has as another file")
     if check_duplicates and list_file is None and not only_missing:
         raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
     names, hidden, no_original = None, {}, {}
-    ids = None
+    ids, replaced = None, []
     if only_missing:
-        rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash, name)
+        rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash, name, prefer)
         names, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too
@@ -909,6 +939,7 @@ def copy_command(
             if not row["id"]:
                 typer.echo(f"  not copied: {row['date']} {row['name']} (the database of {source} gives it no identifier)", err=True)
         names = names if ids else []
+        replaced = [row["replaces"] for row in listable if row.get("replaces") and row["id"] in ids]
         if not names:
             reason = f"nothing is missing from {destination}" if not (hidden or no_original) else "everything missing is hidden in Photos or has no original in " + source
             typer.echo(f"{destination}: no files copied ({reason})")
@@ -947,12 +978,15 @@ def copy_command(
                     + " (PowerPhotos skips those it already has)"
                 )
                 typer.echo(f"{destination}: would copy {what} [dry run]")
+                for replaces in replaced:
+                    typer.echo(f"  would replace {replaces['name']}  {replaces['date']} in {destination}, moving it to Recently Deleted ({replaces['why']})", err=True)
                 if names is not None and hidden:
                     report_hidden(hidden)
                 if names is not None:
                     report_missing(no_original, source)
                 return
             expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, names, ids, match)
+            held_before = read_library(libraries, destination) if replaced else None
             before_log = powerphotos_reports.snapshot()
             result = copy_one(
                 libraries, source, destination,
@@ -975,6 +1009,8 @@ def copy_command(
                 expected = Counter({key: 1 for key in expected if key[2].lower() not in listed})  # PowerPhotos could not copy these
                 waited = wait_for_copy(libraries, destination, expected, match, timeout, before_log, uuid_of)
                 settle_copy(destination, source, expected, waited, uuid_of, match, ignore_blacklist)
+            if replaced and held_before is not None and result.sent is not None and not result.unlisted:
+                trash_replaced(libraries, destination, replaced, held_before.visible + held_before.hidden, timeout)
     except pp.Busy as error:
         fail(str(error))
     except CopyFailed:
@@ -1188,6 +1224,23 @@ def wait_for_library(libraries: dict, library: str, done, what: str, timeout: fl
         previous = signature
         looks += 1
         time.sleep(POLL_SECONDS)
+
+
+def trash_replaced(libraries: dict, library: str, replaced: list, before: Counter, timeout: float) -> None:
+    """Moves to Recently Deleted the photos of library that a copy was preferred to (replaced: their identifier, name, date and why,
+    and the key of the preferred photo), once library holds the preferred copy beside each: a photo is never moved before its
+    replacement is there."""
+    keys = [replaces["key"] for replaces in replaced]
+    held = wait_for_library(libraries, library, lambda now: all(now[key] > before[key] for key in keys), f"copying the preferred photos into {library}", timeout)
+    arrived = [replaces for replaces in replaced if held[replaces["key"]] > before[replaces["key"]]]
+    for replaces in replaced:
+        if replaces not in arrived:
+            typer.echo(f"  not moved to Recently Deleted: {replaces['name']}  {replaces['date']} (its preferred copy has not arrived in {library})", err=True)
+    if arrived:
+        for replaces in arrived:
+            typer.echo(f"  replaced {replaces['name']}  {replaces['date']} ({replaces['why']})", err=True)
+        moved, gone = trash_ids(libraries, library, [replaces["id"] for replaces in arrived])
+        typer.echo(f"{library}: moved {count(moved, 'photo')} to Recently Deleted" + (f"; {len(gone)} not found" if gone else ""))
 
 
 def blacklist_entries() -> list:

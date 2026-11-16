@@ -21,7 +21,8 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, parse_mode, within, NameOption
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, known_libraries, need, parse_mode, within, NameOption, PreferOption, trash_ids
+from apple.photos.prefer import Prefer
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
 
@@ -372,6 +373,7 @@ def import_found_command(
     diff_mode: DiffModeOption = "",
     explain: ExplainOption = False,
     ignore_trash: IgnoreTrashOption = False,
+    prefer: PreferOption = Prefer.none,
     refresh: Annotated[
         bool,
         typer.Option("--refresh", help="With a folder, read it again instead of reusing what an earlier run saved (as `diff` and `find` do), and save the result."),
@@ -405,6 +407,8 @@ def import_found_command(
         raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")
     if (explain or ignore_trash) and not only_missing:
         raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the files the destination lacks")
+    if prefer != Prefer.none and not only_missing:
+        raise typer.BadParameter("--prefer is for --only-missing: it is about the files the destination has as another file")
     match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():
@@ -414,7 +418,7 @@ def import_found_command(
     else:
         path = Path("/nonexistent/default.photoslibrary")
     if folder:
-        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash, name)
+        listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash, name, prefer)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format, name)
         return
     import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format, name)
@@ -425,7 +429,7 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
     """Import the originals the listed rows (from read_list) say where to find, as import does, into the library target (at
     path) unless dry: a list's rows and a folder's files are imported the same way. list_name is what the rows came from."""
     progress = Progress()
-    rows, hits, unreachable, denied = [], [], {}, []
+    rows, hits, unreachable, denied, forced = [], [], {}, [], []
     if listed and not any(entry["files"] for entry in listed):
         if not any(entry["source"] for entry in listed):  # no source column: nobody has looked for these originals
             raise typer.BadParameter(
@@ -455,6 +459,8 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
                 unreachable[where] = unreachable.get(where, 0) + 1
         if found:
             hits.append(found)
+            if entry.get("replaces"):
+                forced.append((found, entry["replaces"]))
         rows.append(found_row(key, entry, found))
     print_recover(rows, format)
     if unreachable:
@@ -465,6 +471,12 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
         typer.echo(f"{len(denied)} file{'' if len(denied) == 1 else 's'} cannot be read (permission denied), so nothing was imported for them:\n" + "\n".join(f"  {path}" for path in denied), err=True)
     imported = already = 0
     errors = len(denied)
+    if forced:
+        typer.echo(f"{'Would write' if dry else 'Writing'} {count(len(forced), 'preferred file')} beside the photos they are preferred to, and {'would move' if dry else 'moving'} those to Recently Deleted:", err=True)
+        for found, replaces in forced:
+            typer.echo(f"  {Path(found.files[0]).name}  replaces {replaces['name']}  {replaces['date']}  ({replaces['why']})", err=True)
+        if not dry:
+            need(known_libraries(), target)  # before anything is imported: PowerPhotos moves them to the trash
     if hits and not dry:
         require_macos()
         opened_here = open_in_photos(path)
@@ -473,9 +485,19 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
             try:
                 with pp.one_at_a_time():
                     try:
-                        done = import_files(hits)
+                        plain = [found for found in hits if all(found is not other for other, _ in forced)]
+                        done = import_files(plain) if plain else 0
                         imported += done
-                        already += max(len(hits) - done, 0)  # Photos had these: they were not missing after all
+                        already += max(len(plain) - done, 0)  # Photos had these: they were not missing after all
+                        if forced:
+                            wrote = import_files([found for found, _ in forced], force=True)
+                            imported += wrote
+                            if wrote >= len(forced):
+                                moved, gone = trash_ids(known_libraries(), target, [replaces["id"] for _, replaces in forced])
+                                typer.echo(f"Moved {count(moved, 'photo')} to Recently Deleted" + (f"; {len(gone)} not found in {target}" if gone else ""), err=True)
+                            else:
+                                errors += len(forced) - wrote
+                                typer.echo(f"Photos imported {wrote} of {len(forced)} preferred files, so nothing was moved to Recently Deleted", err=True)
                     except pp.PowerPhotosError as error:
                         errors += len(hits)
                         typer.echo(f"Photos failed to import: {error}", err=True)
