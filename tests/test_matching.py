@@ -381,3 +381,14 @@ def test_what_differs_names_the_image_data_when_it_is_what_keeps_two_photos_apar
     assert "image data" in m.differences(m.parse("content=identical,metadata=ignore"), photo, photo, {"image": {"A"}}, {"image": {"B"}})[0]
     assert "file bytes" in m.differences(m.parse("content=identical"), photo, photo, {"sha256": {"A"}}, {"sha256": {"B"}})[0]
     assert m.differences(m.parse("content=identical,metadata=ignore"), photo, photo, {"sha256": {"A"}}, {"sha256": {"B"}})[0] == ()
+
+
+def test_a_name_matches_a_backup_file_whose_name_ends_in_the_icloud_fingerprint():
+    from apple.photos import powerphotos as pp
+    backup = "IMG_0220_Aa3EX7fbanEOah0Y2+d2U9K60kkp.JPG"
+    assert m.fingerprint_in(backup)
+    for pattern in ("IMG_0220", "img_0220.jpg", "IMG_0220.JPG", "IMG_0220_*", backup, "IMG_02?0"):
+        assert pp.named([pattern], backup), pattern
+    assert not pp.named(["IMG_0221"], backup) and not pp.named(["IMG_0220.MOV"], backup)
+    not_a_fingerprint = "IMG_0220_abcdefghijklmnopqrstuvwxyz12.JPG"  # 28 letters that do not decode to one
+    assert not m.fingerprint_in(not_a_fingerprint) and not pp.named(["IMG_0220"], not_a_fingerprint)

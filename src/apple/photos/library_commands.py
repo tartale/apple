@@ -779,10 +779,12 @@ def explain_unmatched(unmatched: Counter, others: Counter, mode: matching.Mode, 
         else:
             typer.echo(f"      closest: {near.photo[2]}  {near.photo[0]}  {near.photo[1]}", err=True)
             typer.echo(f"      differs: {', '.join(near.differs) or 'nothing the mode looks at'}", err=True)
+            later = (datetime.fromisoformat(photo[0]) - datetime.fromisoformat(near.photo[0])).total_seconds()  # + when this photo is the later, as in `differs`
+            larger = int(photo[1]) - int(near.photo[1]) if photo[1].isdigit() and near.photo[1].isdigit() else 0
             alike = [
                 part for part, differs in (
-                    ("date " + ("the same" if not near.gap else f"{matching.span(near.gap)} apart"), any(d.startswith("date") for d in near.differs)),
-                    ("size " + ("the same" if not near.bytes_apart else f"{near.bytes_apart:,} bytes apart"), any(d.startswith("size") for d in near.differs)),
+                    ("date " + ("the same" if not near.gap else f"by {'+' if later > 0 else '-'}{matching.span(near.gap)}"), any(d.startswith("date") for d in near.differs)),
+                    ("size " + ("the same" if not near.bytes_apart else f"by {larger:+,} bytes"), any(d.startswith("size") for d in near.differs)),
                 ) if not differs
             ]
             if alike:

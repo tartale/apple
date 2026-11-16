@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, TypeVar
 
+from apple.photos import matching
+
 T = TypeVar("T")
 
 APPLESCRIPTS = Path(__file__).parent / "applescript"
@@ -166,13 +168,15 @@ def normalized_name(name: str) -> str:
 
 def named(patterns: Optional[List[str]], name: str) -> bool:
     """Whether a file name is one of the names asked for: True when none were asked for, else when any pattern matches the name, or
-    the name without its extension (`IMG_0897` is `IMG_0897.JPG` and `IMG_0897.MOV`), as names are compared everywhere (case
-    ignored, `.jpeg` is `.jpg`), a `*` standing for any characters and a `?` for one (a `[` is just that character)."""
+    the name without its extension (`IMG_0897` is `IMG_0897.JPG` and `IMG_0897.MOV`), or the name without the iCloud fingerprint a
+    backup adds to a name it had to change (`IMG_0220` is `IMG_0220_Aa3EX7fbanEOah0Y2+d2U9K60kkp.JPG`), as names are compared everywhere
+    (case ignored, `.jpeg` is `.jpg`), a `*` standing for any characters and a `?` for one (a `[` is just that character)."""
     if not patterns:
         return True
     full = normalized_name(name)
-    stem = os.path.splitext(full)[0]
-    return any(fnmatch.fnmatchcase(text, normalized_name(pattern).replace("[", "[[]")) for pattern in patterns for text in (full, stem))
+    stem, extension = os.path.splitext(full)
+    bare = stem[:-29] if matching.fingerprint_in(name) else stem  # the `_` and the 28 characters
+    return any(fnmatch.fnmatchcase(text, normalized_name(pattern).replace("[", "[[]")) for pattern in patterns for text in (full, stem, bare, bare + extension))
 
 
 def media_of(name: str) -> Optional[str]:
