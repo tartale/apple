@@ -127,3 +127,24 @@ def test_the_default_does_not_open_the_files(mac, tmp_path, monkeypatch):
     monkeypatch.setattr(exif, "capture_time", lambda file: reads.append(str(file)))
     runner.invoke(app, ["photos", "diff", "Source", str(folder), "--fields", "date,size,name"])
     assert reads == []
+
+
+def test_a_refresh_narrowed_by_name_opens_only_the_named_files_and_keeps_the_cache_of_the_others(mac, tmp_path, monkeypatch):
+    add_photos(mac.libraries["Source"], [A])
+    folder = tmp_path / "backup"
+    first = jpeg_taken(folder / "a.jpg", "2005:09:30 00:51:40", unix("2006-09-30 06:51:40"))
+    second = jpeg_taken(folder / "b.jpg", "2004:01:01 00:00:00", unix("2006-09-30 06:51:40") + 5)
+    reads = []
+    real = exif.capture_time
+    monkeypatch.setattr(exif, "capture_time", lambda file: reads.append(str(file)) or real(file))
+    options = ["photos", "diff", "Source", str(folder), "--fields", "date,size,name", "--diff-mode", "date-source=exif"]
+    runner.invoke(app, options)
+    assert sorted(reads) == [str(first), str(second)]
+    del reads[:]
+    runner.invoke(app, [*options, "--name", "a", "--refresh"])
+    assert reads == [str(first)]  # the named file is opened again, the other is not
+    del reads[:]
+    runner.invoke(app, options)
+    assert reads == []  # the other's capture time is still cached
+    runner.invoke(app, [*options, "--name", "b"])  # without a refresh, only the named file would be opened, and it is cached
+    assert reads == []

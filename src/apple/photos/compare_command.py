@@ -20,7 +20,7 @@ def files_of(side: str, name: Optional[str], refresh: bool) -> List[Path]:
     if not name:
         raise typer.BadParameter(f"{side} is not a file: give NAME, the file name of the photo to compare, to look it up there")
     try:
-        data = folder_photos.folder_photos(path, refresh=refresh) if folder_photos.is_folder(side) else pp.library_photos(find_library(side))
+        data = folder_photos.folder_photos(path, refresh=refresh, name_filter=[name] if name else None) if folder_photos.is_folder(side) else pp.library_photos(find_library(side))
     except pp.PowerPhotosError as error:
         fail(str(error))
     wanted = pp.normalized_name(name)

@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from apple.photos import exif as exif_module
 from apple.photos import image_size as image_size_module
@@ -29,13 +29,15 @@ def is_folder(text: str) -> bool:
     return path.is_dir() and not text.rstrip("/").endswith(PACKAGES) and not has_database(path)
 
 
-def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, refresh: bool = False, exif: bool = False, dimensions: bool = False) -> pp.Photos:
+def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, refresh: bool = False, exif: bool = False, dimensions: bool = False,
+                  name_filter: Optional[List[str]] = None) -> pp.Photos:
     """The photos and videos below folder as a pp.Photos: all visible, none hidden, burst or shared, and with no original
     missing; `files` gives each one's paths (every copy, in order), which for a library are paths below it. say(text) is told
     the notes of the walk. With refresh the cache is not used, and the result is saved. With exif a photo is dated by the capture
     time in its own metadata, as Photos dates it on import, when it has one (a file's capture time is cached with its modification time
     and size, so a file is opened again only when it changed). With dimensions each photo's pixel size is read from its header and
-    kept, cached the same way, under `dims` in ids."""
+    kept, cached the same way, under `dims` in ids. With name_filter (patterns, see pp.named) only the files with a matching name are
+    returned and have their capture time and pixel size read, so a refresh re-reads those and keeps what the cache holds for the others."""
     path = folder.expanduser()
     progress, started, files, paths = Progress(), time.monotonic(), Counter(), {}
     real = resolve(path) or path
@@ -44,10 +46,14 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
     listings, remember, counts = previous[0] if previous else {}, {}, {}
     exif_key = fingerprint("exif", str(real))
     prior = cache.get(exif_key) if exif else None
-    dates, new_dates = prior[0] if prior else {}, {}  # path -> [modification time, size, capture time, its offset], or just the first two when the file has none
+    dates = prior[0] if prior else {}  # path -> [modification time, size, capture time, its offset], or just the first two when the file has none
     dims_key = fingerprint("dims", str(real))
     before = cache.get(dims_key) if dimensions else None
-    sizes, new_sizes = before[0] if before else {}, {}  # path -> [modification time, size, `<larger>x<smaller>`, or "" when it is not an image we can read]
+    sizes = before[0] if before else {}  # path -> [modification time, size, `<larger>x<smaller>`, or "" when it is not an image we can read]
+    stored = Cache()  # what is saved, whether or not this run reads it: the files this run does not open keep their entries
+    kept_dates = (stored.get(exif_key) or ({},))[0] if exif and name_filter else {}
+    kept_sizes = (stored.get(dims_key) or ({},))[0] if dimensions and name_filter else {}
+    new_dates, new_sizes = dict(kept_dates), dict(kept_sizes)
     dimensions_of: dict = {}
 
     def skip(logical: Path, real: Path) -> bool:
@@ -57,6 +63,8 @@ def folder_photos(folder: Path, say: Optional[Callable[[str], None]] = None, ref
     for entry in walk(real, skip, "all", say or (lambda text: progress.line(text)), logical_root=path, seen_directories=set(), seen_files=set(),
                       listings=listings, remember=remember, counts=counts):
         if entry.is_directory or entry.status is None or pp.media_of(entry.logical.name) is None:
+            continue
+        if not pp.named(name_filter, entry.logical.name):
             continue
         when = datetime.fromtimestamp(int(entry.status.st_mtime), timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if exif and pp.media_of(entry.logical.name) == "photos":
