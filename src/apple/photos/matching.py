@@ -58,8 +58,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from apple.photos import powerphotos as pp
-
 Photo = Tuple[str, str, str]  # (UTC date as YYYY-MM-DD HH:MM:SS, size, file name)
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 

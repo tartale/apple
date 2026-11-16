@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from apple.photos.common import Log, exclusive_lock, is_dry_run, require_env, require_rclone, run_watched, stall_seconds
 
