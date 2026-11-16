@@ -1439,7 +1439,7 @@ def test_explain_does_not_call_it_a_duplicate_when_the_date_is_only_within_the_t
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")  # the next shot, 36 seconds on, with the same size
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
     assert "closest: IMAG0043.JPG" in result.output and "differs: name" in result.output
-    assert "within the mode: date 36s apart, size the same" in result.output and "duplicate" not in result.output
+    assert "within the mode: date by -36s, size the same" in result.output and "duplicate" not in result.output
 
 
 def test_explain_is_for_only_missing(mac, tmp_path):
@@ -1513,3 +1513,11 @@ def test_copy_only_missing_leaves_out_what_the_destination_has_in_recently_delet
     assert "would copy 1 photos of Source that it lacks" in default.output and "1 left out as the destination has them in Recently Deleted" in default.output
     assert "would copy 2 photos" in runner.invoke(app, [*args, "--ignore-trash"]).output
     assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--ignore-trash", "--dry-run"]).exit_code == 2
+
+
+def test_explain_gives_the_sign_of_a_date_and_a_size_that_are_within_the_mode(mac):
+    add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 1000, "IMAG0043.JPG")])
+    folder = mac.libraries["Source"].parent / "backup"
+    make_file(folder / "IMAG0044.JPG", "2018-03-05 11:00:00", size=1005)  # an hour later and 5 bytes larger, and under another name
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    assert "within the mode: date by +1h, size by +5 bytes" in result.output
