@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, List
 
 import typer
 

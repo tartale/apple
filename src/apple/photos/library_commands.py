@@ -1050,13 +1050,6 @@ def read_library(libraries: dict, name: str) -> Optional[pp.Photos]:
         return None
 
 
-def read_photos(libraries: dict, name: str) -> Optional[Counter]:
-    """The photos a library holds (see read_library), visible or hidden: a photo that is hidden in a library is there, or
-    None."""
-    found = read_library(libraries, name)
-    return None if found is None else found.visible + found.hidden
-
-
 def adjacent_libraries(plan_of, kind: str, year: int, part: split_plan.Part, source_photos: Optional[Counter]) -> list:
     """The names of the libraries beside a part, on each end the source has a photo within a day of (and none otherwise): the
     part before it when something is near its start, the part after it when something is near its end. plan_of(kind, year)
