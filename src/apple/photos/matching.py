@@ -9,15 +9,21 @@ How a decision is made (the order of the parts in the text has no part in it):
   1. An id decides. If both photos have an iCloud id of the same kind (`identity=auto`), they are the same photo when the ids are equal,
      whatever their name, date and size, and different photos when the ids differ. With `content=identical` the SHA-256 of the files
      decides too, as for Photos itself: when both files can be read, the same bytes are the same photo and different bytes are not (a
-     different size is different bytes), and the other parts decide only where a file cannot be read.
+     different size is different bytes), and the other parts decide only where a file cannot be read. With `metadata=ignore` the SHA-256 is
+     that of the image data of a JPEG alone (the file without its Exif, XMP, color profile and other metadata segments; the whole file for
+     any other type), so a copy that only has other metadata around the same image is the same photo, whatever the sizes, and another image
+     is another photo.
   2. Without an id to go by, every part must agree: the name, the extension, the date, the size, and, with `dimensions=exact`, the pixel
      size. A part set to `ignore` is left out, and a size, or a pixel size, that is not known passes.
   3. When several photos match, a photo is paired with the one that shares its id, else the nearest in date, and each is paired once.
 
-Three presets are the starting points; a part after one changes just that part, and the default is `tolerant`:
+Four presets are the starting points; a part after one changes just that part, and the default is `tolerant`:
 
     strict     slow, most accurate      ids, the bytes of the files (`content=identical`), pixel size, the EXIF capture time, and
                                         everything else exactly: filename=exact,extension=exact,date-source=exif,date-range=exact,filesize=exact
+    equivalent slow, accurate           ids, the image data of the files (`content=identical,metadata=ignore`: other metadata around the same image is
+                                        one photo), then the name (case ignored), the extension, a date within 2 hours (the EXIF capture time)
+                                        and a size within 1%, and the pixel size must be the same
     tolerant   medium speed and accuracy  ids, then the name (case ignored), the extension (`.jpeg` is `.jpg`), a date within 2 hours and a
                                         size within 1%; no file is opened (modification time as the date)
     loose      fast, least accurate     the name (case ignored) and a date within 1 day: any extension, any size, no ids
@@ -35,6 +41,9 @@ The parts:
     content=ignore | identical             whether files with the same SHA-256 are the same photo and files with different bytes are not;
                                            only files whose size also occurs on the other side are read, a hash is cached, and reading is
                                            slow over a network share
+    metadata=compare | ignore              with content=identical, whether a file's metadata is part of what is compared (compare: the whole
+                                           file) or not (ignore: only a JPEG's image data, so the same image with other Exif, XMP or color
+                                           profile is one photo); files within 10% in size of one on the other side are read
     dimensions=ignore | exact              whether the pixel sizes must be the same (a rotated copy has the same size); read from the database
                                            for a library and from the file's header for a folder
 
@@ -61,6 +70,7 @@ class Mode:
     extension: str = "normalized"  # exact, normalized or ignore
     identity: str = "auto"  # auto or ignore: whether ids from iCloud decide when both photos have one
     content: str = "ignore"  # ignore, or identical (the same bytes are the same photo, and different bytes are not)
+    metadata: str = "compare"  # with content=identical: compare (the bytes of the whole file) or ignore (those of the image data alone)
     dimensions: str = "ignore"  # ignore or exact: whether the pixel sizes must agree
     date_source: str = "modified"  # modified or exif: where a folder's files get their date (a library's photos have Photos' own)
     date: str = "within"  # exact, within or ignore
@@ -71,19 +81,21 @@ class Mode:
 
 
 TOLERANT = Mode()
-# The three presets, from the surest and slowest to the quickest and loosest. Each is a starting point that a part after it can change.
+# The four presets, from the surest and slowest to the quickest and loosest. Each is a starting point that a part after it can change.
 STRICT = Mode(
     filename="exact", extension="exact", identity="auto", content="identical", dimensions="exact", date_source="exif", date="exact", filesize="exact",
 )
 LOOSE = Mode(filename="normalized", extension="ignore", identity="ignore", content="ignore", dimensions="ignore", date="within", date_within=timedelta(days=1), filesize="ignore")
-PRESETS = {"strict": STRICT, "tolerant": TOLERANT, "loose": LOOSE}
+EQUIVALENT = Mode(content="identical", metadata="ignore", dimensions="exact", date_source="exif")  # tolerant, but the image data decides where the files can be read, a different pixel size is a different photo, and a file is dated by its capture time
+PRESETS = {"strict": STRICT, "equivalent": EQUIVALENT, "tolerant": TOLERANT, "loose": LOOSE}
 HELP = (
     "How closely two photos must agree to be the same photo: a preset, strict (slow, most accurate: ids, file bytes, pixel size, EXIF date, "
-    "everything exact), tolerant (the default; medium: ids, then name, extension, date within 2h, size within 1%) or loose (fast, least "
+    "everything exact), equivalent (accurate: ids, the image data of the files, then as tolerant, with the pixel size and the EXIF date), tolerant (the default; medium: ids, then name, extension, date within 2h, size within 1%) or loose (fast, least "
     "accurate: name and a date within 1 day), optionally followed by parts that change it, comma-separated and read left to right: "
     "filename=normalized|exact|ignore, extension=normalized|exact|ignore, date-range=within=DURATION|exact|ignore (such as 2h, 30m, 1d), date-source=exif|modified "
     "(where a folder file's date comes from), filesize=within=PERCENT|within=BYTES|exact|ignore (such as 1% or 512bytes), "
-    "identity=auto|ignore (iCloud ids), content=ignore|identical (the SHA-256 of the files, slow: files with the same bytes are one photo and files with different bytes are two), dimensions=ignore|exact (pixel size). "
+    "identity=auto|ignore (iCloud ids), content=ignore|identical (the SHA-256 of the files, slow: files with the same bytes are one photo and files with different bytes are two), "
+    "metadata=compare|ignore (with content=identical: ignore leaves out a JPEG's metadata, so the same image with other Exif or color profile is one photo), dimensions=ignore|exact (pixel size). "
     "An id decides when both photos have one; otherwise every part must agree. Example: `strict,filename=ignore`. Also read from APPLE_PHOTOS_DIFF_MODE."
 )
 
@@ -118,6 +130,11 @@ def parse(text: str) -> Mode:
                 mode = replace(mode, content=value)
             else:
                 raise ValueError(f"content={value!r}: use ignore or identical")
+        elif field == "metadata":
+            if value in ("compare", "ignore"):
+                mode = replace(mode, metadata=value)
+            else:
+                raise ValueError(f"metadata={value!r}: use compare or ignore")
         elif field == "identity":
             if value in ("auto", "ignore"):
                 mode = replace(mode, identity=value)
@@ -147,7 +164,7 @@ def parse(text: str) -> Mode:
             else:
                 raise ValueError(f"filesize={value!r}: use exact, ignore or within=PERCENT (such as 1%) or within=N bytes (such as 512bytes)")
         else:
-            raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., date-range=..., date-source=..., filesize=..., strict, tolerant or loose")
+            raise ValueError(f"{item!r}: use filename=..., extension=..., dimensions=..., identity=..., content=..., metadata=..., date-range=..., date-source=..., filesize=..., strict, equivalent, tolerant or loose")
     return mode
 
 
@@ -193,7 +210,7 @@ def name_key(mode: Mode, name: str) -> tuple:
 
 
 def same_size(mode: Mode, first: str, second: str) -> bool:
-    if mode.content == "identical" and first.isdigit() and second.isdigit() and int(first) and int(second):
+    if mode.content == "identical" and mode.metadata == "compare" and first.isdigit() and second.isdigit() and int(first) and int(second):
         return first == second  # a different size is different bytes
     if mode.filesize == "ignore":
         return True
@@ -211,20 +228,21 @@ def bucket(mode: Mode, photo: Photo) -> tuple:
 
 
 Ids = Dict[Photo, Dict[str, set]]  # a photo -> {kind of id: the values it has}; a photo can have several items
-CONTENT = "sha256"  # the kind of id that is the hash of a file's bytes: it shows photos to be the same, never different
+CONTENT = "sha256"  # the kind of id that is the hash of a file's bytes: it shows photos to be the same, and with content=identical different
+IMAGE = "image"  # the hash of a file's image data without its metadata (metadata=ignore): the same
 DIMENSIONS = "dims"  # the kind of value that is a pixel size: it can show photos to be different, never the same
 
 
 def vetoing(mode: "Mode") -> str:
     """The kind of hash that shows photos to be different under the mode, if any."""
-    return CONTENT if mode.content == "identical" else ""
+    return (IMAGE if mode.metadata == "ignore" else CONTENT) if mode.content == "identical" else ""
 
 
 def conflicting(first: Optional[Dict[str, set]], second: Optional[Dict[str, set]], veto: str = "") -> bool:
     """Whether two photos have an id of the same kind and none of the values is shared: known, and different. A hash only counts
-    when it is the veto of the mode (the bytes, for content=identical)."""
+    when it is the veto of the mode (the bytes of the file, or with metadata=ignore of its image data, for content=identical)."""
     return bool(first and second) and any(
-        (kind != CONTENT or kind == veto) and kind in second and first[kind] and second[kind] and not (first[kind] & second[kind]) for kind in first
+        (kind not in (CONTENT, IMAGE) or kind == veto) and kind in second and first[kind] and second[kind] and not (first[kind] & second[kind]) for kind in first
     )
 
 
@@ -233,7 +251,7 @@ class Index:
 
     def __init__(self, mode: Mode, photos, ids: Optional[Ids] = None) -> None:
         self.mode = mode
-        self.kinds = ({"stable", "cloud"} if mode.identity == "auto" else set()) | ({CONTENT} if mode.content == "identical" else set())
+        self.kinds = ({"stable", "cloud"} if mode.identity == "auto" else set()) | ({IMAGE if mode.metadata == "ignore" else CONTENT} if mode.content == "identical" else set())
         self.kept = self.kinds | ({DIMENSIONS} if mode.dimensions == "exact" else set())  # the kinds of value looked at
         self.ids: Ids = {photo: {kind: values for kind, values in kinds.items() if kind in self.kept} for photo, kinds in ids.items()} if ids and self.kept else {}
         self.by_id: Dict[Tuple[str, str], List[Photo]] = {}
@@ -386,7 +404,7 @@ def span(seconds: float) -> str:
     return " ".join(units[:2]) or "0s"
 
 
-KIND_NAMES = {"stable": "iCloud fingerprint", "cloud": "iCloud asset id", DIMENSIONS: "pixel size", CONTENT: "file bytes"}  # what a kind of id is called when it differs
+KIND_NAMES = {"stable": "iCloud fingerprint", "cloud": "iCloud asset id", DIMENSIONS: "pixel size", CONTENT: "file bytes", IMAGE: "image data"}  # what a kind of id is called when it differs
 
 
 def differences(mode: Mode, photo: Photo, other: Photo, photo_ids: Optional[Dict[str, set]] = None, other_ids: Optional[Dict[str, set]] = None) -> Tuple[Tuple[str, ...], float, int]:
@@ -407,8 +425,8 @@ def differences(mode: Mode, photo: Photo, other: Photo, photo_ids: Optional[Dict
         found.append("extension")
     if mode.date != "ignore" and (gap > 0 if mode.date == "exact" else gap > mode.date_within.total_seconds()):
         found.append(f"date by {'+' if later > 0 else '-'}{span(gap)}")
-    for kind in ("stable", "cloud", DIMENSIONS, CONTENT):
-        looked_at = {DIMENSIONS: mode.dimensions == "exact", CONTENT: mode.content == "identical"}.get(kind, mode.identity == "auto")
+    for kind in ("stable", "cloud", DIMENSIONS, CONTENT, IMAGE):
+        looked_at = {DIMENSIONS: mode.dimensions == "exact", CONTENT: vetoing(mode) == CONTENT, IMAGE: vetoing(mode) == IMAGE}.get(kind, mode.identity == "auto")
         values, others = (photo_ids or {}).get(kind), (other_ids or {}).get(kind)
         if looked_at and values and others and not (values & others):
             found.append(KIND_NAMES[kind])

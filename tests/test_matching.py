@@ -1,5 +1,6 @@
 """apple.photos.matching: when two photos are the same photo."""
 from collections import Counter
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -247,12 +248,14 @@ def test_dimensions_is_a_part_of_the_mode_off_by_default_and_can_only_show_photo
     assert m.absent(Counter({far: 1}), Counter({held: 1}), m.parse("dimensions=exact"), {far: {"dims": {"1000x800"}}}, {held: {"dims": {"1000x800"}}})  # a size is not an id
 
 
-def test_the_three_whole_modes_are_strict_tolerant_and_loose():
-    assert set(m.PRESETS) == {"strict", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
+def test_the_four_presets_are_strict_equivalent_tolerant_and_loose():
+    assert set(m.PRESETS) == {"strict", "equivalent", "tolerant", "loose"} and m.parse("") == m.TOLERANT == m.PRESETS["tolerant"]
     assert (m.STRICT.filename, m.STRICT.extension, m.STRICT.date, m.STRICT.filesize, m.STRICT.identity, m.STRICT.content, m.STRICT.dimensions) == ("exact", "exact", "exact", "exact", "auto", "identical", "exact")
     assert (m.LOOSE.filename, m.LOOSE.extension, m.LOOSE.date, m.LOOSE.date_within, m.LOOSE.filesize, m.LOOSE.identity, m.LOOSE.content) == ("normalized", "ignore", "within", timedelta(days=1), "ignore", "ignore", "ignore")
     assert m.parse("loose,filesize=within=5%").size_within == 0.05 and m.parse("loose,filesize=within=5%").filename == "normalized"
     assert m.parse("tolerant,strict") == m.STRICT  # the last preset starts over
+    assert m.parse("equivalent") == m.EQUIVALENT == replace(m.TOLERANT, content="identical", metadata="ignore", dimensions="exact", date_source="exif")  # tolerant, with the image data, the pixel size and the EXIF date
+    assert m.parse("equivalent,dimensions=ignore").dimensions == "ignore" and m.parse("equivalent,date-range=within=1h").date_within == timedelta(hours=1)
 
 
 def test_loose_matches_what_tolerant_and_strict_do_not_and_strict_matches_least():
@@ -279,8 +282,8 @@ def test_a_photo_of_the_very_same_key_is_not_there_when_its_id_says_it_is_anothe
     assert not m.absent(Counter({photo: 1}), Counter({photo: 1}))
 
 
-def test_exact_is_not_a_whole_mode_and_the_error_names_the_three():
-    with pytest.raises(ValueError, match="strict, tolerant or loose"):
+def test_exact_is_not_a_preset_and_the_error_names_them():
+    with pytest.raises(ValueError, match="strict, equivalent, tolerant or loose"):
         m.parse("exact")
     assert m.parse("strict,date-range=ignore").date == "ignore"
 
@@ -340,3 +343,41 @@ def test_the_date_is_two_parts_a_range_and_a_source_and_date_alone_is_not_a_part
     for text in ("date=exif", "date=within=1h", "date-source=near", "date-source=within=1h", "date-range=exif", "date-range=modified"):
         with pytest.raises(ValueError):
             m.parse(text)
+
+
+def test_equivalent_is_tolerant_that_also_needs_the_same_pixel_size():
+    held = ("2014-08-03 17:01:46", "2318407", "IMG_0897.JPG")
+    profiled = ("2014-08-03 17:01:46", "2317037", "IMG_0897.JPG")  # 1,370 bytes smaller: the same photo with other metadata
+    same_size = {"dims": {"3264x2448"}}
+    assert not m.absent(Counter({profiled: 1}), Counter({held: 1}), m.EQUIVALENT, {profiled: same_size}, {held: same_size})
+    assert m.absent(Counter({profiled: 1}), Counter({held: 1}), m.EQUIVALENT, {profiled: {"dims": {"4032x3024"}}}, {held: same_size})  # another pixel size: another photo
+    assert not m.absent(Counter({profiled: 1}), Counter({held: 1}), m.TOLERANT, {profiled: {"dims": {"4032x3024"}}}, {held: same_size})  # tolerant does not look
+
+
+def test_metadata_ignore_lets_the_image_data_decide_whatever_the_sizes():
+    assert m.TOLERANT.metadata == "compare" and m.parse("metadata=ignore").metadata == "ignore" and m.parse("metadata=ignore,tolerant").metadata == "compare"
+    with pytest.raises(ValueError, match="use compare or ignore"):
+        m.parse("metadata=some")
+    held = ("2014-08-03 17:01:46", "2318407", "IMG_0897.JPG")
+    profiled = ("2014-08-03 17:01:46", "2317037", "IMG_0897.JPG")
+    renamed = ("2005-01-01 00:00:00", "9999", "other.jpg")
+    image = lambda value: {"image": {value}}  # noqa: E731
+    mode = m.parse("content=identical,metadata=ignore,filesize=exact")
+    # another size, the same image: one photo, though the sizes must be exact; and a renamed, re-dated copy of it
+    assert not m.absent(Counter({profiled: 1}), Counter({held: 1}), mode, {profiled: image("A")}, {held: image("A")})
+    assert not m.absent(Counter({renamed: 1}), Counter({held: 1}), mode, {renamed: image("A")}, {held: image("A")})
+    # the same name, date and size, another image: two photos
+    assert m.absent(Counter({held: 1}), Counter({held: 1}), mode, {held: image("A")}, {held: image("B")})
+    # the bytes of the whole file are not looked at, and without the image data the other parts decide
+    assert not m.absent(Counter({held: 1}), Counter({held: 1}), mode, {held: {"sha256": {"A"}}}, {held: {"sha256": {"B"}}})
+    assert m.absent(Counter({profiled: 1}), Counter({held: 1}), mode, {}, {})
+    # content=identical alone takes a different size as different bytes, and metadata=ignore without it reads nothing
+    assert m.absent(Counter({profiled: 1}), Counter({held: 1}), m.parse("content=identical"))
+    assert not m.absent(Counter({profiled: 1}), Counter({held: 1}), m.parse("metadata=ignore"))
+
+
+def test_what_differs_names_the_image_data_when_it_is_what_keeps_two_photos_apart():
+    photo = ("2014-08-03 17:01:46", "100", "a.jpg")
+    assert "image data" in m.differences(m.parse("content=identical,metadata=ignore"), photo, photo, {"image": {"A"}}, {"image": {"B"}})[0]
+    assert "file bytes" in m.differences(m.parse("content=identical"), photo, photo, {"sha256": {"A"}}, {"sha256": {"B"}})[0]
+    assert m.differences(m.parse("content=identical,metadata=ignore"), photo, photo, {"sha256": {"A"}}, {"sha256": {"B"}})[0] == ()

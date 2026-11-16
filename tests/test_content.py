@@ -194,6 +194,54 @@ def test_explain_names_the_bytes_when_they_are_all_that_keeps_two_photos_apart(m
     assert "differs: file bytes" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "tolerant"]).output
 
 
+def jpeg_with(*metadata, scan=b"\x01\x02\x03" * 10000):
+    """A JPEG of this picture with these metadata segments in front of it."""
+    import struct
+
+    def segment(marker, body):
+        return b"\xff" + bytes([marker]) + struct.pack(">H", len(body) + 2) + body
+
+    picture = segment(0xDB, b"\x00" + bytes(64)) + segment(0xC0, b"\x08" + struct.pack(">HH", 10, 10) + b"\x01\x01\x11\x00") + segment(0xDA, b"\x01\x01\x00\x00\x3f\x00") + scan + b"\xff\xd9"
+    return b"\xff\xd8" + b"".join(segment(0xE2, b"ICC_PROFILE\x00\x01\x01" + bytes(size)) for size in metadata) + picture
+
+
+def test_metadata_ignore_takes_the_same_image_with_other_metadata_as_one_photo(mac, tmp_path):
+    plain, profiled = jpeg_with(), jpeg_with(1370)
+    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", plain)])
+    folder = tmp_path / "backup"
+    file_in(folder, "IMG_0897.JPG", profiled, "2014-08-03 17:01:46")
+    other = file_in(folder, "IMG_0898.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000), "2014-08-03 17:01:46")  # another picture, the same size as the first
+    assert len(other.read_bytes()) == len(plain)
+    # the sizes differ by 1,370 bytes: exact sizes see two photos, content=identical too, and metadata=ignore sees one
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "strict,date-range=exact,filesize=exact", "--only", "left"]).exit_code == 1
+    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "strict,metadata=ignore", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
+    assert [(r["left_name"], r["right_name"], r["matched_by"]) for r in rows_of(result)] == [("IMG_0897.JPG", "IMG_0897.JPG", "same image data")]
+    renamed = file_in(folder, "other-name.jpg", profiled, "2001-01-01 00:00:00")  # and whatever the name and date
+    result = runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical,metadata=ignore", "--format", "csv", "--fields", "left_name,right_name,matched_by"])
+    assert ("IMG_0897.JPG", "IMG_0897.JPG", "same image data") in [(r["left_name"], r["right_name"], r["matched_by"]) for r in rows_of(result)]
+    assert renamed.exists()
+
+
+def test_metadata_ignore_keeps_two_images_apart_and_says_so_in_explain(mac, tmp_path):
+    library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", jpeg_with())])
+    folder = tmp_path / "backup"
+    file_in(folder, "IMG_0897.JPG", jpeg_with(scan=b"\x09\x08\x07" * 10000), "2014-08-03 17:01:46")  # the same size, name and date: another picture
+    assert runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "tolerant"]).exit_code == 0
+    result = runner.invoke(app, ["photos", "diff", "Source", str(folder), "--diff-mode", "content=identical,metadata=ignore", "--explain"])
+    assert result.exit_code == 1 and "differs: image data" in result.output
+
+
+def test_metadata_ignore_reads_only_the_files_near_in_size_to_one_on_the_other_side(mac, tmp_path, monkeypatch):
+    library_with(mac, [("2014-08-03 17:01:46", "a.jpg", jpeg_with())])
+    folder = tmp_path / "backup"
+    file_in(folder, "near.jpg", jpeg_with(1370), "2014-08-03 17:01:46")
+    file_in(folder, "far.jpg", jpeg_with(*[60000] * 10), "2014-08-03 17:01:46")  # twenty times the size
+    read = []
+    real = content_hash.file_compare.image_digest
+    monkeypatch.setattr(content_hash.file_compare, "image_digest", lambda path: read.append(path.name) or real(path))
+    runner.invoke(app, ["photos", "match", "Source", str(folder), "--diff-mode", "content=identical,metadata=ignore"])
+
+
 def test_name_narrows_diff_match_and_import_to_the_photos_with_that_name(mac, tmp_path):
     other = b"another picture" * 12
     library_with(mac, [("2014-08-03 17:01:46", "IMG_0897.JPG", BYTES), ("2014-08-03 17:02:46", "IMG_0898.JPG", other)])
