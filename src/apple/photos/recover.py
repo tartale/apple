@@ -86,7 +86,7 @@ def read_list(text: str) -> List[dict]:
     items = []
     for record in records:
         if "name" not in record or "date" not in record:
-            raise typer.BadParameter("--list needs a name and a date column")
+            raise typer.BadParameter("the list needs a name and a date column")
         files = record.get("files") or []
         if isinstance(files, str):
             files = [entry for entry in files.split("|") if entry]
@@ -362,12 +362,12 @@ def import_found_command(
             "into whichever library it has open, so it is asked to open this one first.",
         ),
     ],
-    only_missing: Annotated[
+    all_files: Annotated[
         bool,
         typer.Option(
-            "--only-missing",
-            help="With a folder, import only the files the destination lacks, judged from its database as `copy --only-missing` "
-            "judges a library (see --diff-mode: by default a photo of the same file name, case ignored, within two hours and 1% of the size is there).",
+            "--all",
+            help="With a folder, import every file, without working out which ones the destination lacks. Not with --explain, "
+            "--ignore-trash or --prefer.",
         ),
     ] = False,
     diff_mode: DiffModeOption = "",
@@ -397,20 +397,20 @@ def import_found_command(
     import makes new, ordinary photos; a placeholder stays, but `diff` no longer counts it once the copy is there. Nothing
     is deleted, and nothing is changed with --dry-run (or DRY_RUN=true).
 
-    With a folder, --only-missing limits the import to the files the DESTINATION lacks (a file within two hours and 1% of
-    the size of a photo of that name is not lacking, as --diff-mode says); without it every file is imported.
+    With a folder, only the files the DESTINATION lacks are imported, judged from its database as `copy` judges a library (see
+    --diff-mode: by default a photo of the same file name, case ignored, within two hours and 1% of the size is there);
+    --all imports every file. A list is imported as it says.
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
     if source != "-" and not Path(source).expanduser().exists():
         raise typer.BadParameter(f"{source} does not exist: give a folder of photos and videos, or a list (the csv or json of `apple photos find`, or - for stdin)")
     folder = folder_photos.is_folder(source)
-    if not folder and (only_missing or refresh):
-        raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")
-    if (explain or ignore_trash) and not only_missing:
-        raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the files the destination lacks")
-    if prefer != Prefer.none and not only_missing:
-        raise typer.BadParameter("--prefer is for --only-missing: it is about the files the destination has as another file")
+    if not folder and (all_files or refresh or explain or ignore_trash or prefer != Prefer.none):
+        raise typer.BadParameter("--all, --refresh, --explain, --ignore-trash and --prefer are for a folder: a list says what to import")
+    only_missing = folder and not all_files
+    if (explain or ignore_trash or prefer != Prefer.none) and not only_missing:
+        raise typer.BadParameter("--explain, --ignore-trash and --prefer are about the files the destination lacks, which --all does not work out")
     match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():

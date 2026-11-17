@@ -53,7 +53,7 @@ def opened(monkeypatch, library):
 
 
 def do_import(tmp_path, *options):
-    return runner.invoke(app, ["photos", "import", str(tmp_path / "backup"), "Source", "--only-missing", *MODE, *options])
+    return runner.invoke(app, ["photos", "import", str(tmp_path / "backup"), "Source", *MODE, *options])
 
 
 def test_without_a_preference_the_same_photo_with_other_metadata_is_not_imported(mac, tmp_path):
@@ -117,17 +117,17 @@ def test_ordinary_missing_files_are_imported_with_the_check_and_the_preferred_on
     assert mac.calls("import-photos.applescript") == [[[str(new)]], [[str(preferred)], "true"]]
 
 
-def test_prefer_needs_only_missing(mac, tmp_path):
+def test_prefer_is_not_for_all(mac, tmp_path):
     held(mac, "Source", PLAIN)
     folder_with(tmp_path, RICH)
-    result = runner.invoke(app, ["photos", "import", str(tmp_path / "backup"), "Source", "--prefer", "larger"])
-    assert result.exit_code == 2 and "--prefer is for --only-missing" in result.output
-    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--prefer", "larger"])
-    assert result.exit_code == 2 and "--prefer is for --only-missing" in result.output
+    result = runner.invoke(app, ["photos", "import", str(tmp_path / "backup"), "Source", "--all", "--prefer", "larger"])
+    assert result.exit_code == 2 and "are about the files the destination lacks, which --all does not work out" in " ".join(result.output.replace("│", " ").split())
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--all", "--prefer", "larger"])
+    assert result.exit_code == 2 and "are about the photos the destination lacks, which --all does not work out" in " ".join(result.output.replace("│", " ").split())
 
 
 def test_a_preference_is_only_for_the_values_it_knows(mac, tmp_path):
-    result = runner.invoke(app, ["photos", "import", str(tmp_path), "Source", "--only-missing", "--prefer", "newest"])
+    result = runner.invoke(app, ["photos", "import", str(tmp_path), "Source", "--prefer", "newest"])
     assert result.exit_code == 2
 
 
@@ -142,7 +142,7 @@ def test_copy_prefer_copies_the_richer_photo_with_the_check_off_and_moves_the_ol
     trashing_updates_the_database(monkeypatch, mac)
     copying_updates_the_database(monkeypatch, mac)
     libraries_with(mac, RICH, PLAIN)
-    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--prefer", "recommended", *MODE])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--prefer", "recommended", *MODE])
     assert result.exit_code == 0, result.output
     assert mac.calls("copy-ids.applescript") == [["Source", "photos-2018", ["UUID1"], "false"]]
     assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID1"]]]
@@ -152,13 +152,13 @@ def test_copy_prefer_copies_the_richer_photo_with_the_check_off_and_moves_the_ol
 def test_copy_prefer_does_not_trash_the_old_photo_until_the_preferred_one_has_arrived(mac, monkeypatch):
     trashing_updates_the_database(monkeypatch, mac)
     libraries_with(mac, RICH, PLAIN)  # the fake PowerPhotos copies nothing, so it never arrives
-    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--prefer", "recommended", "--timeout", "1", *MODE])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--prefer", "recommended", "--timeout", "1", *MODE])
     assert mac.calls("trash-ids.applescript") == [] and "not moved to Recently Deleted: IMG_0897.JPG" in result.output
 
 
 def test_copy_prefer_dry_run_says_what_it_would_replace(mac):
     libraries_with(mac, RICH, PLAIN)
-    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--prefer", "larger", "--dry-run", *MODE])
+    result = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--prefer", "larger", "--dry-run", *MODE])
     assert result.exit_code == 0 and "would replace IMG_0897.JPG" in result.output
     assert mac.calls("copy-ids.applescript") == [] and mac.calls("trash-ids.applescript") == []
 

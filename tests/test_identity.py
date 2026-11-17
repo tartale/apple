@@ -98,9 +98,9 @@ def test_import_only_missing_leaves_out_a_file_the_library_has_under_its_fingerp
     file_at(folder / f"IMAG0044_{token}.JPG", "2005-09-30 06:51:40", 777)
     file_at(folder / f"other_{trashed}.jpg", "2001-01-01 00:00:00", 55)
     file_at(folder / "new.jpg", "2012-02-02 02:02:02", 33)
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 1" in result.output and "new.jpg" in result.stdout and "IMAG0044" not in result.stdout and "other_" not in result.stdout
-    listed = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--ignore-trash"])
+    listed = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--ignore-trash"])
     assert "Imported 0 of 2" in listed.output and "other_" in listed.stdout
 
 
@@ -110,7 +110,7 @@ def test_a_folder_leaves_out_a_file_with_the_fingerprint_of_another_when_importi
     folder = tmp_path / "backup"
     file_at(folder / f"x_{token}.jpg", "2012-02-02 02:02:02", 33)
     file_at(folder / f"much-longer-name_{token}.jpg", "2013-03-03 03:03:03", 44)  # the same fingerprint: the same file
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 1" in result.output and "1 left out as the same photo as another" in result.output
 
 
@@ -119,9 +119,9 @@ def test_explain_says_when_an_id_is_all_that_keeps_two_photos_apart(mac, tmp_pat
     add_photos(mac.libraries["Source"], [("2006-09-30 06:51:40", 100, name, f"stable:{fingerprint(5)}")])
     folder = tmp_path / "backup"
     file_at(folder / name, "2006-09-30 06:51:40", 100)
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
     assert "closest: " + name in result.output and "differs: iCloud fingerprint" in result.output
-    assert "differs: iCloud fingerprint" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "identity=ignore"]).output
+    assert "differs: iCloud fingerprint" not in runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run", "--diff-mode", "identity=ignore"]).output
 
 
 def test_explain_says_when_the_pixel_size_is_what_differs(mac, tmp_path):
@@ -132,5 +132,5 @@ def test_explain_says_when_the_pixel_size_is_what_differs(mac, tmp_path):
     path.parent.mkdir(parents=True)
     path.write_bytes(jpeg(1000, 800).ljust(100, b"\x00"))
     os.utime(path, (unix("2018-03-01 10:00:00"), unix("2018-03-01 10:00:00")))
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "dimensions=exact"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run", "--diff-mode", "dimensions=exact"])
     assert "differs: pixel size" in result.output

@@ -1299,21 +1299,21 @@ def folder_with_a_library_photo(mac, tmp_path):
 def test_import_from_a_folder_with_only_missing_imports_the_files_the_library_lacks(mac, monkeypatch, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source"])
     assert result.exit_code == 0 and "Imported 2 of 2 missing files" in result.output
     assert mac.calls("import-photos.applescript") == [[[str(folder / "one.heic"), str(folder / "sub" / "two.heic")]]]
 
 
-def test_import_from_a_folder_without_only_missing_imports_every_file(mac, monkeypatch, tmp_path):
+def test_import_from_a_folder_with_all_imports_every_file(mac, monkeypatch, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
     opened(monkeypatch, mac.libraries["Source"])
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--all"])
     assert result.exit_code == 0 and "Imported 3 of 3" in result.output
 
 
 def test_import_from_a_folder_with_dry_run_changes_nothing(mac, tmp_path):
     folder = folder_with_a_library_photo(mac, tmp_path)
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert result.exit_code == 0 and "[dry run]" in result.output and mac.calls("import-photos.applescript") == []
 
 
@@ -1321,20 +1321,21 @@ def test_only_missing_judges_with_the_tolerances_and_strict_wants_exact(mac, tmp
     add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", 100, "a.jpg")])
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg", "2018-03-01 10:00:00", 101)
-    loose = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    loose = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 0" in loose.output
-    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--diff-mode", "strict", "--dry-run"])
+    exact = runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", "strict", "--dry-run"])
     assert "Imported 0 of 1" in exact.output and "[dry run]" in exact.output
 
 
-def test_only_missing_and_refresh_are_for_a_folder_and_a_bad_diff_mode_is_a_usage_error(mac, tmp_path):
+def test_all_and_refresh_are_for_a_folder_and_a_bad_diff_mode_is_a_usage_error(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
     listed = tmp_path / "x.csv"
     listed.write_text("date,name\n")
     for options, text in (
-        ([str(listed), "Source", "--only-missing"], "are for a folder"),
+        ([str(listed), "Source", "--all"], "are for a folder"),
         ([str(listed), "Source", "--refresh"], "are for a folder"),
+        ([str(listed), "Source", "--explain"], "are for a folder"),
         ([str(folder), "Source", "--diff-mode", "date-range=near"], "date-range="),
     ):
         result = runner.invoke(app, ["photos", "import", *options])
@@ -1412,7 +1413,7 @@ def test_import_from_a_folder_takes_one_of_the_files_that_are_the_same_photo_und
     both = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 3" in both.output  # these names differ, so by default they are three photos
     mode = "filename=ignore"  # the date and size of the pair agree
-    for options in (["--only-missing"], []):
+    for options in (["--all"], []):
         result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--diff-mode", mode, "--dry-run", *options])
         assert "Imported 0 of 2" in result.output and "1 left out as the same photo as another" in result.output, options
         assert "ASLN" not in result.stdout and "IMAG0044.JPG" in result.stdout
@@ -1426,7 +1427,7 @@ def test_explain_says_why_a_file_is_not_matched_in_the_library(mac):
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044_copy.JPG")  # the same date and size, another name
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00", 500)  # the same name, a different size
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
     words = result.output
     assert "Why 2 photos did not match a photo of Source" in words
     assert "IMAG0044_copy.JPG" in words and "differs: name" in words and "within the mode: date the same, size the same" in words and "may call this a duplicate" in words
@@ -1437,26 +1438,26 @@ def test_explain_does_not_call_it_a_duplicate_when_the_date_is_only_within_the_t
     add_photos(mac.libraries["Source"], [("2018-03-05 10:00:36", 100, "IMAG0043.JPG")])
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")  # the next shot, 36 seconds on, with the same size
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
     assert "closest: IMAG0043.JPG" in result.output and "differs: name" in result.output
     assert "within the mode: date by -36s, size the same" in result.output and "duplicate" not in result.output
 
 
-def test_explain_is_for_only_missing(mac, tmp_path):
+def test_explain_is_not_for_all(mac, tmp_path):
     folder = tmp_path / "backup"
     make_file(folder / "a.jpg")
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
-    assert result.exit_code == 2 and "--explain and --ignore-trash are for --only-missing" in " ".join(result.output.replace("│", " ").split())
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--all", "--explain", "--dry-run"])
+    assert result.exit_code == 2 and "--explain, --ignore-trash and --prefer are about the files the destination lacks, which --all does not work out" in " ".join(result.output.replace("│", " ").split())
 
 
-def test_diff_and_copy_only_missing_explain_too(mac, tmp_path):
+def test_diff_and_copy_explain_too(mac, tmp_path):
     add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 100, "a.jpg"), ("2018-03-06 10:00:00", 100, "b.jpg")])
     add_photos(mac.libraries["photos-2018"], [("2018-03-05 10:00:00", 100, "a_copy.jpg")])
     diffed = runner.invoke(app, ["photos", "diff", "Source", "photos-2018", "--explain"])
     assert "did not match a photo of photos-2018" in diffed.output and "closest: a_copy.jpg" in diffed.output and "did not match a photo of Source" in diffed.output
-    copied = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--only-missing", "--explain", "--dry-run"])
+    copied = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--explain", "--dry-run"])
     assert "Why 2 photos did not match a photo of photos-2018" in copied.output and "closest: a_copy.jpg" in copied.output
-    plain = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--explain", "--dry-run"])
+    plain = runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--all", "--explain", "--dry-run"])
     assert plain.exit_code == 2
 
 
@@ -1465,7 +1466,7 @@ def test_explain_is_of_the_files_left_after_the_ones_that_are_the_same_photo_are
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044.JPG", "2018-03-05 10:00:00")
     make_file(folder / "IMAG0044_ASLNFDmS.JPG", "2018-03-05 10:00:00")  # a copy under a longer name
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", "--diff-mode", "filename=ignore,date-range=within=5s"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run", "--diff-mode", "filename=ignore,date-range=within=5s"])
     assert "1 left out as the same photo as another" in result.output
     assert "Why 1 photo did not match" in result.output and "ASLN" not in result.output.split("Why 1 photo")[1].split("date  ")[0]
 
@@ -1475,7 +1476,7 @@ def explained(mac, in_library, files, *options):
     folder = mac.libraries["Source"].parent / "backup"
     for name, when, size in files:
         make_file(folder / name, when, size)
-    return runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run", *options]).output
+    return runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run", *options]).output
 
 
 def test_explain_prefers_the_photo_of_the_same_name_to_a_neighbour_that_is_nearer(mac):
@@ -1505,26 +1506,26 @@ def test_what_the_destination_holds_in_recently_deleted_is_not_listed_unless_ign
     assert "Imported 0 of 2" in listed and "left out" not in listed
 
 
-def test_copy_only_missing_leaves_out_what_the_destination_has_in_recently_deleted(mac):
+def test_copy_leaves_out_what_the_destination_has_in_recently_deleted(mac):
     add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 100, "a.jpg"), ("2018-03-06 10:00:00", 100, "b.jpg")])
     add_photos(mac.libraries["photos-2018"], [("2018-03-05 10:00:00", 100, "a.jpg", "trashed")])
-    args = ["photos", "copy", "Source", "photos-2018", "--only-missing", "--dry-run"]
+    args = ["photos", "copy", "Source", "photos-2018", "--dry-run"]
     default = runner.invoke(app, args)
     assert "would copy 1 photos of Source that it lacks" in default.output and "1 left out as the destination has them in Recently Deleted" in default.output
     assert "would copy 2 photos" in runner.invoke(app, [*args, "--ignore-trash"]).output
-    assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--ignore-trash", "--dry-run"]).exit_code == 2
+    assert runner.invoke(app, ["photos", "copy", "Source", "photos-2018", "--all", "--ignore-trash", "--dry-run"]).exit_code == 2
 
 
 def test_explain_gives_the_sign_of_a_date_and_a_size_that_are_within_the_mode(mac):
     add_photos(mac.libraries["Source"], [("2018-03-05 10:00:00", 1000, "IMAG0043.JPG")])
     folder = mac.libraries["Source"].parent / "backup"
     make_file(folder / "IMAG0044.JPG", "2018-03-05 11:00:00", size=1005)  # an hour later and 5 bytes larger, and under another name
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--explain", "--dry-run"])
     assert "within the mode: date by +1h, size by +5 bytes" in result.output
 
 
 def test_import_says_when_the_folder_or_list_does_not_exist(mac, tmp_path):
-    for options in ([], ["--only-missing"], ["--refresh"]):
+    for options in ([], ["--all"], ["--refresh"]):
         result = runner.invoke(app, ["photos", "import", str(tmp_path / "nowhere"), "Source", *options])
         assert result.exit_code == 2 and "does not exist: give a folder of photos and videos, or a list" in result.output
         assert "are for a folder" not in result.output

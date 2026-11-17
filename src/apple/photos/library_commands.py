@@ -53,7 +53,7 @@ PreferOption = Annotated[
     Prefer,
     typer.Option(
         "--prefer",
-        help="With --only-missing, what to do with a photo the destination has as another file (the same photo under --diff-mode that differs in "
+        help="What to do with a photo the destination has as another file (the same photo under --diff-mode that differs in "
         "its metadata): none leaves it, recommended writes the source's file when `apple photos compare` recommends it (it has something worth "
         "keeping the destination's lacks), larger writes it when it is the larger file. A preferred file is written as a duplicate that Photos "
         "is told to import without asking, and the photo it is preferred to is moved to Recently Deleted.",
@@ -173,33 +173,11 @@ def is_true(value) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
 
-def parse_list(text: str) -> tuple:
-    """(file names to copy, hidden items) from the output of `./apple photos diff` (json or csv, with a name column and
-    optionally true/false hidden, burst and missing columns) or one name per line. Returns the names to copy, the hidden
-    items as a dict of name -> whether it is a burst member, and the items whose original is not stored in the library as a
-    dict of name -> whether it came from Messages.
-    PowerPhotos lists neither kind, so neither is copied."""
-    stripped = text.strip()
-    if stripped.startswith("["):
-        try:
-            records = [{key: value for key, value in record.items()} | {"name": str(record["name"])} for record in json.loads(stripped)]
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise typer.BadParameter("the list is not json from `apple photos diff --format json`")
-    else:
-        lines = stripped.splitlines()
-        header = next(csv.reader([lines[0]])) if lines else []
-        if "name" in header:
-            records = list(csv.DictReader(lines))
-        elif header and set(header) <= {"side", "date", "size", "hidden", "burst"}:
-            raise typer.BadParameter("the list has no name column; run diff with --fields including name")
-        else:
-            records = [{"name": line.strip()} for line in lines if line.strip()]
-    return split_records(records)
-
-
 def split_records(records: list) -> tuple:
     """(names to copy, hidden items, items with no stored original) from records with a name and optionally true/false
-    hidden, burst, missing and shared values, as parse_list describes."""
+    hidden, burst, missing and shared values: the hidden ones as a dict of name -> whether it is a burst member, and the ones
+    whose original is not stored in the library as a dict of name -> whether it came from Messages. PowerPhotos lists neither kind,
+    so neither is copied."""
     names, hidden, missing = [], {}, {}
     for record in records:
         if is_true(record.get("hidden")):
@@ -271,9 +249,9 @@ def report_unlisted(unlisted: list, source: str) -> None:
 
 def copy_one(
     libraries: dict, source: str, destination: str, since: Optional[date], before: Optional[date],
-    media: str, mode: OnUpgrade, names: Optional[list] = None, check_duplicates: bool = True, ids: Optional[list] = None,
+    media: str, mode: OnUpgrade, check_duplicates: bool = True, ids: Optional[list] = None,
 ) -> CopyResult:
-    """Copies one date range, or the photos with the given file names, or the photos with the given Photos identifiers."""
+    """Copies one date range, or the photos with the given Photos identifiers."""
     source_path = need(libraries, source)
     destination_path = need(libraries, destination)
     source_version = pp.model_version(source_path)
@@ -289,14 +267,9 @@ def copy_one(
             listing = Path(scratch) / "ids.txt"
             listing.write_text("\n".join(ids) + "\n", encoding="utf-8")
             args = [source, destination, str(listing), "true" if check_duplicates else "false"]
-        elif names is None:
+        else:
             script = "copy-photos.applescript"
             args = [source, destination, since.isoformat() if since else "-", before.isoformat() if before else "-", media]
-        else:
-            script = "copy-named.applescript"
-            listing = Path(scratch) / "names.txt"
-            listing.write_text("\n".join(names) + "\n", encoding="utf-8")
-            args = [source, destination, str(listing), "true" if check_duplicates else "false"]
         while True:
             try:
                 output = pp.run_applescript(script, *args)
@@ -729,7 +702,7 @@ IgnoreTrashOption = Annotated[
     bool,
     typer.Option(
         "--ignore-trash",
-        help="With --only-missing, do not count what the destination holds in Recently Deleted as there. By default a photo that "
+        help="Do not count what the destination holds in Recently Deleted as there. By default a photo that "
         "matches one there is left out, as Photos itself would call it a duplicate; with this it is listed, imported or copied.",
     ),
 ]
@@ -843,7 +816,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
 def folder_listing(folder: str, library: Optional[Path], since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, refresh: bool = False, explain: bool = False, library_name: str = "the library", ignore_trash: bool = False,
                    name_filter: Optional[List[str]] = None, prefer: Prefer = Prefer.none) -> list:
     """The rows `import` reads for the photo and video files below folder (read again, not from the cache, with refresh), one for each photo, with the path of its file: all
-    of them, or with a library only those the library lacks (judged as `copy --only-missing` judges, by the match mode); of
+    of them, or with a library only those the library lacks (judged as `copy` judges, by the match mode); of
     files that are the same photo under the mode, one."""
     try:
         data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif", dimensions=match.dimensions == "exact", name_filter=name_filter)] + ([pp.library_photos(library)] if library else [])
@@ -885,15 +858,10 @@ def copy_command(
     since: Annotated[Optional[datetime], typer.Option(help="First date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     until: Annotated[Optional[datetime], typer.Option(help="Last date to copy (YYYY-MM-DD).", formats=DateFormat)] = None,
     media: Annotated[Media, typer.Option(help="Copy photos, videos or both.")] = Media.all,
-    list_file: Annotated[
-        Optional[str],
-        typer.Option("--list", help="Copy only the photos with the file names in this file (- for stdin): the output of `apple photos diff --format csv|json`, or one name per line. Not with --since, --until or --media."),
-    ] = None,
-    only_missing: Annotated[
+    all_files: Annotated[
         bool,
-        typer.Option("--only-missing", help="Copy just the photos the source has and the destination lacks, worked out from the two databases as `apple photos diff SOURCE DESTINATION --only left` lists them, without PowerPhotos' duplicate check: the same as piping that diff into --list -. --since, --until, --media and --name limit what is compared. Not with --list."),
+        typer.Option("--all", help="Copy the whole date range and let PowerPhotos skip what it takes for a duplicate, instead of working out what the destination lacks. Not with --name, --explain, --ignore-trash or --prefer."),
     ] = False,
-    check_duplicates: CheckDuplicatesOption = False,
     diff_mode: DiffModeOption = "",
     explain: ExplainOption = False,
     ignore_trash: IgnoreTrashOption = False,
@@ -905,36 +873,27 @@ def copy_command(
         bool, typer.Option("--dry-run", help="Copy nothing; say what would be copied. Same as DRY_RUN=true.")
     ] = False,
 ) -> None:
-    """[macOS only] Copy the photos and videos in a date range, or the ones in a list, from one library to another with PowerPhotos.
+    """[macOS only] Copy the photos and videos the destination lacks, in a date range, from one library to another with PowerPhotos.
 
-    Photos already in the destination are skipped, so reruns add only what is new. Nothing is removed from the source.
-    With --list, every photo in the source with a listed file name is copied, so a name that more than one photo has
-    copies all of them. Names PowerPhotos does not list in the source are reported on stderr, and so are hidden items in the list
-    (the hidden column of `diff`), which are left out. An empty list copies nothing and succeeds.
-    A list is copied without PowerPhotos' comparison against the destination (--check-duplicates turns it on), so give it
-    a list of what is missing, such as from `apple photos diff --only left`; a listed photo the destination has is copied
-    again. --only-missing does that for you: it works out what the destination lacks and copies exactly that. A date range
-    is always compared against the destination, since otherwise a rerun would copy it all again.
+    What the destination lacks is worked out from the two databases, as `apple photos diff SOURCE DESTINATION --only left` lists
+    it (see --diff-mode), and exactly that is copied, without PowerPhotos' duplicate check; hidden items, which PowerPhotos does not
+    list, and photos whose original the source does not store are left out and reported on stderr. A rerun adds only what is new.
+    With --all, PowerPhotos copies the whole date range and skips what it takes for a duplicate. Nothing is removed from the source.
     """
     require_macos()
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
-    if only_missing and list_file is not None:
-        raise typer.BadParameter("--only-missing works out what to copy itself, so it cannot be used with --list")
+    only_missing = not all_files
     if name and not only_missing:
-        raise typer.BadParameter("--name is for --only-missing: a date range is copied by PowerPhotos, which cannot pick names, and a list already names the photos")
+        raise typer.BadParameter("--name is not for --all: PowerPhotos copies a date range and cannot pick names")
+    if (explain or ignore_trash or prefer != Prefer.none) and not only_missing:
+        raise typer.BadParameter("--explain, --ignore-trash and --prefer are about the photos the destination lacks, which --all does not work out")
     match = parse_mode(diff_mode)
-    if (explain or ignore_trash) and not only_missing:
-        raise typer.BadParameter("--explain and --ignore-trash are for --only-missing: they are about the photos missing from the destination")
-    if prefer != Prefer.none and not only_missing:
-        raise typer.BadParameter("--prefer is for --only-missing: it is about the photos the destination has as another file")
-    if check_duplicates and list_file is None and not only_missing:
-        raise typer.BadParameter("--check-duplicates is for --list or --only-missing: a date range is always compared against the destination")
-    names, hidden, no_original = None, {}, {}
+    hidden, no_original = {}, {}
     ids, replaced = None, []
     if only_missing:
         rows = only_in_left(source, destination, since, until, media, match, explain, ignore_trash, name, prefer)
-        names, hidden, no_original = split_records(rows)
+        _, hidden, no_original = split_records(rows)
         # copies are named by their Photos identifiers, one for each photo, so that a file name another photo shares, or a
         # second copy of the photo, is not carried over too
         listable = [row for row in rows if not is_true(row["hidden"]) and not is_true(row["missing"])]
@@ -942,27 +901,14 @@ def copy_command(
         for row in listable:
             if not row["id"]:
                 typer.echo(f"  not copied: {row['date']} {row['name']} (the database of {source} gives it no identifier)", err=True)
-        names = names if ids else []
         replaced = [row["replaces"] for row in listable if row.get("replaces") and row["id"] in ids]
-        if not names:
+        if not ids:
             reason = f"nothing is missing from {destination}" if not (hidden or no_original) else "everything missing is hidden in Photos or has no original in " + source
             typer.echo(f"{destination}: no files copied ({reason})")
             if hidden:
                 report_hidden(hidden)
             report_missing(no_original, source)
             return
-    elif list_file is not None:
-        if since or until or media != Media.all:
-            raise typer.BadParameter("--list cannot be combined with --since, --until or --media")
-        names, hidden, no_original = parse_list(sys.stdin.read() if list_file == "-" else Path(list_file).read_text(encoding="utf-8"))
-        if not names:  # e.g. a diff that found nothing: there is nothing to copy, which is not an error
-            reason = "the list is empty" if not (hidden or no_original) else "everything listed is hidden in Photos or has no original in " + source
-            typer.echo(f"{destination}: no files copied ({reason})")
-            if hidden:
-                report_hidden(hidden)
-            report_missing(no_original, source)
-            return
-    check = check_duplicates or names is None
     try:
         with pp.one_at_a_time():
             libraries = known_libraries()
@@ -977,33 +923,31 @@ def copy_command(
             if is_dry_run(dry_run):
                 what = (
                     f"{len(ids)} photos of {source} that it lacks" if ids is not None
-                    else f"the {len(names)} listed names of {source}" if names is not None
                     else f"the photos of {source}" + (f" from {since.date()}" if since else "") + (f" to {until.date()}" if until else "")
                     + " (PowerPhotos skips those it already has)"
                 )
                 typer.echo(f"{destination}: would copy {what} [dry run]")
                 for replaces in replaced:
                     typer.echo(f"  would replace {replaces['name']}  {replaces['date']} in {destination}, moving it to Recently Deleted ({replaces['why']})", err=True)
-                if names is not None and hidden:
-                    report_hidden(hidden)
-                if names is not None:
+                if only_missing:
+                    if hidden:
+                        report_hidden(hidden)
                     report_missing(no_original, source)
                 return
-            expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, names, ids, match)
+            expected, uuid_of = expected_arrivals(libraries, source, destination, since, until, media, ids, match)
             held_before = read_library(libraries, destination) if replaced else None
             before_log = powerphotos_reports.snapshot()
             result = copy_one(
                 libraries, source, destination,
                 since.date() if since else None,
                 until.date() + timedelta(days=1) if until else None,
-                media.value, on_upgrade, names, check, ids=ids,
+                media.value, on_upgrade, all_files, ids=ids,
             )
-            typer.echo(f"{destination}: {describe_copy(result, check)}")
-            if names is not None and hidden:
-                report_hidden(hidden)
-            if names is not None:
+            typer.echo(f"{destination}: {describe_copy(result, all_files)}")
+            if only_missing:
+                if hidden:
+                    report_hidden(hidden)
                 report_missing(no_original, source)
-            if ids is not None:
                 names_of = {row["id"]: row["name"] for row in rows if row["id"]}
                 report_unlisted([names_of.get(listed, listed) for listed in result.unlisted], source)
             else:
@@ -1023,10 +967,10 @@ def copy_command(
 
 def expected_arrivals(
     libraries: dict, source: str, destination: str, since: Optional[datetime], until: Optional[datetime], media: Media,
-    names: Optional[list], ids: Optional[list], match: matching.Mode,
+    ids: Optional[list], match: matching.Mode,
 ) -> tuple:
     """The photos a copy is to add to the destination, worked out from the two databases before it starts: those the copy
-    names (ids or file names) or, for a date range, those of the range that PowerPhotos can list, that the destination does
+    names (by Photos identifier) or, for a date range, those of the range that PowerPhotos can list, that the destination does
     not have, and each one's Photos identifier: (Counter, {key: identifier}). Empty when either database cannot be read, in
     which case the copy is not waited for."""
     wanted_from, held_in = read_library(libraries, source), read_library(libraries, destination)
@@ -1035,9 +979,6 @@ def expected_arrivals(
     if ids is not None:
         by_id = {uuids[0]: key for key, uuids in wanted_from.uuids.items()}
         wanted = Counter({by_id[listed]: 1 for listed in ids if listed in by_id})
-    elif names is not None:
-        listed = {pp.normalized_name(name) for name in names}
-        wanted = Counter({key: 1 for key in wanted_from.visible if pp.normalized_name(key[2]) in listed and not wanted_from.original_missing(key)})
     else:
         wanted = Counter({key: 1 for key in pp.of_media(within(wanted_from.visible, since, until), media.value) if not wanted_from.original_missing(key)})
     expected = matching.absent(wanted, held_in.visible + held_in.hidden, match)
