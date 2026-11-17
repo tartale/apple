@@ -402,6 +402,8 @@ def import_found_command(
     """
     if since and until and until < since:
         raise typer.BadParameter("--until is before --since")
+    if source != "-" and not Path(source).expanduser().exists():
+        raise typer.BadParameter(f"{source} does not exist: give a folder of photos and videos, or a list (the csv or json of `apple photos find`, or - for stdin)")
     folder = folder_photos.is_folder(source)
     if not folder and (only_missing or refresh):
         raise typer.BadParameter("--only-missing and --refresh are for a folder: a list says what to import")

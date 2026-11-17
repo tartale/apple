@@ -1521,3 +1521,10 @@ def test_explain_gives_the_sign_of_a_date_and_a_size_that_are_within_the_mode(ma
     make_file(folder / "IMAG0044.JPG", "2018-03-05 11:00:00", size=1005)  # an hour later and 5 bytes larger, and under another name
     result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--explain", "--dry-run"])
     assert "within the mode: date by +1h, size by +5 bytes" in result.output
+
+
+def test_import_says_when_the_folder_or_list_does_not_exist(mac, tmp_path):
+    for options in ([], ["--only-missing"], ["--refresh"]):
+        result = runner.invoke(app, ["photos", "import", str(tmp_path / "nowhere"), "Source", *options])
+        assert result.exit_code == 2 and "does not exist: give a folder of photos and videos, or a list" in result.output
+        assert "are for a folder" not in result.output
