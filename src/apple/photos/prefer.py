@@ -12,7 +12,9 @@ are compared, so a different photo is never a replacement.
 from collections import Counter
 from enum import Enum
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
+
+import typer
 
 from apple.photos import file_compare, matching
 from apple.photos import powerphotos as pp
@@ -25,11 +27,13 @@ class Prefer(str, Enum):
 
 
 class Swap(NamedTuple):
-    """The photo of the source to write, the photo of the destination it is preferred to, the Photos identifier of that one, and why."""
+    """The photo of the source to write, the photo of the destination it is preferred to, the Photos identifier of that one, why, and
+    the identifiers of every photo of the destination it is preferred to (one photo can match several)."""
     source: tuple
     destination: tuple
     identifier: str
     why: str
+    identifiers: list
 
 
 def path_of(photos: pp.Photos, key: tuple) -> Optional[Path]:
@@ -53,24 +57,55 @@ def decide(prefer: Prefer, source: Path, destination: Path) -> Optional[str]:
 
 
 def swaps(prefer: Prefer, source: pp.Photos, held: pp.Photos, wanted: Counter, there: Counter, mode: matching.Mode,
-          wanted_ids: Optional[dict] = None, held_ids: Optional[dict] = None) -> List[Swap]:
-    """For each photo of wanted (in the source) that matches a photo of there (in the destination) under the mode, as a different
-    file, the pair when the source's is preferred. The destination's photo needs a Photos identifier, to be moved to the trash."""
+          wanted_ids: Optional[dict] = None, held_ids: Optional[dict] = None) -> Tuple[List[Swap], List[tuple]]:
+    """([for each photo of wanted (in the source) that matches photos of there (in the destination) under the mode, as different
+    files, the pair when the source's is preferred to every one of them], [the destination's hidden photos that stop a swap]).
+
+    Every matching photo of the destination is looked at, hidden ones too: when any of them is as good as the source's (the same
+    bytes, or not beaten by it), the destination already has the better file and nothing is written. When one is hidden (mostly a
+    member of a burst) nothing is written either: Photos does not take a duplicate of it, and PowerPhotos cannot move a hidden photo
+    to the trash. A destination photo is replaced once, however many files of the source match it. It needs a Photos identifier,
+    to be moved to the trash."""
     if prefer == Prefer.none:
-        return []
-    matched, _, _ = matching.pairs(wanted, there, mode, wanted_ids, held_ids)
-    found = []
-    for first, second, _how in matched:
-        own, theirs = path_of(source, first), path_of(held, second)
-        uuids = held.uuids.get(second)
-        if own is None or theirs is None or not uuids:
+        return [], []
+    index = matching.Index(mode, list(there), held_ids)
+    found, blocked, taken = [], [], set()
+    for photo in sorted(wanted):
+        matches = index.matches(photo, (wanted_ids or {}).get(photo))
+        own = path_of(source, photo)
+        if not matches or own is None:
             continue
-        try:
-            if own.samefile(theirs):
-                continue
-        except OSError:
+        hidden = [other for other in matches if other in held.hidden]
+        if hidden:
+            blocked += hidden
             continue
-        why = decide(prefer, own, theirs)
-        if why:
-            found.append(Swap(first, second, uuids[0], why))
-    return found
+        why = []
+        for other in matches:
+            theirs = path_of(held, other)
+            reason = decide(prefer, own, theirs) if theirs is not None and not same_file(own, theirs) else None
+            if reason is None or not held.uuids.get(other):
+                break  # not preferred to this one, or it cannot be compared or trashed: leave the photo as it is
+            why.append(reason)
+        else:
+            if taken.isdisjoint(matches):
+                taken.update(matches)
+                found.append(Swap(photo, matches[0], held.uuids[matches[0]][0], why[0], [identifier for other in matches for identifier in held.uuids[other]]))
+    return found, blocked
+
+
+def same_file(first: Path, second: Path) -> bool:
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
+def report_hidden(blocked: List[tuple]) -> None:
+    """Says on stderr which hidden photos of the destination left a photo alone."""
+    blocked = sorted(set(blocked))
+    if blocked:
+        typer.echo(
+            f"--prefer leaves alone the photos that {len(blocked)} hidden photo{'' if len(blocked) == 1 else 's'} of the destination also match (a burst member, "
+            "mostly): Photos does not take a duplicate of one, and PowerPhotos cannot move one to the trash:\n" + "\n".join(f"  {key[2]}  {key[0]}" for key in blocked),
+            err=True,
+        )

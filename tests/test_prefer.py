@@ -177,3 +177,40 @@ def test_decide_gives_the_reason_or_none(tmp_path):
     assert prefer_module.decide(Prefer.larger, big, small) == "larger" and prefer_module.decide(Prefer.larger, small, big) is None
     assert "GPS" in prefer_module.decide(Prefer.recommended, big, small) and prefer_module.decide(Prefer.recommended, small, big) is None
     assert prefer_module.decide(Prefer.recommended, big, big) is None and prefer_module.decide(Prefer.recommended, big, tmp_path / "gone.jpg") is None
+
+
+def two_in_library(mac, first, second, flags=()):
+    """The library holds two photos of the same name and date: the first visible, the second with these flags."""
+    add_photos(mac.libraries["Source"], [(WHEN, len(first), "IMG_0897.JPG"), (WHEN, len(second), "IMG_0897.JPG", *flags)])
+    (mac.libraries["Source"] / "originals" / "A" / "UUID1.jpg").write_bytes(first)
+    (mac.libraries["Source"] / "originals" / "A" / "UUID2.jpg").write_bytes(second)
+
+
+def test_no_file_is_written_when_the_destination_holds_a_hidden_photo_with_the_better_bytes_already(mac, monkeypatch, tmp_path):
+    two_in_library(mac, PLAIN, RICH, ("burst",))  # the visible one lacks the place, a hidden burst member has it
+    folder_with(tmp_path, RICH)
+    opened(monkeypatch, mac.libraries["Source"])
+    result = do_import(tmp_path, "--prefer", "recommended")
+    assert result.exit_code == 0 and "Imported 0 of 0 missing" in result.output
+    assert "--prefer leaves alone the photos that 1 hidden photo of the destination also match" in result.output
+    assert mac.calls("import-photos.applescript") == [] and mac.calls("trash-ids.applescript") == []
+
+
+def test_no_file_is_written_when_another_photo_of_the_destination_is_as_good(mac, tmp_path):
+    two_in_library(mac, PLAIN, RICH)  # both visible: the second has the bytes of the file already
+    folder_with(tmp_path, RICH)
+    result = do_import(tmp_path, "--dry-run", "--prefer", "recommended")
+    assert "replaces" not in result.output and "Imported 0 of 0 missing" in result.output
+    assert "replaces" not in do_import(tmp_path, "--dry-run", "--prefer", "larger").output  # the file is not larger than the same file
+
+
+def test_a_file_better_than_every_copy_in_the_destination_replaces_them_all_once(mac, monkeypatch, tmp_path):
+    two_in_library(mac, PLAIN, PLAIN)  # two copies of the poorer file
+    folder_with(tmp_path, RICH, "IMG_0897.JPG")
+    folder_with(tmp_path, RICH, "IMG_0897 copy.JPG")  # a second file for the same photo: still one replacement
+    opened(monkeypatch, mac.libraries["Source"])
+    result = do_import(tmp_path, "--prefer", "recommended", "--diff-mode", "filename=ignore,filesize=within=10%")
+    assert result.exit_code == 0, result.output
+    assert len(mac.calls("import-photos.applescript")) == 1 and mac.calls("import-photos.applescript")[0][1] == "true"
+    assert len(mac.calls("import-photos.applescript")[0][0]) == 1
+    assert mac.calls("trash-ids.applescript") == [["Source", ["UUID1", "UUID2"]]]  # both copies it is better than
