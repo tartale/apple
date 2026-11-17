@@ -825,7 +825,8 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
     missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
     if explain:
         explain_unmatched(missing, selected[1], match, right, data[1].trashed, photo_ids[0], photo_ids[1])
-    swapped = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, photo_ids[0], photo_ids[1])
+    swapped, blocked = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, photo_ids[0], photo_ids[1])
+    prefer_module.report_hidden(blocked)
     swapped = [swap for swap in swapped if swap.source not in missing and swap.source not in hidden[0]]
     rows = diff_rows(missing + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
@@ -835,7 +836,7 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
         at = (row["date"], row["name"], row["size"])
         row["id"] = ids.get(at)  # the Photos identifier of one copy of it
         swap = replaces.get(at)
-        row["replaces"] = {"id": swap.identifier, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} if swap else None
+        row["replaces"] = {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} if swap else None
     return rows
 
 
@@ -859,7 +860,8 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
     wanted = Counter({photo: 1 for photo in kept})
     if explain and library:  # of the photos that are left, not of the ones left out as the same photo
         explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed, ids[0], ids[1])
-    swapped = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, ids[0], ids[1]) if library else []
+    swapped, blocked = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, ids[0], ids[1]) if library else ([], [])
+    prefer_module.report_hidden(blocked)
     swapped = [swap for swap in swapped if swap.source not in wanted]
     rows = diff_rows(wanted + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
@@ -867,7 +869,7 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
 
     def replaced(row: dict) -> Optional[dict]:
         swap = replaces.get((row["date"], row["name"], row["size"]))
-        return {"id": swap.identifier, "name": swap.destination[2], "date": swap.destination[0], "why": swap.why} if swap else None
+        return {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "why": swap.why} if swap else None
 
     return [
         {"name": row["name"], "date": row["date"], "hidden": False, "shared": False, "identifier": "", "source": "folder",
@@ -1222,7 +1224,7 @@ def wait_for_library(libraries: dict, library: str, done, what: str, timeout: fl
 
 
 def trash_replaced(libraries: dict, library: str, replaced: list, before: Counter, timeout: float) -> None:
-    """Moves to Recently Deleted the photos of library that a copy was preferred to (replaced: their identifier, name, date and why,
+    """Moves to Recently Deleted the photos of library that a copy was preferred to (replaced: their identifiers, name, date and why,
     and the key of the preferred photo), once library holds the preferred copy beside each: a photo is never moved before its
     replacement is there."""
     keys = [replaces["key"] for replaces in replaced]
@@ -1234,7 +1236,7 @@ def trash_replaced(libraries: dict, library: str, replaced: list, before: Counte
     if arrived:
         for replaces in arrived:
             typer.echo(f"  replaced {replaces['name']}  {replaces['date']} ({replaces['why']})", err=True)
-        moved, gone = trash_ids(libraries, library, [replaces["id"] for replaces in arrived])
+        moved, gone = trash_ids(libraries, library, [identifier for replaces in arrived for identifier in replaces["ids"]])
         typer.echo(f"{library}: moved {count(moved, 'photo')} to Recently Deleted" + (f"; {len(gone)} not found" if gone else ""))
 
 

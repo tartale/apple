@@ -493,7 +493,7 @@ def import_listed(listed: List[dict], list_name: str, target: Optional[str], pat
                             wrote = import_files([found for found, _ in forced], force=True)
                             imported += wrote
                             if wrote >= len(forced):
-                                moved, gone = trash_ids(known_libraries(), target, [replaces["id"] for _, replaces in forced])
+                                moved, gone = trash_ids(known_libraries(), target, [identifier for _, replaces in forced for identifier in replaces["ids"]])
                                 typer.echo(f"Moved {count(moved, 'photo')} to Recently Deleted" + (f"; {len(gone)} not found in {target}" if gone else ""), err=True)
                             else:
                                 errors += len(forced) - wrote
