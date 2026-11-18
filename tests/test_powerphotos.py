@@ -2145,6 +2145,7 @@ def test_fix_says_so_when_the_photos_are_still_there_after_powerphotos_reported_
     assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
     assert "photos-2018: NOT moved, 1 of 1 are still in it although PowerPhotos reported 1 deleted" in result.output and "old.jpg" in result.output
     assert "moved 1 to its Recently Deleted" not in result.output and result.exit_code == 1
+    assert "still waiting: 1 of 1 are still in photos-2018. PowerPhotos asks to confirm a delete: if no dialog has appeared, quit Photos and PowerPhotos, run `killall photolibraryd`" in result.output
 
 
 def test_fix_names_only_the_photos_that_left_the_library_as_moved(mac, monkeypatch):

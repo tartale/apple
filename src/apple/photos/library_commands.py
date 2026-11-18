@@ -1450,7 +1450,11 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     # several years would otherwise ask once per year.
     deleted, missing = trash_ids(libraries, part.name, [uuid for _, uuids in confirmed_everywhere for uuid in uuids])
     moved = [key for key, _ in confirmed_everywhere]
-    held = wait_for_library(libraries, part.name, lambda held: not any(held[key] for key in moved), f"deleting from {part.name}", timeout)
+    def progress(held: Counter) -> str:
+        return (f"{sum(1 for key in moved if held[key])} of {len(moved)} are still in {part.name}. PowerPhotos asks to confirm a delete: if no dialog "
+                "has appeared, quit Photos and PowerPhotos, run `killall photolibraryd` (or restart the Mac), and try again")
+
+    held = wait_for_library(libraries, part.name, lambda held: not any(held[key] for key in moved), f"deleting from {part.name}", timeout, progress)
     # what PowerPhotos says it deleted is not what happened: the library's database says
     gone = [key for key in moved if not held[key]]
     left = [key for key in moved if held[key]]
