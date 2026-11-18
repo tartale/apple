@@ -22,7 +22,6 @@ from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
 from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, ids_for, known_libraries, need, parse_mode, plan_write, row_key, within, NameOption, PreferOption, trash_ids
-from apple.photos import prefer as prefer_module
 from apple.photos.prefer import Prefer
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
