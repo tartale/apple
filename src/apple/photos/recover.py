@@ -21,7 +21,7 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, ids_for, known_libraries, need, parse_mode, within, NameOption, PreferOption, trash_ids
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, ids_for, known_libraries, need, parse_mode, plan_write, row_key, within, NameOption, PreferOption, trash_ids
 from apple.photos import prefer as prefer_module
 from apple.photos.prefer import Prefer
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
@@ -458,20 +458,18 @@ def prefer_for_list(listed: List[dict], mapping: List[tuple], library: Path, pre
     except pp.PowerPhotosError as error:
         fail(str(error))
     source = pp.Photos(Path("/"), photos, Counter(), Counter(), files, set(), Counter(), {}, {}, Counter(), ids)
-    there = held.visible + held.hidden
-    wanted_ids, held_ids = ids_for(match, [source, held], [photos, there])
-    swapped, blocked = prefer_module.swaps(prefer, source, held, photos, there, match, wanted_ids, held_ids)
-    prefer_module.report_hidden(blocked)
-    replaces = {swap.source: {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} for swap in swapped}
-    absent = matching.absent(photos, there, match, wanted_ids, held_ids)
+    selected = [photos, held.visible + held.hidden]
+    wanted, replaces = plan_write([source, held], selected, ids_for(match, [source, held], selected), since, until, media, match, False, False, str(library), prefer)
     rows, replacing = [], set()
     for number, entry in enumerate(listed):
         key = key_of.get(number)
-        if key is None or key in absent:
-            rows.append(entry)  # not compared, or nothing like it in the library: as the list gave it
-        elif key in replaces and key not in replacing:
+        if key is None:
+            rows.append(entry)  # not compared: as the list gave it
+        elif key in wanted and row_key(key) in replaces and key not in replacing:
             replacing.add(key)  # one row for a photo the list gives twice
-            rows.append({**entry, "replaces": replaces[key]})
+            rows.append({**entry, "replaces": replaces[row_key(key)]})
+        elif key in wanted and row_key(key) not in replaces:
+            rows.append(entry)  # nothing like it in the library
     return rows
 
 

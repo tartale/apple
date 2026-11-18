@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, List, NamedTuple, Optional
+from typing import Annotated, List, NamedTuple, Optional, Tuple
 
 import typer
 
@@ -782,6 +782,53 @@ def parse_mode(text: str) -> matching.Mode:
         raise typer.BadParameter(str(error))
 
 
+def selected_of(data: list, since: Optional[datetime], until: Optional[datetime], media: Media, name_filter: Optional[List[str]] = None) -> list:
+    """For the source (data[0]) and the destination (data[1]), the photos in range, visible and hidden: the names narrow what is
+    asked about, the photos of the source, and the destination is searched whole."""
+    return [pp.of_media(within(d.visible + d.hidden, since, until, name_filter if side == 0 else None), media.value) for side, d in enumerate(data)]
+
+
+def replaces_of(swap: prefer_module.Swap) -> dict:
+    """What a photo of the source that is preferred replaces in the destination: the Photos identifiers of every photo it is
+    preferred to, the name and date of the first, the key of the preferred photo, and why."""
+    return {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why}
+
+
+def row_key(photo: tuple) -> tuple:
+    """A photo's key as the date, name and size (an int, or None when unknown) of the rows `diff_rows` makes."""
+    return photo[0], photo[2], int(photo[1]) if photo[1].isdigit() else None
+
+
+def plan_write(data: list, selected: list, ids: list, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode,
+               ignore_trash: bool, explain: bool, destination_name: str, prefer: Prefer, same_as_another: Optional[str] = None,
+               not_replacing: frozenset = frozenset()) -> Tuple[Counter, dict]:
+    """What a write of the source's photos (data[0], of which selected[0] are in range) into the destination (data[1], or None
+    when there is none to compare with) comes to: (the photos of the source to write, for each that replaces others what it
+    replaces, keyed as row_key keys). That is the photos the destination lacks (as `copy` and `import` judge it, with the
+    trash and --explain), once one of several photos of the source that are the same photo is taken (same_as_another names
+    where they are, for a folder), and the photos preferred to what the destination has (not_replacing leaves some out: those
+    that cannot be written over). ids are the ids of both sides, as ids_for gives them."""
+    if data[1] is None:
+        wanted = Counter(dict.fromkeys(selected[0], 1))
+    else:
+        wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1])
+    if same_as_another:
+        # of photos that are the same photo under the mode only one is written, the one with the shortest name (the original, not
+        # a copy that a service gave a longer name)
+        kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match, ids[0])
+        if len(kept) < len(wanted):
+            typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {same_as_another}, see --diff-mode", err=True)
+        wanted = Counter({photo: 1 for photo in kept})
+    if data[1] is None:
+        return wanted, {}
+    if explain:  # of the photos that are left, not of the ones left out as the same photo
+        explain_unmatched(wanted, selected[1], match, destination_name, data[1].trashed, ids[0], ids[1])
+    swapped, blocked = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, ids[0], ids[1])
+    prefer_module.report_hidden(blocked)
+    swapped = [swap for swap in swapped if swap.source not in wanted and swap.source not in not_replacing]
+    return wanted + Counter({swap.source: 1 for swap in swapped}), {row_key(swap.source): replaces_of(swap) for swap in swapped}
+
+
 def only_in_left(left: str, right: str, since: Optional[datetime], until: Optional[datetime], media: Media, match: matching.Mode = matching.TOLERANT, explain: bool = False, ignore_trash: bool = False,
                   name_filter: Optional[List[str]] = None, prefer: Prefer = Prefer.none) -> list:
     """The records of `diff LEFT RIGHT --only left` for the dates, media and names given, read from the databases. With a preference,
@@ -790,26 +837,18 @@ def only_in_left(left: str, right: str, since: Optional[datetime], until: Option
         data = [pp.library_photos(find_library(left)), pp.library_photos(find_library(right))]
     except pp.PowerPhotosError as error:
         fail(str(error))
-    names = [name_filter, None]  # the names narrow what is asked about, the photos of the left: the right is searched whole
-    selected = [pp.of_media(within(d.visible + d.hidden, since, until, names[side]), media.value) for side, d in enumerate(data)]
+    selected = selected_of(data, since, until, media, name_filter)
+    names = [name_filter, None]
     hidden = [set(pp.of_media(within(d.hidden, since, until, names[side]), media.value)) for side, d in enumerate(data)]
     bursts = [set(pp.of_media(within(d.bursts, since, until, names[side]), media.value)) for side, d in enumerate(data)]
-    photo_ids = ids_for(match, data, selected)
-    missing = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, photo_ids[0], photo_ids[1])
-    if explain:
-        explain_unmatched(missing, selected[1], match, right, data[1].trashed, photo_ids[0], photo_ids[1])
-    swapped, blocked = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, photo_ids[0], photo_ids[1])
-    prefer_module.report_hidden(blocked)
-    swapped = [swap for swap in swapped if swap.source not in missing and swap.source not in hidden[0]]
-    rows = diff_rows(missing + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
+    wanted, replaces = plan_write(data, selected, ids_for(match, data, selected), since, until, media, match, ignore_trash, explain, right, prefer, not_replacing=frozenset(hidden[0]))
+    rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": hidden[0], "right": hidden[1]},
                      {"left": bursts[0], "right": bursts[1]}, {"left": data[0], "right": data[1]}, True)
-    ids = {(key[0], key[2], int(key[1]) if key[1].isdigit() else None): data[0].uuids[key][0] for key in list(missing) + [swap.source for swap in swapped] if data[0].uuids.get(key)}
-    replaces = {(swap.source[0], swap.source[2], int(swap.source[1]) if swap.source[1].isdigit() else None): swap for swap in swapped}
+    identifiers = {row_key(key): data[0].uuids[key][0] for key in wanted if data[0].uuids.get(key)}
     for row in rows:
         at = (row["date"], row["name"], row["size"])
-        row["id"] = ids.get(at)  # the Photos identifier of one copy of it
-        swap = replaces.get(at)
-        row["replaces"] = {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} if swap else None
+        row["id"] = identifiers.get(at)  # the Photos identifier of one copy of it
+        row["replaces"] = replaces.get(at)
     return rows
 
 
@@ -822,31 +861,14 @@ def folder_listing(folder: str, library: Optional[Path], since: Optional[datetim
         data = [folder_photos.folder_photos(Path(folder), refresh=refresh, exif=match.date_source == "exif", dimensions=match.dimensions == "exact", name_filter=name_filter)] + ([pp.library_photos(library)] if library else [])
     except pp.PowerPhotosError as error:
         fail(str(error))
-    selected = [pp.of_media(within(d.visible + d.hidden, since, until, name_filter if side == 0 else None), media.value) for side, d in enumerate(data)]  # the names narrow the folder's files, not the library searched
+    selected = selected_of(data, since, until, media, name_filter)
     ids = ids_for(match, data, selected, refresh) if library else ids_for(match, data, selected, refresh) + [{}]
-    wanted = lacking_from(selected[0], selected[1], data[1], since, until, media, match, ignore_trash, ids[0], ids[1]) if library else Counter(dict.fromkeys(selected[0], 1))
-    # of files that are the same photo under the mode only one is imported, the one with the shortest name (the original, not
-    # a copy that a service gave a longer name)
-    kept = matching.dedupe(sorted(wanted, key=lambda photo: (len(photo[2]), photo[2], photo[0], photo[1])), match, ids[0])
-    if len(kept) < len(wanted):
-        typer.echo(f"{len(wanted) - len(kept)} left out as the same photo as another file of {folder}, see --diff-mode", err=True)
-    wanted = Counter({photo: 1 for photo in kept})
-    if explain and library:  # of the photos that are left, not of the ones left out as the same photo
-        explain_unmatched(wanted, selected[1], match, library_name, data[1].trashed, ids[0], ids[1])
-    swapped, blocked = prefer_module.swaps(prefer, data[0], data[1], selected[0], selected[1], match, ids[0], ids[1]) if library else ([], [])
-    prefer_module.report_hidden(blocked)
-    swapped = [swap for swap in swapped if swap.source not in wanted]
-    rows = diff_rows(wanted + Counter({swap.source: 1 for swap in swapped}), Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
+    wanted, replaces = plan_write(data if library else [data[0], None], selected, ids, since, until, media, match, ignore_trash, explain, library_name, prefer, same_as_another=folder)
+    rows = diff_rows(wanted, Counter(), Side.left, DiffSort.date, {"left": set(), "right": set()}, {"left": set(), "right": set()},
                      {"left": data[0], "right": data[0]}, False, {"left": True, "right": False})
-    replaces = {(swap.source[0], swap.source[2], int(swap.source[1]) if swap.source[1].isdigit() else None): swap for swap in swapped}
-
-    def replaced(row: dict) -> Optional[dict]:
-        swap = replaces.get((row["date"], row["name"], row["size"]))
-        return {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "why": swap.why} if swap else None
-
     return [
         {"name": row["name"], "date": row["date"], "hidden": False, "shared": False, "identifier": "", "source": "folder",
-         "root": folder, "library": "", "files": row["files"], "replaces": replaced(row)}
+         "root": folder, "library": "", "files": row["files"], "replaces": replaces.get((row["date"], row["name"], row["size"]))}
         for row in rows
     ]
 
