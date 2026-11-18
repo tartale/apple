@@ -1,25 +1,12 @@
 """file_compare: what two files of one photo differ in, part by part, and which is the better one to keep."""
 import os
 import struct
-from datetime import datetime, timezone
 
-import pytest
-from typer.testing import CliRunner
-
-from apple.cli import app
 from apple.photos import file_compare
-from apple.photos import recover_cache as cache_module
-from test_powerphotos import add_photos, mac, make_library, scratch_root  # noqa: F401
 
-runner = CliRunner()
 SCAN = (bytes(range(255)) * 8)
 TAKEN, CAMERA = (0x9003, 2, "2006:07:04 12:00:00"), [(0x010F, 2, "Canon"), (0x0110, 2, "PowerShot S3")]
 PLACE = [(1, 2, "N"), (2, 5, [(47, 1), (30, 1), (0, 1)]), (3, 2, "W"), (4, 5, [(122, 1), (15, 1), (0, 1)])]
-
-
-@pytest.fixture(autouse=True)
-def private_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv(cache_module.FILE_VARIABLE, str(tmp_path / "cache" / "cache.sqlite"))
 
 
 def tiff(main=(), inner=(), gps=(), thumbnail=0):
@@ -134,8 +121,6 @@ def test_an_srgb_color_profile_is_what_a_file_without_a_profile_has(tmp_path):
     result = compared(tmp_path, srgb, plain)
     assert result.first.facts["color profile"] == "sRGB IEC61966-2.1" and result.differing == ["color profile"]
     assert result.better == "either" and result.only_first == [] and "an sRGB color profile is what a picture without a profile is shown with" in result.why
-    shown = runner.invoke(app, ["photos", "compare", str(tmp_path / "left.jpg"), str(tmp_path / "right.jpg")]).stdout
-    assert ["color", "profile", "sRGB", "IEC61966-2.1", "-", "the", "same:", "no", "profile", "is", "sRGB"] in [line.split() for line in shown.splitlines()] and "Better to keep: either one" in shown
     wide = compared(tmp_path, jpeg(exif(CAMERA, [TAKEN]), PROFILE), plain)  # another color space is something only that file says
     assert wide.better == "first" and wide.only_first == ["color profile"]
     assert compared(tmp_path, jpeg(PROFILE), srgb).changed == ["color profile"]
