@@ -2133,3 +2133,37 @@ def test_the_lock_lives_on_local_disk_and_a_failed_release_does_not_hide_how_the
         with pytest.raises(pp.Busy):
             with pp.one_at_a_time():
                 pass
+
+
+def test_fix_says_so_when_the_photos_are_still_there_after_powerphotos_reported_them_deleted(mac, monkeypatch):
+    """The fake PowerPhotos reports a delete and changes nothing, as a delete that was never confirmed does."""
+    copying_updates_the_database(monkeypatch, mac)
+    mac.make("photos-2017", 19607)
+    add_photos(mac.libraries["photos-2018"], [A, OLD])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert mac.calls("trash-ids.applescript") == [["photos-2018", ["UUID2"]]]
+    assert "photos-2018: NOT moved, 1 of 1 are still in it although PowerPhotos reported 1 deleted" in result.output and "old.jpg" in result.output
+    assert "moved 1 to its Recently Deleted" not in result.output and result.exit_code == 1
+
+
+def test_fix_names_only_the_photos_that_left_the_library_as_moved(mac, monkeypatch):
+    copying_updates_the_database(monkeypatch, mac)
+    real = lc.trash_ids
+
+    def trash(libraries, library, ids):
+        result = real(libraries, library, ids)
+        connection = sqlite3.connect(mac.libraries[library] / "database" / "Photos.sqlite")
+        connection.execute("update ZASSET set ZTRASHEDSTATE = 1 where ZUUID = ?", (ids[0],))  # only the first one goes
+        connection.commit()
+        connection.close()
+        return result
+
+    monkeypatch.setattr(lc, "trash_ids", trash)
+    mac.make("photos-2017", 19607)
+    other = ("2017-07-01 10:00:00", 60, "older.jpg")
+    add_photos(mac.libraries["photos-2018"], [A, OLD, other])
+    add_photos(mac.libraries["photos-2017"], [])
+    result = fix()
+    assert "photos-2018: moved 1 to its Recently Deleted: old.jpg" in result.output
+    assert "photos-2018: NOT moved, 1 of 2 are still in it although PowerPhotos reported 2 deleted" in result.output and "older.jpg" in result.output
