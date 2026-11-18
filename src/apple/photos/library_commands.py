@@ -54,8 +54,8 @@ PreferOption = Annotated[
     typer.Option(
         "--prefer",
         help="What to do with a photo the destination has as another file (the same photo under --diff-mode that differs in "
-        "its metadata): none leaves it, recommended writes the source's file when `apple photos compare` recommends it (it has something worth "
-        "keeping the destination's lacks), larger writes it when it is the larger file. A preferred file is written as a duplicate that Photos "
+        "its metadata): none leaves it, recommended writes the source's file when it is the same image with something worth keeping the destination's "
+        "lacks (GPS, a capture time, keywords, a color profile ...), larger writes it when it is the larger file. A preferred file is written as a duplicate that Photos "
         "is told to import without asking, and the photo it is preferred to is moved to Recently Deleted.",
     ),
 ]

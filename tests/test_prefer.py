@@ -13,7 +13,7 @@ from apple.photos import prefer as prefer_module
 from apple.photos import recover as recover_module
 from apple.photos import recover_cache as cache_module
 from apple.photos.prefer import Prefer
-from test_compare import CAMERA, JFIF, PLACE, TAKEN, exif, jpeg
+from test_file_compare import CAMERA, JFIF, PLACE, TAKEN, exif, jpeg
 from test_powerphotos import add_photos, copying_updates_the_database, mac, make_library, no_waiting, scratch_root, trashing_updates_the_database  # noqa: F401
 
 runner = CliRunner()

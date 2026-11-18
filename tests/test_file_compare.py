@@ -1,4 +1,4 @@
-"""`compare`: what two files of one photo differ in, part by part, and which is the better one to keep."""
+"""file_compare: what two files of one photo differ in, part by part, and which is the better one to keep."""
 import os
 import struct
 from datetime import datetime, timezone
@@ -159,36 +159,3 @@ def test_a_file_of_another_type_is_compared_by_where_its_bytes_differ(tmp_path):
     (tmp_path / "c.mov").write_bytes(b"HEADER-ONE" + body + b"END")
     assert file_compare.compare(tmp_path / "a.mov", tmp_path / "c.mov").ends == (10 + len(body), 0)
     assert file_compare.compare(tmp_path / "a.mov", tmp_path / "a.mov").better == "either"
-
-
-def test_compare_shows_the_parts_what_each_file_says_and_the_better_one(tmp_path):
-    (tmp_path / "left.jpg").write_bytes(jpeg(JFIF, exif(CAMERA, [TAKEN], PLACE), XMP))
-    (tmp_path / "right.jpg").write_bytes(jpeg(JFIF, exif(CAMERA, [TAKEN])))
-    result = runner.invoke(app, ["photos", "compare", str(tmp_path / "left.jpg"), str(tmp_path / "right.jpg")])
-    lines = [line.split() for line in result.stdout.splitlines()]
-    larger = len(XMP) + len(exif(CAMERA, [TAKEN], PLACE)) - len(exif(CAMERA, [TAKEN]))
-    assert result.exit_code == 0 and ["size:", "left", "by", f"+{larger}", "bytes", "(+5.0%)"] in lines
-    picture = f"{len(jpeg()):,}"
-    assert ["picture", "data", picture, picture, "same"] in lines and ["XMP", str(len(XMP)), "-", "only", "in", "left"] in lines
-    assert any(line[:1] == ["Exif"] and line[-4:] == ["differs", "by", "+114", "bytes"] for line in lines)
-    assert ["GPS", "47.50000,", "-122.25000", "-", "differs"] in lines and ["capture", "time", "2006:07:04", "12:00:00", "2006:07:04", "12:00:00"] in lines
-    assert "The same picture; what differs: Exif, XMP." in result.stdout
-    assert "Better to keep: left (the same picture, and only this one has GPS, keywords, rating)." in result.stdout
-
-
-def test_compare_looks_a_file_name_up_in_a_folder_and_in_a_library(mac, tmp_path):
-    when = datetime(2018, 3, 1, 10, tzinfo=timezone.utc).timestamp()
-    rich, plain = jpeg(JFIF, exif(CAMERA, [TAKEN], PLACE)), jpeg(JFIF, exif(CAMERA, [TAKEN]))
-    folder = tmp_path / "folder" / "2018"
-    folder.mkdir(parents=True)
-    (folder / "IMG_1.JPG").write_bytes(rich)
-    os.utime(folder / "IMG_1.JPG", (when, when))
-    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", len(plain), "img_1.jpeg")])
-    (mac.libraries["Source"] / "originals" / "A" / "UUID1.jpg").write_bytes(plain)
-    result = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source", "IMG_1.jpg"])
-    assert result.exit_code == 0 and "originals/A/UUID1.jpg" in result.stdout
-    assert "Better to keep: left (the same picture, and only this one has GPS)." in result.stdout
-    missing = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source", "other.jpg"])
-    assert missing.exit_code != 0 and "No file named other.jpg" in missing.output
-    unnamed = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source"])
-    assert unnamed.exit_code == 2 and "give NAME" in unnamed.output

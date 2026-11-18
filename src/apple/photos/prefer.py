@@ -1,7 +1,7 @@
 """`--prefer`: what to do with a photo the destination already has, as another file: the same photo that differs in its metadata.
 
 none         the destination's photo stays and the source's is not written (a photo it has is not missing).
-recommended  the source's file is written when `compare` recommends it over the destination's (the same image with something worth
+recommended  the source's file is written when file_compare recommends it over the destination's (the same image with something worth
              keeping that the destination's lacks: GPS, a capture time, a camera, keywords ...).
 larger       the source's file is written when it is larger than the destination's.
 

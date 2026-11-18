@@ -23,7 +23,6 @@ MARKER = re.compile(rb"\xff[^\x00\xd0-\xd7\xff]")  # in the data of a scan: a ma
 PICTURE = "picture data"
 # what a file can say about its photo that is worth keeping, in the order shown
 WORTH = ("capture time", "GPS", "camera", "description", "title", "keywords", "rating", "faces", "color profile", "maker note", "orientation")
-OTHER_FACTS = ("software", "thumbnail")
 XMP_FACTS = {"keywords": (b"dc:subject",), "title": (b"dc:title",), "description": (b"dc:description",), "rating": (b"xmp:Rating",), "faces": (b"mwg-rs:Regions", b"MPRI:Regions")}
 IPTC_FACTS = {"keywords": b"\x1c\x02\x19", "description": b"\x1c\x02\x78", "title": b"\x1c\x02\x05"}
 
