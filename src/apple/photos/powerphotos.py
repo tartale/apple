@@ -21,7 +21,7 @@ APPLESCRIPTS = Path(__file__).parent / "applescript"
 # Where database copies are read: on local disk, since SQLite cannot use a write-ahead log on a network share, and
 # TMPDIR can point into a checkout that is one.
 SCRATCH_ROOT = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "apple" / "scratch"
-LOCK_FILE = Path(tempfile.gettempdir()) / "apple-powerphotos.lock"
+LOCK_FILE = SCRATCH_ROOT.parent / "powerphotos.lock"  # on local disk too: a lock on a network share can fail with a bad file descriptor
 
 # The file name endings that count as photos and as videos. The same lists are in copy-photos.applescript.
 EXTENSIONS = {
@@ -314,12 +314,16 @@ def quit_photos() -> None:
 @contextmanager
 def one_at_a_time() -> Iterator[None]:
     """Holds a lock for the whole operation; the system drops it if this process dies. Raises Busy if it is taken."""
-    with open(LOCK_FILE, "w") as handle:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(LOCK_FILE, "w")
+    try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             raise Busy("Another apple photos copy or split is already running.")
+        yield
+    finally:
         try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()  # closing releases the lock; a failure here must not hide how the operation ended
+        except OSError:
+            pass
