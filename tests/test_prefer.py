@@ -214,3 +214,45 @@ def test_a_file_better_than_every_copy_in_the_destination_replaces_them_all_once
     assert len(mac.calls("import-photos.applescript")) == 1 and mac.calls("import-photos.applescript")[0][1] == "true"
     assert len(mac.calls("import-photos.applescript")[0][0]) == 1
     assert mac.calls("trash-ids.applescript") == [["Source", ["UUID1", "UUID2"]]]  # both copies it is better than
+
+
+def list_of(tmp_path, *files):
+    """A list as `find` writes it: one row for each file, with where it is."""
+    rows = ["date,name,hidden,shared,source,root,library,files"] + [f"{WHEN},{path.name},false,false,folder,{path.parent},,{path}" for path in files]
+    listing = tmp_path / "found.csv"
+    listing.write_text("\n".join(rows) + "\n")
+    return listing
+
+
+def test_a_list_takes_a_preference_too_and_replaces_a_photo_with_the_file_it_gives(mac, monkeypatch, tmp_path):
+    held(mac, "Source", PLAIN)
+    path = folder_with(tmp_path, RICH)
+    opened(monkeypatch, mac.libraries["Source"])
+    dry = runner.invoke(app, ["photos", "import", str(list_of(tmp_path, path)), "Source", "--prefer", "recommended", "--dry-run", *MODE])
+    assert dry.exit_code == 0 and f"{path.name}  replaces IMG_0897.JPG  {WHEN}" in dry.output and mac.calls("import-photos.applescript") == []
+    result = runner.invoke(app, ["photos", "import", str(list_of(tmp_path, path)), "Source", "--prefer", "recommended", *MODE])
+    assert result.exit_code == 0 and mac.calls("import-photos.applescript") == [[[str(path)], "true"]]
+    assert mac.calls("trash-ids.applescript") == [["Source", ["UUID1"]]]
+
+
+def test_a_listed_file_the_library_has_is_left_out_unless_it_is_preferred_and_the_rest_are_imported(mac, monkeypatch, tmp_path):
+    held(mac, "Source", RICH)
+    same = folder_with(tmp_path, PLAIN)  # the library's photo is the richer one: not preferred
+    new = folder_with(tmp_path, jpeg(JFIF, exif(CAMERA, [(0x9003, 2, "2015:01:01 00:00:00")])), "IMG_0900.JPG")
+    listing = tmp_path / "found.csv"
+    listing.write_text("date,name,hidden,shared,source,root,library,files\n" + "\n".join(
+        f"{when},{path.name},false,false,folder,{path.parent},,{path}" for when, path in ((WHEN, same), ("2015-01-01 00:00:00", new))) + "\n")
+    os.utime(new, (unix("2015-01-01 00:00:00"), unix("2015-01-01 00:00:00")))
+    opened(monkeypatch, mac.libraries["Source"])
+    result = runner.invoke(app, ["photos", "import", str(listing), "Source", "--prefer", "recommended", *MODE])
+    assert result.exit_code == 0 and mac.calls("import-photos.applescript") == [[[str(new)]]]  # the new one, with the duplicate check
+    assert mac.calls("trash-ids.applescript") == []
+    assert "Imported 1 of 1 missing" in result.output
+
+
+def test_a_list_without_a_preference_is_imported_as_it_says(mac, monkeypatch, tmp_path):
+    held(mac, "Source", PLAIN)
+    path = folder_with(tmp_path, RICH)
+    opened(monkeypatch, mac.libraries["Source"])
+    runner.invoke(app, ["photos", "import", str(list_of(tmp_path, path)), "Source"])
+    assert mac.calls("import-photos.applescript") == [[[str(path)]]] and mac.calls("trash-ids.applescript") == []

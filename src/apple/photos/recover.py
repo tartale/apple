@@ -21,7 +21,8 @@ from apple.photos import powerphotos as pp
 from apple.photos.common import is_dry_run
 from apple.photos.progress import Progress, duration
 from apple.photos.recover_cache import Cache
-from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, known_libraries, need, parse_mode, within, NameOption, PreferOption, trash_ids
+from apple.photos.library_commands import DateFormat, DiffFormat, DiffModeOption, ExplainOption, IgnoreTrashOption, Media, cell_text, count, fail, find_library, folder_listing, ids_for, known_libraries, need, parse_mode, within, NameOption, PreferOption, trash_ids
+from apple.photos import prefer as prefer_module
 from apple.photos.prefer import Prefer
 from apple.photos.recover_sources import DEFAULT, SNAPSHOTS, Found, build_sources, has_wildcard, import_files, parse_search
 from apple.platform import require_macos
@@ -406,16 +407,16 @@ def import_found_command(
     if source != "-" and not Path(source).expanduser().exists():
         raise typer.BadParameter(f"{source} does not exist: give a folder of photos and videos, or a list (the csv or json of `apple photos find`, or - for stdin)")
     folder = folder_photos.is_folder(source)
-    if not folder and (all_files or refresh or explain or ignore_trash or prefer != Prefer.none):
-        raise typer.BadParameter("--all, --refresh, --explain, --ignore-trash and --prefer are for a folder: a list says what to import")
+    if not folder and (all_files or refresh or explain or ignore_trash):
+        raise typer.BadParameter("--all, --refresh, --explain and --ignore-trash are for a folder: a list says what to import")
     only_missing = folder and not all_files
-    if (explain or ignore_trash or prefer != Prefer.none) and not only_missing:
+    if (explain or ignore_trash or prefer != Prefer.none) and folder and all_files:
         raise typer.BadParameter("--explain, --ignore-trash and --prefer are about the files the destination lacks, which --all does not work out")
     match = parse_mode(diff_mode)
     dry = is_dry_run(dry_run)
     if Path(destination).expanduser().is_dir():
         path = Path(destination).expanduser()
-    elif not dry or only_missing:
+    elif not dry or only_missing or prefer != Prefer.none:
         path = find_library(destination)  # a dry run of a list needs no library, so it can run where there is none
     else:
         path = Path("/nonexistent/default.photoslibrary")
@@ -423,7 +424,55 @@ def import_found_command(
         listed = folder_listing(source, path if only_missing else None, since, until, media, match, refresh, explain, destination, ignore_trash, name, prefer)
         import_listed(listed, source, destination, path, dry, [], since, until, media, format, name)
         return
-    import_listed(load_list(source), source, destination, path, dry, parse_map(map_paths), since, until, media, format, name)
+    mapping = parse_map(map_paths)
+    listed = load_list(source)
+    if prefer != Prefer.none:
+        listed = prefer_for_list(listed, mapping, path, prefer, match, since, until, media, name)
+    import_listed(listed, source, destination, path, dry, mapping, since, until, media, format, name)
+
+
+def prefer_for_list(listed: List[dict], mapping: List[tuple], library: Path, prefer: Prefer, match: matching.Mode,
+                    since: Optional[datetime], until: Optional[datetime], media: Media, name_filter: Optional[List[str]]) -> List[dict]:
+    """The rows of a list once a preference is applied, as it is for a folder: a row whose file is the same photo as one the library
+    holds (under --diff-mode) is left out unless its file is preferred to every such photo, and then it replaces them; the other rows
+    are as the list gave them. A row is compared by its file, translated with the mapping, whose size is the photo's size."""
+    photos, files, ids, key_of = Counter(), {}, {}, {}
+    for number, entry in enumerate(listed):
+        if not in_range(entry["date"], since, until) or not pp.of_media(Counter({(entry["date"], "0", entry["name"]): 1}), media.value) or not pp.named(name_filter, entry["name"]):
+            continue
+        translated = [translate(f, mapping) for f in entry["files"]]
+        try:
+            size = Path(translated[0]).stat().st_size if translated and all(Path(f).exists() for f in translated) else None
+        except OSError:
+            size = None
+        if size is None:
+            continue
+        key = (entry["date"], str(size), entry["name"])
+        key_of[number] = key
+        photos[key] = 1
+        files.setdefault(key, translated[:1])
+        if entry["ids"]:
+            ids.setdefault(key, {}).update(entry["ids"])
+    try:
+        held = pp.library_photos(library)
+    except pp.PowerPhotosError as error:
+        fail(str(error))
+    source = pp.Photos(Path("/"), photos, Counter(), Counter(), files, set(), Counter(), {}, {}, Counter(), ids)
+    there = held.visible + held.hidden
+    wanted_ids, held_ids = ids_for(match, [source, held], [photos, there])
+    swapped, blocked = prefer_module.swaps(prefer, source, held, photos, there, match, wanted_ids, held_ids)
+    prefer_module.report_hidden(blocked)
+    replaces = {swap.source: {"ids": swap.identifiers, "name": swap.destination[2], "date": swap.destination[0], "key": swap.source, "why": swap.why} for swap in swapped}
+    absent = matching.absent(photos, there, match, wanted_ids, held_ids)
+    rows, replacing = [], set()
+    for number, entry in enumerate(listed):
+        key = key_of.get(number)
+        if key is None or key in absent:
+            rows.append(entry)  # not compared, or nothing like it in the library: as the list gave it
+        elif key in replaces and key not in replacing:
+            replacing.add(key)  # one row for a photo the list gives twice
+            rows.append({**entry, "replaces": replaces[key]})
+    return rows
 
 
 def import_listed(listed: List[dict], list_name: str, target: Optional[str], path: Path, dry: bool, mapping: List[tuple],
