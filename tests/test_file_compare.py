@@ -1,25 +1,12 @@
-"""`compare`: what two files of one photo differ in, part by part, and which is the better one to keep."""
+"""file_compare: what two files of one photo differ in, part by part, and which is the better one to keep."""
 import os
 import struct
-from datetime import datetime, timezone
 
-import pytest
-from typer.testing import CliRunner
-
-from apple.cli import app
 from apple.photos import file_compare
-from apple.photos import recover_cache as cache_module
-from test_powerphotos import add_photos, mac, make_library, scratch_root  # noqa: F401
 
-runner = CliRunner()
 SCAN = (bytes(range(255)) * 8)
 TAKEN, CAMERA = (0x9003, 2, "2006:07:04 12:00:00"), [(0x010F, 2, "Canon"), (0x0110, 2, "PowerShot S3")]
 PLACE = [(1, 2, "N"), (2, 5, [(47, 1), (30, 1), (0, 1)]), (3, 2, "W"), (4, 5, [(122, 1), (15, 1), (0, 1)])]
-
-
-@pytest.fixture(autouse=True)
-def private_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv(cache_module.FILE_VARIABLE, str(tmp_path / "cache" / "cache.sqlite"))
 
 
 def tiff(main=(), inner=(), gps=(), thumbnail=0):
@@ -134,8 +121,6 @@ def test_an_srgb_color_profile_is_what_a_file_without_a_profile_has(tmp_path):
     result = compared(tmp_path, srgb, plain)
     assert result.first.facts["color profile"] == "sRGB IEC61966-2.1" and result.differing == ["color profile"]
     assert result.better == "either" and result.only_first == [] and "an sRGB color profile is what a picture without a profile is shown with" in result.why
-    shown = runner.invoke(app, ["photos", "compare", str(tmp_path / "left.jpg"), str(tmp_path / "right.jpg")]).stdout
-    assert ["color", "profile", "sRGB", "IEC61966-2.1", "-", "the", "same:", "no", "profile", "is", "sRGB"] in [line.split() for line in shown.splitlines()] and "Better to keep: either one" in shown
     wide = compared(tmp_path, jpeg(exif(CAMERA, [TAKEN]), PROFILE), plain)  # another color space is something only that file says
     assert wide.better == "first" and wide.only_first == ["color profile"]
     assert compared(tmp_path, jpeg(PROFILE), srgb).changed == ["color profile"]
@@ -159,36 +144,3 @@ def test_a_file_of_another_type_is_compared_by_where_its_bytes_differ(tmp_path):
     (tmp_path / "c.mov").write_bytes(b"HEADER-ONE" + body + b"END")
     assert file_compare.compare(tmp_path / "a.mov", tmp_path / "c.mov").ends == (10 + len(body), 0)
     assert file_compare.compare(tmp_path / "a.mov", tmp_path / "a.mov").better == "either"
-
-
-def test_compare_shows_the_parts_what_each_file_says_and_the_better_one(tmp_path):
-    (tmp_path / "left.jpg").write_bytes(jpeg(JFIF, exif(CAMERA, [TAKEN], PLACE), XMP))
-    (tmp_path / "right.jpg").write_bytes(jpeg(JFIF, exif(CAMERA, [TAKEN])))
-    result = runner.invoke(app, ["photos", "compare", str(tmp_path / "left.jpg"), str(tmp_path / "right.jpg")])
-    lines = [line.split() for line in result.stdout.splitlines()]
-    larger = len(XMP) + len(exif(CAMERA, [TAKEN], PLACE)) - len(exif(CAMERA, [TAKEN]))
-    assert result.exit_code == 0 and ["size:", "left", "by", f"+{larger}", "bytes", "(+5.0%)"] in lines
-    picture = f"{len(jpeg()):,}"
-    assert ["picture", "data", picture, picture, "same"] in lines and ["XMP", str(len(XMP)), "-", "only", "in", "left"] in lines
-    assert any(line[:1] == ["Exif"] and line[-4:] == ["differs", "by", "+114", "bytes"] for line in lines)
-    assert ["GPS", "47.50000,", "-122.25000", "-", "differs"] in lines and ["capture", "time", "2006:07:04", "12:00:00", "2006:07:04", "12:00:00"] in lines
-    assert "The same picture; what differs: Exif, XMP." in result.stdout
-    assert "Better to keep: left (the same picture, and only this one has GPS, keywords, rating)." in result.stdout
-
-
-def test_compare_looks_a_file_name_up_in_a_folder_and_in_a_library(mac, tmp_path):
-    when = datetime(2018, 3, 1, 10, tzinfo=timezone.utc).timestamp()
-    rich, plain = jpeg(JFIF, exif(CAMERA, [TAKEN], PLACE)), jpeg(JFIF, exif(CAMERA, [TAKEN]))
-    folder = tmp_path / "folder" / "2018"
-    folder.mkdir(parents=True)
-    (folder / "IMG_1.JPG").write_bytes(rich)
-    os.utime(folder / "IMG_1.JPG", (when, when))
-    add_photos(mac.libraries["Source"], [("2018-03-01 10:00:00", len(plain), "img_1.jpeg")])
-    (mac.libraries["Source"] / "originals" / "A" / "UUID1.jpg").write_bytes(plain)
-    result = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source", "IMG_1.jpg"])
-    assert result.exit_code == 0 and "originals/A/UUID1.jpg" in result.stdout
-    assert "Better to keep: left (the same picture, and only this one has GPS)." in result.stdout
-    missing = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source", "other.jpg"])
-    assert missing.exit_code != 0 and "No file named other.jpg" in missing.output
-    unnamed = runner.invoke(app, ["photos", "compare", str(tmp_path / "folder"), "Source"])
-    assert unnamed.exit_code == 2 and "give NAME" in unnamed.output

@@ -84,9 +84,9 @@ def test_import_only_missing_does_not_import_a_file_the_library_has_under_its_ex
     add_photos(mac.libraries["Source"], [("2005-09-30 06:51:40", 100, "IMAG0044.JPG")])
     folder = tmp_path / "backup"
     jpeg_taken(folder / "IMAG0044.JPG", "2005:09:30 00:51:40", unix("2006-09-30 06:51:40"))
-    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run", "--diff-mode", "date-source=exif"])
+    result = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run", "--diff-mode", "date-source=exif"])
     assert "Imported 0 of 0" in result.output
-    again = runner.invoke(app, ["photos", "import", str(folder), "Source", "--only-missing", "--dry-run"])
+    again = runner.invoke(app, ["photos", "import", str(folder), "Source", "--dry-run"])
     assert "Imported 0 of 1" in again.output  # by the modification time alone it looks missing
 
 
