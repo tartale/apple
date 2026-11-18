@@ -1450,11 +1450,24 @@ def fix_strays(libraries: dict, part: split_plan.Part, kind: str, outside: Count
     # several years would otherwise ask once per year.
     deleted, missing = trash_ids(libraries, part.name, [uuid for _, uuids in confirmed_everywhere for uuid in uuids])
     moved = [key for key, _ in confirmed_everywhere]
-    wait_for_library(libraries, part.name, lambda held: not any(held[key] for key in moved), f"deleting from {part.name}", timeout)
-    typer.echo(f"    {part.name}: moved {deleted} to its Recently Deleted: " + ", ".join(key[2] for key, _ in confirmed_everywhere))
+    def progress(held: Counter) -> str:
+        return (f"{sum(1 for key in moved if held[key])} of {len(moved)} are still in {part.name}. PowerPhotos asks to confirm a delete: if no dialog "
+                "has appeared, quit Photos and PowerPhotos, run `killall photolibraryd` (or restart the Mac), and try again")
+
+    held = wait_for_library(libraries, part.name, lambda held: not any(held[key] for key in moved), f"deleting from {part.name}", timeout, progress)
+    # what PowerPhotos says it deleted is not what happened: the library's database says
+    gone = [key for key in moved if not held[key]]
+    left = [key for key in moved if held[key]]
+    if gone:
+        typer.echo(f"    {part.name}: moved {len(gone)} to its Recently Deleted: " + ", ".join(key[2] for key in gone))
+    if left:
+        typer.echo(
+            f"    {part.name}: NOT moved, {len(left)} of {len(moved)} are still in it although PowerPhotos reported {deleted} deleted (PowerPhotos asks to "
+            "confirm each delete: look for a dialog it may be showing; the delete may also have been refused or not tried): " + ", ".join(key[2] for key in left)
+        )
     for uuid in missing:
         typer.echo(f"      not moved out of {part.name} (PowerPhotos lists no photo with that identifier, as it does not list hidden items): {names_of.get(uuid, uuid)}")
-    return deleted > 0
+    return bool(gone)
 
 
 def check_years(libraries: dict, kinds: list, first_year: int, last_year: int, destination_name: str, source_data: Optional[pp.Photos], max_bytes: Optional[int], fix: Optional[dict] = None, match: matching.Mode = matching.TOLERANT, timeout: float = DEFAULT_TIMEOUT, ignore_blacklist: bool = False, source: Optional[str] = None) -> bool:
