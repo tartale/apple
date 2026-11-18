@@ -2103,3 +2103,33 @@ def test_match_fields_with_plain_names_are_shown_for_both_sides_and_a_bad_one_is
         assert failed.exit_code == 2, bad
     prefixed_only = matched(mac, [A], [A], "--only", "left", "--fields", "left_name")
     assert prefixed_only.exit_code == 2 and "not for --only" in " ".join(prefixed_only.output.replace("│", " ").split())
+
+
+def test_the_lock_lives_on_local_disk_and_a_failed_release_does_not_hide_how_the_operation_ended(tmp_path, monkeypatch):
+    import fcntl
+    import typer
+    import subprocess
+    import sys
+    found = subprocess.run(
+        [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, 'src'); from apple.photos import powerphotos as p; print(p.LOCK_FILE)"],
+        capture_output=True, text=True, check=True, env={"XDG_CACHE_HOME": str(tmp_path / "cache"), "TMPDIR": str(tmp_path / "share")},
+    )
+    assert found.stdout.strip() == str(tmp_path / "cache" / "apple" / "powerphotos.lock")  # not in TMPDIR, which can be a network share
+    monkeypatch.setattr(pp, "LOCK_FILE", tmp_path / "lock")
+    real = fcntl.flock
+
+    def flock(handle, operation):
+        if operation == fcntl.LOCK_UN:
+            raise OSError(9, "Bad file descriptor")
+        return real(handle, operation)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with pytest.raises(typer.Exit):
+        with pp.one_at_a_time():
+            raise typer.Exit(1)
+    with pp.one_at_a_time():  # the lock was released by closing the file
+        pass
+    with pp.one_at_a_time():
+        with pytest.raises(pp.Busy):
+            with pp.one_at_a_time():
+                pass
